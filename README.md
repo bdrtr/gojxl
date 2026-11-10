@@ -39,11 +39,15 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   4:4:4/4:2:2/4:2:0, gri, Adobe RGB JPEG), DCT katsayıları korunur
 - JPEG niceleme tabloları RAW dequant matrisi, luma-DC kovalı blok bağlam
   haritası, istatistiğe göre katsayı sırası, öğrenilmiş ağaçla DC, ICC korunur
-- Çıktı, cjxl'in (CfL kapalı) dönüşümüyle djxl'de **piksel-birebir** aynı;
-  boyut cjxl'in ±%1'i içinde (ör. 850 KB JPEG → 572 KB; cjxl 579 KB)
+- Tam sayı-tam JPEG CfL (4:4:4 ve RGB JPEG'lerde büyük kazanç)
+- **`jbrd` kutusu**: orijinal JPEG dosyası bayt-birebir geri üretilebilir
+  (`djxl foto.jxl foto.jpg`); ICC parçaları codestream'deki profilden kurulur
+- Test: cjpeg/jpegtran/ImageMagick/ffmpeg/Pillow/Go ile üretilmiş ve sistemdeki
+  gerçek JPEG'lerin hepsi (baseline, progressive, restart, 4:2:0/4:2:2/4:4:0/4:4:4,
+  gri, RGB, EXIF/XMP/ICC/COM, kuyruk verisi) djxl ile bayt-birebir geri döner
+- Boyut cjxl ile aynı düzeyde (ör. 10.3 MB JPEG → 7.94 MB; cjxl 7.95 MB)
 - `gojxl encode foto.jpg foto.jxl` JPEG girdisinde varsayılan olarak bunu yapar
-  (`-pixels` ile pikselleri kodlar). Henüz yok: orijinal JPEG dosyasını geri
-  üretmek için `jbrd` kutusu.
+  (`-pixels` ile pikselleri kodlar)
 
 **Kayıpsız kodlayıcı (Modular)**
 - Efor 1–3: sabit bağlam ağaçları, YCoCg, Gradient/Weighted predictor (hızlı)
@@ -163,5 +167,6 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - LZ77, grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+)
 - HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
-- JPEG yeniden oluşturma (`jbrd` kutusu + JXL → JPEG)
+- JXL → JPEG yeniden oluşturmanın gojxl kod çözücüsüne eklenmesi (Brotli çözücü gerekli)
+- ICC profilleri için libjxl tarzı tahmin (büyük ICC'lerde daha küçük dosya)
 - APNG/animasyon çıktısı, akış (streaming) kod çözme

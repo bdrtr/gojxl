@@ -60,14 +60,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %d components", jpeg.ErrUnsupported, len(j.Comps))
 	}
 	// colour transform as libjxl decides it
-	rgb := false
-	if !grey && !j.JFIF {
-		if j.Adobe {
-			rgb = j.AdobeTransf == 0
-		} else {
-			rgb = j.Comps[0].ID == 'R' && j.Comps[1].ID == 'G' && j.Comps[2].ID == 'B'
-		}
-	}
+	rgb := j.RGB()
 	// JPEG XL channel c <- JPEG component jc[c]
 	jc := [3]int{1, 0, 2} // YCbCr: (Cb, Y, Cr)
 	switch {
@@ -113,6 +106,102 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		cp := &j.Comps[jc[c]]
 		o := (by*cp.BW + bx) * 64
 		return cp.Coef[o : o+64]
+	}
+
+	// Chroma from luma (4:4:4 colour only), as libjxl does it: per 64x64
+	// tile, the integer factor that makes the most chroma coefficients
+	// cancel; applied in exact fixed point so it is reversible.
+	cfl := !grey && maxHS == 0 && maxVS == 0
+	tw, th := (bw+7)/8, (bh+7)/8
+	var cmap [3][]int32 // per tile factor for channels 0 and 2
+	var sq [3][64]int32 // (2^11 * qY / qC) per natural position
+	if cfl {
+		qY := &j.Quant[j.Comps[jc[1]].Tq]
+		for _, c := range []int{0, 2} {
+			qC := &j.Quant[j.Comps[jc[c]].Tq]
+			for n := 0; n < 64; n++ {
+				r := (int32(1) << 11) * int32(qY[n]) / int32(qC[n])
+				if r > 256<<11-1 {
+					cfl = false
+				}
+				sq[c][n] = r
+			}
+		}
+	}
+	if cfl {
+		const kScale, kOffset = 84.0, 127
+		zeroThresh := float32(kScale * 0.5 * 0.9999)
+		for _, c := range []int{0, 2} {
+			cmap[c] = make([]int32, tw*th)
+			parallel(th, func(ty int) {
+				for tx := 0; tx < tw; tx++ {
+					var dz [257]int32
+					for by := ty * 8; by < min(bh, ty*8+8); by++ {
+						for bx := tx * 8; bx < min(bw, tx*8+8); bx++ {
+							ym, cs := block(1, bx, by), block(c, bx, by)
+							for n := 1; n < 64; n++ {
+								m := float32(ym[n]) * (1.0 / 2048) * float32(sq[c][n])
+								s := kScale*float32(cs[n]) + kOffset*m
+								if m > 1e-8 || m < -1e-8 {
+									var from, to float32
+									if m > 0 {
+										from, to = (s-zeroThresh)/m, (s+zeroThresh)/m
+									} else {
+										from, to = (s+zeroThresh)/m, (s-zeroThresh)/m
+									}
+									from = max(from, 0)
+									to = min(to, 255)
+									if from <= to {
+										dz[int(math.Ceil(float64(from)))]++
+										dz[int(math.Floor(float64(to+1)))]--
+									}
+								}
+							}
+						}
+					}
+					var maxv, v int32
+					b0, b1 := 0, 0
+					for i := 0; i < 256; i++ {
+						v += dz[i]
+						if v > maxv {
+							maxv, b0 = v, i
+						}
+						if v == maxv {
+							b1 = i
+						}
+					}
+					best := (b0 + b1 + 1) >> 1
+					var off int32
+					for i := 0; i <= kOffset; i++ {
+						off += dz[i]
+					}
+					if maxv > off+1 {
+						cmap[c][ty*tw+tx] = int32(best - kOffset)
+					}
+				}
+			})
+		}
+	}
+	// acBlock returns the AC coefficients of a block of channel c (in
+	// channel block coordinates) in the decoder's transposed layout, with
+	// chroma from luma removed.
+	acBlock := func(c, bx, by int, q *[64]int32) {
+		src := block(c, bx, by)
+		if !cfl || c == 1 || cmap[c][(by/8)*tw+bx/8] == 0 {
+			for y := 0; y < 8; y++ {
+				for x := 0; x < 8; x++ {
+					q[x*8+y] = int32(src[y*8+x])
+				}
+			}
+			return
+		}
+		scale := cmap[c][(by/8)*tw+bx/8] * (1 << 11) / 84
+		ys := block(1, bx, by)
+		for n := 0; n < 64; n++ {
+			cs := (scale*sq[c][n] + 1<<10) >> 11
+			f := (int32(ys[n])*cs + 1<<10) >> 11
+			q[(n%8)*8+n/8] = int32(src[n]) - f
+		}
 	}
 
 	// dcValue is the quantised DC as stored in the LF image.
@@ -199,12 +288,11 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 			cbh := bh >> vs[c]
 			for by := 0; by < cbh; by++ {
 				for bx := 0; bx < cbw[c]; bx++ {
-					src := block(c, bx, by)
-					for y := 0; y < 8; y++ {
-						for x := 0; x < 8; x++ {
-							if src[y*8+x] != 0 {
-								nzc[c][x*8+y]++
-							}
+					var q [64]int32
+					acBlock(c, bx, by, &q)
+					for k, v := range q {
+						if v != 0 {
+							nzc[c][k]++
 						}
 					}
 				}
@@ -234,12 +322,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 					if (lx>>hs[c])<<hs[c] != lx || (ly>>vs[c])<<vs[c] != ly {
 						continue
 					}
-					src := block(c, bx>>hs[c], by>>vs[c])
-					for y := 0; y < 8; y++ {
-						for x := 0; x < 8; x++ {
-							q[x*8+y] = int32(src[y*8+x])
-						}
-					}
+					acBlock(c, bx>>hs[c], by>>vs[c], &q)
 					bctx := int(ctxMap[i*13*numDC+dcIdx(bx, by)])
 					sx, sy := lx>>hs[c], ly>>vs[c]
 					var pred int32
@@ -371,6 +454,15 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		ltw, lth := (cw+7)/8, (chh+7)/8
 		cx := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
 		cb := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
+		if cfl {
+			for y := 0; y < lth; y++ {
+				for x := 0; x < ltw; x++ {
+					t := (y0/8+y)*tw + x0/8 + x
+					cx.pix[y*ltw+x] = cmap[0][t]
+					cb.pix[y*ltw+x] = cmap[2][t]
+				}
+			}
+		}
 		sh := channel{w: cw, h: chh, pix: make([]int32, cw*chh)}
 		writeModularLocal(w, []channel{cx, cb, acs, sh})
 	}

@@ -140,12 +140,22 @@ func toPlanar(img image.Image) *enc.Image {
 
 // TranscodeJPEG losslessly recompresses a JPEG file into JPEG XL: the DCT
 // coefficients are kept, so decoding gives the same image as decoding the
-// JPEG (typically ~20% smaller).
+// JPEG (typically ~20% smaller), and a 'jbrd' box allows decoders to
+// restore the original JPEG file byte for byte.
 func TranscodeJPEG(data []byte) (out []byte, err error) {
 	defer recoverErr(&err)
 	j, err := jpeg.Parse(data)
 	if err != nil {
 		return nil, err
 	}
-	return enc.EncodeJPEG(j)
+	cs, err := enc.EncodeJPEG(j)
+	if err != nil {
+		return nil, err
+	}
+	// reconstruction data so the original file can be restored exactly
+	jbrd, err := enc.EncodeJBRD(j)
+	if err != nil {
+		return cs, nil
+	}
+	return enc.WrapContainer(cs, jbrd), nil
 }
