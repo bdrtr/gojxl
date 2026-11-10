@@ -438,6 +438,7 @@ func llfFromDC(t int, dc *Plane, bx, by int, c []float32) {
 
 // finish dequantizes and transforms all groups into XYB planes.
 func (v *vardctState) finish() error {
+	v.captureAC()
 	fh := v.fh
 	ih := v.fd.ih
 	for c := 0; c < 3; c++ {

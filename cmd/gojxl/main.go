@@ -3,13 +3,16 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"image"
-	_ "image/jpeg"
+	"image/jpeg"
 	"image/png"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"gojxl"
@@ -54,6 +57,7 @@ func cmdDecode(args []string) {
 	depth := fs.Int("depth", 0, "output bit depth (16 forces 16-bit PNG)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	memprof := fs.String("memprofile", "", "write allocation profile to file")
+	quality := fs.Int("q", 90, "JPEG quality when the output is .jpg and no original JPEG is stored")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
@@ -69,6 +73,38 @@ func cmdDecode(args []string) {
 		}
 		pprof.StartCPUProfile(pf)
 		defer pprof.StopCPUProfile()
+	}
+	if fs.NArg() >= 2 {
+		ext := strings.ToLower(filepath.Ext(fs.Arg(1)))
+		if ext == ".jpg" || ext == ".jpeg" {
+			// JPEG output: restore the original JPEG when the file is a
+			// recompressed JPEG, otherwise encode the pixels.
+			t0 := time.Now()
+			jpg, err := gojxl.ReconstructJPEG(data)
+			if err == nil {
+				if err := os.WriteFile(fs.Arg(1), jpg, 0o644); err != nil {
+					fatal(err)
+				}
+				fmt.Fprintf(os.Stderr, "JPEG reconstructed: %d bytes, %v\n", len(jpg), time.Since(t0))
+				return
+			}
+			if !errors.Is(err, gojxl.ErrNoJPEG) {
+				fatal(err)
+			}
+			img, err := gojxl.DecodeBytes(data)
+			if err != nil {
+				fatal(err)
+			}
+			f, err := os.Create(fs.Arg(1))
+			if err != nil {
+				fatal(err)
+			}
+			if err := jpeg.Encode(f, img, &jpeg.Options{Quality: *quality}); err != nil {
+				fatal(err)
+			}
+			f.Close()
+			return
+		}
 	}
 	t0 := time.Now()
 	opt := &gojxl.Options{Force16: *depth == 16}

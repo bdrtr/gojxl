@@ -2,6 +2,7 @@ package gojxl
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -92,5 +93,47 @@ func TestTranscodeJPEGCorrupt(t *testing.T) {
 			}
 		}
 		TranscodeJPEG(d) // must not panic
+	}
+}
+
+func TestReconstructJPEG(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	for _, q := range []int{50, 90} {
+		for _, grey := range []bool{false, true} {
+			var src image.Image = testPhoto(203, 117, r)
+			if grey {
+				g := image.NewGray(src.Bounds())
+				for y := 0; y < 117; y++ {
+					for x := 0; x < 203; x++ {
+						g.Set(x, y, src.At(x, y))
+					}
+				}
+				src = g
+			}
+			var buf bytes.Buffer
+			jpeg.Encode(&buf, src, &jpeg.Options{Quality: q})
+			jxl, err := TranscodeJPEG(buf.Bytes())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !HasJPEG(jxl) {
+				// Go writes an unused second quantisation table for grey
+				// images, which jbrd cannot represent (libjxl neither).
+				if grey {
+					if _, err := ReconstructJPEG(jxl); !errors.Is(err, ErrNoJPEG) {
+						t.Fatalf("expected ErrNoJPEG, got %v", err)
+					}
+					continue
+				}
+				t.Fatal("no jbrd box")
+			}
+			back, err := ReconstructJPEG(jxl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(back, buf.Bytes()) {
+				t.Fatalf("q=%d grey=%v: reconstructed JPEG differs", q, grey)
+			}
+		}
 	}
 }

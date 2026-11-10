@@ -41,6 +41,7 @@ type Decoder struct {
 	targetDone bool
 	cmyk       *cmykTransform
 	cmykDone   bool
+	capture    *JPEGCoeffs
 }
 
 // CMYK returns the CMYK -> sRGB transform, or nil for non-CMYK images (or

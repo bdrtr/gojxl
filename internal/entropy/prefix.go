@@ -300,3 +300,16 @@ func readPrefixComplex(br *bitio.Reader, alphabetSize, hskip uint32) (*prefixHis
 	}
 	return newPrefixFromLengths(lengths)
 }
+
+// PrefixCode is a Brotli-style prefix code (as used by both JPEG XL and
+// Brotli streams).
+type PrefixCode struct{ h *prefixHistogram }
+
+// ReadPrefixCode reads a simple or complex prefix code description.
+func ReadPrefixCode(br *bitio.Reader, alphabetSize uint32) (PrefixCode, error) {
+	h, err := readPrefixHistogram(br, alphabetSize)
+	return PrefixCode{h}, err
+}
+
+// Read decodes one symbol.
+func (p PrefixCode) Read(br *bitio.Reader) uint32 { return p.h.readSymbol(br) }

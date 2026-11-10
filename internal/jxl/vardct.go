@@ -190,6 +190,7 @@ func newVarDCTState(fd *frameDecoder) *vardctState {
 	}
 	v.qf = make([]int32, n)
 	v.sharp = make([]uint8, n)
+	defer v.initCapture()
 	v.tw = divCeil(v.bw, 8)
 	th := divCeil(v.bh, 8)
 	v.ytox = make([]int8, v.tw*th)
@@ -292,6 +293,7 @@ func (v *vardctState) decodeLfGroup(br *bitio.Reader, g int) error {
 		return err
 	}
 	mul := float32(1) / float32(uint32(1)<<extra)
+	v.captureDC(img, x0, y0)
 	qx, qy, qb := img.Channels[1], img.Channels[0], img.Channels[2]
 	if !v.sub {
 		fx, fy, fb := v.mulDC(0)*mul, v.mulDC(1)*mul, v.mulDC(2)*mul

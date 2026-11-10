@@ -40,8 +40,11 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - JPEG niceleme tabloları RAW dequant matrisi, luma-DC kovalı blok bağlam
   haritası, istatistiğe göre katsayı sırası, öğrenilmiş ağaçla DC, ICC korunur
 - Tam sayı-tam JPEG CfL (4:4:4 ve RGB JPEG'lerde büyük kazanç)
-- **`jbrd` kutusu**: orijinal JPEG dosyası bayt-birebir geri üretilebilir
-  (`djxl foto.jxl foto.jpg`); ICC parçaları codestream'deki profilden kurulur
+- **`jbrd` kutusu**: orijinal JPEG dosyası bayt-birebir geri üretilebilir;
+  ICC parçaları codestream'deki profilden kurulur
+- **JXL → JPEG geri üretim** gojxl'in kendisinde: `gojxl decode foto.jxl foto.jpg`
+  hem gojxl'in hem cjxl'in dosyalarından orijinal JPEG'i bayt-birebir verir
+  (saf Go Brotli çözücü, progressive/restart/CfL/Exif/XMP/ICC dahil)
 - Test: cjpeg/jpegtran/ImageMagick/ffmpeg/Pillow/Go ile üretilmiş ve sistemdeki
   gerçek JPEG'lerin hepsi (baseline, progressive, restart, 4:2:0/4:2:2/4:4:0/4:4:4,
   gri, RGB, EXIF/XMP/ICC/COM, kuyruk verisi) djxl ile bayt-birebir geri döner
@@ -70,6 +73,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl decode resim.jxl cikti.png          # JXL → PNG
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
+./gojxl decode foto.jxl foto.jpg            # yeniden sıkıştırılmış JPEG'i aynen geri ver
 ./gojxl encode girdi.png cikti.jxl          # PNG → kayıpsız JXL (efor 4)
 ./gojxl encode foto.jpg foto.jxl            # JPEG → JXL kayıpsız yeniden sıkıştırma (~%15-30 küçük)
 ./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
@@ -87,6 +91,7 @@ anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 jxlData, err := gojxl.TranscodeJPEG(jpegBytes)                     // JPEG → JXL
+jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → orijinal JPEG
 ```
 
 `image.Decode` ile de çalışır (paket `init` içinde format kaydı yapar).
@@ -142,7 +147,8 @@ internal/bitio     LSB-first bit okuyucu/yazıcı, U32/U64/F16
 internal/entropy   ANS/prefix/LZ77/bağlam haritası kod çözücü
 internal/jxl       header'lar, Modular, VarDCT, filtreler, render, blending
 internal/enc       kodlayıcılar: Modular (ağaç öğrenme, ANS), VarDCT, JPEG yeniden sıkıştırma
-internal/jpeg      JPEG katsayı ayrıştırıcı (baseline + progressive)
+internal/jpeg      JPEG ayrıştırıcı/yazıcı (baseline + progressive, bayt-birebir), jbrd
+internal/brotli    Brotli (RFC 7932) çözücü
 cmd/gojxl          CLI
 ```
 
@@ -167,6 +173,5 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - LZ77, grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+)
 - HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
-- JXL → JPEG yeniden oluşturmanın gojxl kod çözücüsüne eklenmesi (Brotli çözücü gerekli)
 - ICC profilleri için libjxl tarzı tahmin (büyük ICC'lerde daha küçük dosya)
 - APNG/animasyon çıktısı, akış (streaming) kod çözme
