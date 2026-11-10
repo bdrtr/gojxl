@@ -161,10 +161,7 @@ func (fd *frameDecoder) colorTransform() {
 	if ih.XYBEncoded {
 		xybToLinearSRGB(fd.color, &ih.Opsin, ih.ToneMapping.IntensityTarget)
 		// output in sRGB transfer (or linear if the image says so)
-		tf := ih.Colour.TransferFunction
-		if ih.Colour.WantICC || ih.Colour.ColourSpace == CSXYB {
-			tf = TFSRGB
-		}
+		tf := xybOutputTF(ih)
 		applyTransferFromLinear(fd.color, tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
 		if ih.IsGrey() {
 			// keep luminance in channel 0 (Y of a grey image ends up equal in RGB)

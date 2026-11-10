@@ -25,10 +25,7 @@ func newXYBConv(ih *ImageHeader) *xybConv {
 		c.bias[i] = o.OpsinBias[i]
 		c.cbrtBias[i] = float32(math.Cbrt(float64(o.OpsinBias[i])))
 	}
-	tf := ih.Colour.TransferFunction
-	if ih.Colour.WantICC || ih.Colour.ColourSpace == CSXYB {
-		tf = TFSRGB
-	}
+	tf := xybOutputTF(ih)
 	if tf == TFLinear {
 		c.linear = true
 		return c
@@ -96,3 +93,9 @@ func (f *Frame) Materialize() {
 	}
 	f.conv = nil
 }
+
+// xybOutputTF selects the transfer function for XYB images. The inverse
+// XYB transform yields linear sRGB primaries and decoded images are
+// delivered untagged, so sRGB is always used to keep pixels correctly
+// labelled (wide-gamut/HDR content is clipped to sRGB).
+func xybOutputTF(ih *ImageHeader) uint32 { return TFSRGB }
