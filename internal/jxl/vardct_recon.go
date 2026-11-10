@@ -145,7 +145,7 @@ func dct1dScaled(x []float32, out []float32) {
 // if rows < cols, in is rows x cols (natural); otherwise in is cols x rows
 // (transposed). Output pixels are written to out with the given stride.
 // in is clobbered.
-func scaledIDCT2D(rows, cols int, in []float32, out []float32, stride int, scratch []float32) {
+func scaledIDCT2DScalar(rows, cols int, in []float32, out []float32, stride int, scratch []float32) {
 	m := max(rows, cols)
 	tmp := scratch[:2*m]
 	col := scratch[2*m : 3*m]

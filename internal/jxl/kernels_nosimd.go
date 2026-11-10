@@ -16,3 +16,7 @@ func plusRow(out, up, mid, dn []float32)              { plusRowScalar(out, up, m
 func gabRow(o, t, m, b []float32, w0, w1, w2 float32) { gabRowScalar(o, t, m, b, w0, w1, w2) }
 func epfRow4(a *epf4Args)                             { epfRow4Scalar(a, 0) }
 func xybRow(c *xybConv, x, y, b, r, g, bo []float32)  { xybRowScalar(c, x, y, b, r, g, bo) }
+
+func scaledIDCT2D(rows, cols int, in, out []float32, stride int, scratch []float32) {
+	scaledIDCT2DScalar(rows, cols, in, out, stride, scratch)
+}

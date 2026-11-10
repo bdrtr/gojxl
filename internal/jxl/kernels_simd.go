@@ -228,3 +228,101 @@ func xybRow(c *xybConv, x, y, b, r, g, bo []float32) {
 		xybRowScalar(c, x[i:], y[i:], b[i:], r[i:], g[i:], bo[i:])
 	}
 }
+
+// idctNv performs an N-point scaled IDCT across N vectors (N power of two).
+func idctNv(x, tmp []v8) {
+	n := len(x)
+	switch n {
+	case 1:
+		return
+	case 2:
+		a, b := x[0], x[1]
+		x[0], x[1] = a.Add(b), a.Sub(b)
+		return
+	case 8:
+		idct8v((*[8]v8)(x))
+		return
+	}
+	h := n / 2
+	for i := 0; i < h; i++ {
+		tmp[i] = x[2*i]
+		tmp[h+i] = x[2*i+1]
+	}
+	odd := tmp[h:n]
+	for i := h - 1; i > 0; i-- {
+		odd[i] = odd[i].Add(odd[i-1])
+	}
+	odd[0] = odd[0].Mul(bc(sqrt2))
+	idctNv(tmp[:h], x[:h])
+	idctNv(odd, x[h:n])
+	sh := secHalf(n)
+	for i := 0; i < h; i++ {
+		a := tmp[i]
+		b := tmp[h+i].Mul(bc(sh[i]))
+		x[i] = a.Add(b)
+		x[n-1-i] = a.Sub(b)
+	}
+}
+
+// idctRowsV applies a rowLen-point IDCT to each of nrows contiguous rows,
+// eight rows at a time via 8x8 transposes (nrows, rowLen multiples of 8).
+func idctRowsV(in []float32, nrows, rowLen int, vbuf, vtmp []v8) {
+	v := vbuf[:rowLen]
+	for r0 := 0; r0 < nrows; r0 += 8 {
+		for x0 := 0; x0 < rowLen; x0 += 8 {
+			blk := (*[8]v8)(v[x0 : x0+8])
+			for k := 0; k < 8; k++ {
+				blk[k] = ld(in[(r0+k)*rowLen+x0:])
+			}
+			transpose8(blk)
+		}
+		idctNv(v, vtmp[:rowLen])
+		for x0 := 0; x0 < rowLen; x0 += 8 {
+			blk := (*[8]v8)(v[x0 : x0+8])
+			transpose8(blk)
+			for k := 0; k < 8; k++ {
+				st(blk[k], in[(r0+k)*rowLen+x0:])
+			}
+		}
+	}
+}
+
+func scaledIDCT2D(rows, cols int, in, out []float32, stride int, scratch []float32) {
+	if !useSIMD || rows%8 != 0 || cols%8 != 0 {
+		scaledIDCT2DScalar(rows, cols, in, out, stride, scratch)
+		return
+	}
+	var vbuf, vtmp [256]v8
+	if rows < cols {
+		// natural layout: horizontal pass on rows, vertical pass vectorised
+		idctRowsV(in, rows, cols, vbuf[:], vtmp[:])
+		v := vbuf[:rows]
+		for x0 := 0; x0 < cols; x0 += 8 {
+			for r := range v {
+				v[r] = ld(in[r*cols+x0:])
+			}
+			idctNv(v, vtmp[:rows])
+			for y := range v {
+				st(v[y], out[y*stride+x0:])
+			}
+		}
+		return
+	}
+	// transposed layout in[a*rows+y]: vertical pass on contiguous runs,
+	// horizontal pass vectorised over 8 rows, then 8x8 transposes.
+	idctRowsV(in, cols, rows, vbuf[:], vtmp[:])
+	v := vbuf[:cols]
+	for y0 := 0; y0 < rows; y0 += 8 {
+		for a := range v {
+			v[a] = ld(in[a*rows+y0:])
+		}
+		idctNv(v, vtmp[:cols])
+		for x0 := 0; x0 < cols; x0 += 8 {
+			blk := (*[8]v8)(v[x0 : x0+8])
+			transpose8(blk)
+			for k := 0; k < 8; k++ {
+				st(blk[k], out[(y0+k)*stride+x0:])
+			}
+		}
+	}
+}

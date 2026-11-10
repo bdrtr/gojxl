@@ -30,7 +30,8 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 ## Kurulum ve kullanım
 
 ```sh
-go build -o gojxl ./cmd/gojxl
+go build -o gojxl ./cmd/gojxl                       # taşınabilir, skaler
+GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekleri (amd64)
 
 ./gojxl decode resim.jxl cikti.png          # JXL → PNG
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
@@ -97,9 +98,20 @@ Kod çözme grup bazında paraleldir; filtreler (EPF/Gaborish) önbellekte
 kalacak şekilde karolara bölünmüştür; son renk dönüşümü (XYB→sRGB→8-bit)
 çıktı tamponuna tek geçişte yazılır.
 
+## SIMD
+
+`GOEXPERIMENT=simd` ile derlendiğinde (Go 1.26+, amd64) `simd/archsimd`
+paketiyle yazılmış vektör çekirdekleri devreye girer; CPU AVX2+FMA
+desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (cgo/asm yok).
+
+| Çekirdek | skaler | SIMD | hızlanma |
+|---|---|---|---|
+| 8×8 IDCT | 97 ns | 42 ns | 2.3× |
+| 32×32 IDCT | 5.5 µs | 1.5 µs | 3.6× |
+| EPF satırı (256 px) | 4.2 µs | 0.6 µs | 6.8× |
+
 ## Yol haritası
 
-- SIMD çekirdekleri (`simd/archsimd`, GOEXPERIMENT=simd, build tag ile isteğe bağlı)
 - Kayıplı (VarDCT) kodlayıcı, MA ağacı öğrenme, LZ77
 - ICC tabanlı renk yönetimi (CMYK, orijinal uzaya çıktı)
 - APNG/animasyon çıktısı, akış (streaming) kod çözme
