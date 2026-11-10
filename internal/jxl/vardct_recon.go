@@ -3,25 +3,26 @@ package jxl
 import (
 	"fmt"
 	"math"
+	"math/bits"
 	"os"
-	"sync"
 )
 
 const sqrt2 = float32(math.Sqrt2)
 
-var secHalfTables sync.Map // N -> []float32
+var secHalfTab = func() (t [9][]float32) {
+	for lg := 1; lg <= 8; lg++ {
+		n := 1 << lg
+		t[lg] = make([]float32, n/2)
+		for i := range t[lg] {
+			t[lg][i] = float32(1 / (2 * math.Cos((float64(i)+0.5)*math.Pi/float64(n))))
+		}
+	}
+	return
+}()
 
 // secHalf returns 1/(2*cos((i+0.5)*pi/N)) for i < N/2.
 func secHalf(n int) []float32 {
-	if t, ok := secHalfTables.Load(n); ok {
-		return t.([]float32)
-	}
-	t := make([]float32, n/2)
-	for i := range t {
-		t[i] = float32(1 / (2 * math.Cos((float64(i)+0.5)*math.Pi/float64(n))))
-	}
-	secHalfTables.Store(n, t)
-	return t
+	return secHalfTab[bits.TrailingZeros(uint(n))]
 }
 
 // idct1d computes the scaled inverse DCT in place:
@@ -35,6 +36,9 @@ func idct1d(x, tmp []float32) {
 	case 2:
 		a, b := x[0], x[1]
 		x[0], x[1] = a+b, a-b
+		return
+	case 8:
+		idct8(x)
 		return
 	case 4:
 		// even part
@@ -75,6 +79,52 @@ func idct1d(x, tmp []float32) {
 	}
 }
 
+var (
+	sec4  = secHalfTab[2]
+	sec8  = secHalfTab[3]
+	sec4a = sec4[0]
+	sec4b = sec4[1]
+)
+
+// idct8 is an unrolled 8-point scaled IDCT.
+func idct8(x []float32) {
+	_ = x[7]
+	// even part: 4-point IDCT of x0,x2,x4,x6
+	e0 := x[0] + x[4]
+	e1 := x[0] - x[4]
+	eo1 := x[6] + x[2]
+	eo0 := x[2] * sqrt2
+	ep0 := (eo0 + eo1) * sec4a
+	ep1 := (eo0 - eo1) * sec4b
+	E0 := e0 + ep0
+	E3 := e0 - ep0
+	E1 := e1 + ep1
+	E2 := e1 - ep1
+	// odd part: B transpose of x1,x3,x5,x7 then 4-point IDCT
+	o0 := x[1] * sqrt2
+	o1 := x[3] + x[1]
+	o2 := x[5] + x[3]
+	o3 := x[7] + x[5]
+	f0 := o0 + o2
+	f1 := o0 - o2
+	fo1 := o3 + o1
+	fo0 := o1 * sqrt2
+	fp0 := (fo0 + fo1) * sec4a
+	fp1 := (fo0 - fo1) * sec4b
+	O0 := (f0 + fp0) * sec8[0]
+	O3 := (f0 - fp0) * sec8[3]
+	O1 := (f1 + fp1) * sec8[1]
+	O2 := (f1 - fp1) * sec8[2]
+	x[0] = E0 + O0
+	x[7] = E0 - O0
+	x[1] = E1 + O1
+	x[6] = E1 - O1
+	x[2] = E2 + O2
+	x[5] = E2 - O2
+	x[3] = E3 + O3
+	x[4] = E3 - O3
+}
+
 // dct1dScaled computes the forward scaled DCT (c[0] = mean) directly.
 func dct1dScaled(x []float32, out []float32) {
 	n := len(x)
@@ -94,37 +144,54 @@ func dct1dScaled(x []float32, out []float32) {
 // scaledIDCT2D performs a rows x cols IDCT using libjxl's coefficient layout:
 // if rows < cols, in is rows x cols (natural); otherwise in is cols x rows
 // (transposed). Output pixels are written to out with the given stride.
+// in is clobbered.
 func scaledIDCT2D(rows, cols int, in []float32, out []float32, stride int, scratch []float32) {
-	nat := scratch[:rows*cols]
+	m := max(rows, cols)
+	tmp := scratch[:2*m]
+	col := scratch[2*m : 3*m]
 	if rows < cols {
-		copy(nat, in[:rows*cols])
-	} else {
 		for r := 0; r < rows; r++ {
-			for c := 0; c < cols; c++ {
-				nat[r*cols+c] = in[c*rows+r]
-			}
+			idct1d(in[r*cols:(r+1)*cols], tmp)
 		}
-	}
-	tmp := scratch[rows*cols : rows*cols+2*max(rows, cols)]
-	col := scratch[rows*cols+2*max(rows, cols) : rows*cols+3*max(rows, cols)]
-	// horizontal
-	for r := 0; r < rows; r++ {
-		idct1d(nat[r*cols:(r+1)*cols], tmp)
-	}
-	// vertical
-	if rows > 1 {
-		for c := 0; c < cols; c++ {
-			cl := col[:rows]
-			for r := 0; r < rows; r++ {
-				cl[r] = nat[r*cols+c]
+		cl := col[:rows]
+		for x := 0; x < cols; x++ {
+			for r := range cl {
+				cl[r] = in[r*cols+x]
 			}
 			idct1d(cl, tmp)
-			for r := 0; r < rows; r++ {
-				out[r*stride+c] = cl[r]
+			for r, v := range cl {
+				out[r*stride+x] = v
 			}
 		}
-	} else {
-		copy(out[:cols], nat[:cols])
+		return
+	}
+	for a := 0; a < cols; a++ {
+		idct1d(in[a*rows:(a+1)*rows], tmp)
+	}
+	cl := col[:cols]
+	for y := 0; y < rows; y++ {
+		for a := range cl {
+			cl[a] = in[a*rows+y]
+		}
+		idct1d(cl, tmp)
+		copy(out[y*stride:y*stride+cols], cl)
+	}
+}
+
+// idct8x8 is the DCT8 fast path (transposed storage).
+func idct8x8(c []float32, out []float32, stride int) {
+	_ = c[63]
+	for a := 0; a < 8; a++ {
+		idct8(c[a*8 : a*8+8])
+	}
+	var cl [8]float32
+	for y := 0; y < 8; y++ {
+		cl[0], cl[1], cl[2], cl[3] = c[y], c[8+y], c[16+y], c[24+y]
+		cl[4], cl[5], cl[6], cl[7] = c[32+y], c[40+y], c[48+y], c[56+y]
+		idct8(cl[:])
+		o := out[y*stride : y*stride+8 : y*stride+8]
+		o[0], o[1], o[2], o[3] = cl[0], cl[1], cl[2], cl[3]
+		o[4], o[5], o[6], o[7] = cl[4], cl[5], cl[6], cl[7]
 	}
 }
 
@@ -322,6 +389,8 @@ func transformToPixels(t int, c []float32, out []float32, stride int, scratch []
 		}
 	case 14, 15, 16, 17:
 		afvTransform(t-14, c, out, stride, scratch)
+	case acsDCT:
+		idct8x8(c, out, stride)
 	default:
 		rows, cols := 8*acsCoveredY[t], 8*acsCoveredX[t]
 		scaledIDCT2D(rows, cols, c, out, stride, scratch)
@@ -372,7 +441,7 @@ func (v *vardctState) finish() error {
 	fh := v.fh
 	ih := v.fd.ih
 	for c := 0; c < 3; c++ {
-		v.out[c] = newPlane((v.bw*8)>>v.hs[c], (v.bh*8)>>v.vs[c])
+		v.out[c] = getPlane((v.bw*8)>>v.hs[c], (v.bh*8)>>v.vs[c])
 	}
 	// make sure tables for used strategies are ready
 	for t := 0; t < numACS; t++ {
@@ -387,25 +456,28 @@ func (v *vardctState) finish() error {
 	invGS := float32(65536.0 / float64(v.globalScale))
 	biases := ih.Opsin.QuantBias
 	numer := ih.Opsin.QuantBiasNumerator
-	adjust := func(q int32, c int) float32 {
-		switch {
-		case q == 0:
-			return 0
-		case q == 1:
-			return biases[c]
-		case q == -1:
-			return -biases[c]
-		}
-		f := float32(q)
-		return f - numer/f
+	type wscratch struct {
+		coef    [3][]float32
+		scratch []float32
 	}
-	err := parallelFor(len(v.groups), func(g int) error {
-		gc := v.groups[g]
-		var coef [3][]float32
-		for c := 0; c < 3; c++ {
-			coef[c] = make([]float32, 256*256)
+	ws := make([]*wscratch, numWorkers())
+	maxN := 64
+	for t := 0; t < numACS; t++ {
+		if v.usedACS&(1<<t) != 0 {
+			maxN = max(maxN, 64*acsCoveredX[t]*acsCoveredY[t])
 		}
-		scratch := make([]float32, 256*256+3*256)
+	}
+	err := parallelForW(len(v.groups), func(wk, g int) error {
+		gc := v.groups[g]
+		if ws[wk] == nil {
+			w := &wscratch{scratch: make([]float32, maxN+3*256)}
+			for c := 0; c < 3; c++ {
+				w.coef[c] = make([]float32, maxN)
+			}
+			ws[wk] = w
+		}
+		coef := ws[wk].coef
+		scratch := ws[wk].scratch
 		for vi := range gc.vbs {
 			vb := &gc.vbs[vi]
 			t := int(vb.typ)
@@ -419,11 +491,22 @@ func (v *vardctState) finish() error {
 					continue
 				}
 				q := gc.coef[c][vb.off[c] : int(vb.off[c])+n]
-				m := tables[c]
+				m := tables[c][:n]
 				o := coef[c][:n]
 				mul := muls[c]
-				for k := 0; k < n; k++ {
-					o[k] = adjust(q[k], c) * m[k] * mul
+				bias := biases[c]
+				for k, qv := range q {
+					switch {
+					case qv == 0:
+						o[k] = 0
+					case qv == 1:
+						o[k] = bias * m[k] * mul
+					case qv == -1:
+						o[k] = -bias * m[k] * mul
+					default:
+						f := float32(qv)
+						o[k] = (f - numer/f) * m[k] * mul
+					}
 				}
 			}
 			if !v.sub {

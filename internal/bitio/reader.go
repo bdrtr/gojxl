@@ -94,11 +94,21 @@ func (r *Reader) Read(n uint) uint32 {
 	if r.nbits < n {
 		r.refill()
 	}
-	v := r.buf & ((1 << n) - 1)
+	n &= 63
+	v := r.buf & (1<<n - 1)
 	r.buf >>= n
 	r.nbits -= n
 	return uint32(v)
 }
+
+// State exposes the raw bit buffer for hot decoding loops: callers may
+// consume bits from buf (LSB first) as long as they keep nbits in sync and
+// call SetState afterwards. Refill must be called before taking the state
+// to guarantee at least 56 valid bits.
+func (r *Reader) State() (buf uint64, nbits uint) { return r.buf, r.nbits }
+
+// SetState stores back a buffer state obtained from State.
+func (r *Reader) SetState(buf uint64, nbits uint) { r.buf, r.nbits = buf, nbits }
 
 // Read64 reads up to 64 bits.
 func (r *Reader) Read64(n uint) uint64 {

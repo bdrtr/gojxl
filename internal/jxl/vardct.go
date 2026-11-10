@@ -773,11 +773,12 @@ func (v *vardctState) decodePassGroup(br *bitio.Reader, pass, g int) error {
 			if nz <= 4*nb {
 				prev = 1
 			}
-			base := bctx*458 + 37*b.numCtx
+			cmb := cm[bctx*458+37*b.numCtx : bctx*458+37*b.numCtx+458]
 			n := int(64 * nb)
+			fctx := freqCtxTable(lg)
+			nzc := int(coeffNumNonzeroCtx[(nz-1)>>lg]) * 2
 			for k := int(nb); k < n; k++ {
-				ctx := (int(coeffNumNonzeroCtx[(nz-1)>>lg])+int(coeffFreqCtx[(k-int(nb))>>lg]))*2 + prev
-				u := dec.ReadUintClustered(br, cm[base+ctx])
+				u := dec.ReadUintClustered(br, cmb[nzc+int(fctx[k])+prev])
 				if u == 0 {
 					prev = 0
 					continue
@@ -788,6 +789,7 @@ func (v *vardctState) decodePassGroup(br *bitio.Reader, pass, g int) error {
 				if nz == 0 {
 					break
 				}
+				nzc = int(coeffNumNonzeroCtx[(nz-1)>>lg]) * 2
 			}
 			if nz != 0 {
 				return invalid("nonzero count mismatch")
@@ -798,4 +800,20 @@ func (v *vardctState) decodePassGroup(br *bitio.Reader, pass, g int) error {
 		}
 	}
 	return dec.Finish()
+}
+
+var freqCtxTables [11][]uint8
+var freqCtxOnce [11]sync.Once
+
+// freqCtxTable returns 2*coeffFreqCtx[(k-nb)>>lg] indexed by k.
+func freqCtxTable(lg uint) []uint8 {
+	freqCtxOnce[lg].Do(func() {
+		nb := 1 << lg
+		t := make([]uint8, 64*nb)
+		for k := nb; k < 64*nb; k++ {
+			t[k] = 2 * coeffFreqCtx[(k-nb)>>lg]
+		}
+		freqCtxTables[lg] = t
+	})
+	return freqCtxTables[lg]
 }

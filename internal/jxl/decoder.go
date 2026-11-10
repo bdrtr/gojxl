@@ -103,6 +103,9 @@ type Frame struct {
 	Duration      uint32
 	Name          string
 	IsLast        bool
+
+	conv *xybConv // non-nil: Color holds XYB, converted on output
+	grey bool
 }
 
 // Done reports whether all frames have been decoded.

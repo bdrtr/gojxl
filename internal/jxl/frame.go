@@ -4,6 +4,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"gojxl/internal/bitio"
 )
@@ -60,8 +61,53 @@ func (fd *frameDecoder) numSections() int {
 	return 2 + fd.fh.NumLFGroups + fd.fh.NumGroups*int(fd.fh.Passes.NumPasses)
 }
 
+// numWorkers returns the number of workers used by parallelForW.
+func numWorkers() int { return runtime.GOMAXPROCS(0) }
+
+// parallelForW is like parallelFor but also passes a worker index in
+// [0, numWorkers()) so callers can keep per-worker scratch buffers.
+func parallelForW(n int, fn func(w, i int) error) error {
+	workers := min(numWorkers(), n)
+	if workers <= 1 {
+		for i := 0; i < n; i++ {
+			if err := fn(0, i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var next atomic.Int64
+	var firstErr atomic.Value
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= n || firstErr.Load() != nil {
+					return
+				}
+				if err := fn(w, i); err != nil {
+					firstErr.CompareAndSwap(nil, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	if e := firstErr.Load(); e != nil {
+		return e.(error)
+	}
+	return nil
+}
+
 // parallelFor runs fn(i) for i in [0,n) using all CPUs.
 func parallelFor(n int, fn func(i int) error) error {
+	return parallelForW(n, func(_, i int) error { return fn(i) })
+}
+
+func parallelForOld(n int, fn func(i int) error) error {
 	workers := runtime.GOMAXPROCS(0)
 	if workers > n {
 		workers = n
@@ -116,6 +162,7 @@ func (fd *frameDecoder) decode() error {
 	if err := fd.decodeLfGlobal(br); err != nil {
 		return err
 	}
+	st := startStage()
 	// LF groups
 	lfg := func(g int) error {
 		r, err := fd.section(1 + g)
@@ -133,6 +180,8 @@ func (fd *frameDecoder) decode() error {
 	} else if err := parallelFor(fh.NumLFGroups, lfg); err != nil {
 		return err
 	}
+	st.done("lfgroups")
+	st = startStage()
 	// HF global
 	br, err = fd.section(1 + fh.NumLFGroups)
 	if err != nil {
@@ -167,6 +216,9 @@ func (fd *frameDecoder) decode() error {
 	if fd.toc.Single && fd.br.Overflowed() {
 		return bitio.ErrEOF
 	}
+	st.done("passgroups")
+	st = startStage()
+	defer st.done("finish")
 	return fd.finish()
 }
 
@@ -505,4 +557,25 @@ func intToFloat(v int32, bd BitDepth) float32 {
 		f = -f
 	}
 	return f
+}
+
+// plane pool to limit allocations of large temporary planes.
+var planePool sync.Pool
+
+func getPlane(w, h int) *Plane {
+	n := w * h
+	if v := planePool.Get(); v != nil {
+		p := v.(*Plane)
+		if cap(p.Pix) >= n {
+			p.W, p.H, p.Pix = w, h, p.Pix[:n]
+			return p
+		}
+	}
+	return newPlane(w, h)
+}
+
+func putPlane(p *Plane) {
+	if p != nil {
+		planePool.Put(p)
+	}
 }

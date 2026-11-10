@@ -2,7 +2,6 @@ package gojxl
 
 import (
 	"image"
-	"math"
 
 	"gojxl/internal/jxl"
 )
@@ -27,7 +26,7 @@ func q16(v float32) uint16 {
 	return uint16(v*65535 + 0.5)
 }
 
-// orientTransform maps output (ox,oy) -> source (sx,sy).
+// orient maps output (ox,oy) -> source (sx,sy).
 func orient(o int, w, h int) (ow, oh int, f func(ox, oy int) (int, int)) {
 	switch o {
 	case 2:
@@ -51,39 +50,111 @@ func orient(o int, w, h int) (ow, oh int, f func(ox, oy int) (int, int)) {
 func frameToImage(h *jxl.ImageHeader, f *jxl.Frame, opt *Options) image.Image {
 	w, ht := f.Width, f.Height
 	ai := h.AlphaChannel()
-	var alpha []float32
+	var alpha *jxl.Plane
 	if ai >= 0 && ai < len(f.EC) {
-		alpha = f.EC[ai].Pix
+		alpha = f.EC[ai]
 	}
 	deep := h.BitDepth.BitsPerSample > 8 || (opt != nil && opt.Force16)
 	grey := h.IsGrey()
 	ow, oh, tr := orient(int(h.Orientation), w, ht)
-	R, G, B := f.Color[0].Pix, f.Color[1].Pix, f.Color[2].Pix
-	idx := func(x, y int) int {
-		if tr != nil {
-			sx, sy := tr(x, y)
-			return sy*w + sx
-		}
-		return y*w + x
+
+	if tr != nil {
+		return orientedImage(f, alpha, deep, grey, ow, oh, tr)
 	}
-	_ = math.Abs
 	switch {
 	case grey && alpha == nil && !deep:
-		img := image.NewGray(image.Rect(0, 0, ow, oh))
-		for y := 0; y < oh; y++ {
-			row := img.Pix[y*img.Stride:]
-			for x := 0; x < ow; x++ {
-				row[x] = q8(R[idx(x, y)])
+		img := image.NewGray(image.Rect(0, 0, w, ht))
+		jxl.ParallelRows(ht, func(y0, y1 int) {
+			tmp := make([]float32, 3*w)
+			for y := y0; y < y1; y++ {
+				r, _, _ := f.RGBRow(y, tmp)
+				row := img.Pix[y*img.Stride : y*img.Stride+w]
+				for x := range row {
+					row[x] = q8(r[x])
+				}
 			}
-		}
+		})
 		return img
 	case grey && alpha == nil:
-		img := image.NewGray16(image.Rect(0, 0, ow, oh))
-		for y := 0; y < oh; y++ {
+		img := image.NewGray16(image.Rect(0, 0, w, ht))
+		jxl.ParallelRows(ht, func(y0, y1 int) {
+			tmp := make([]float32, 3*w)
+			for y := y0; y < y1; y++ {
+				r, _, _ := f.RGBRow(y, tmp)
+				row := img.Pix[y*img.Stride:]
+				for x := 0; x < w; x++ {
+					v := q16(r[x])
+					row[2*x], row[2*x+1] = uint8(v>>8), uint8(v)
+				}
+			}
+		})
+		return img
+	case !deep:
+		img := image.NewNRGBA(image.Rect(0, 0, w, ht))
+		jxl.ParallelRows(ht, func(y0, y1 int) {
+			tmp := make([]float32, 3*w)
+			for y := y0; y < y1; y++ {
+				r, g, b := f.RGBRow(y, tmp)
+				row := img.Pix[y*img.Stride : y*img.Stride+4*w]
+				if alpha != nil {
+					a := alpha.Row(y)
+					for x := 0; x < w; x++ {
+						o := row[4*x : 4*x+4 : 4*x+4]
+						o[0], o[1], o[2], o[3] = q8(r[x]), q8(g[x]), q8(b[x]), q8(a[x])
+					}
+				} else {
+					for x := 0; x < w; x++ {
+						o := row[4*x : 4*x+4 : 4*x+4]
+						o[0], o[1], o[2], o[3] = q8(r[x]), q8(g[x]), q8(b[x]), 255
+					}
+				}
+			}
+		})
+		return img
+	}
+	img := image.NewNRGBA64(image.Rect(0, 0, w, ht))
+	jxl.ParallelRows(ht, func(y0, y1 int) {
+		tmp := make([]float32, 3*w)
+		for y := y0; y < y1; y++ {
+			r, g, b := f.RGBRow(y, tmp)
 			row := img.Pix[y*img.Stride:]
+			var a []float32
+			if alpha != nil {
+				a = alpha.Row(y)
+			}
+			for x := 0; x < w; x++ {
+				o := row[8*x : 8*x+8 : 8*x+8]
+				rv, gv, bv := q16(r[x]), q16(g[x]), q16(b[x])
+				av := uint16(65535)
+				if a != nil {
+					av = q16(a[x])
+				}
+				o[0], o[1], o[2], o[3] = uint8(rv>>8), uint8(rv), uint8(gv>>8), uint8(gv)
+				o[4], o[5], o[6], o[7] = uint8(bv>>8), uint8(bv), uint8(av>>8), uint8(av)
+			}
+		}
+	})
+	return img
+}
+
+func orientedImage(f *jxl.Frame, alpha *jxl.Plane, deep, grey bool, ow, oh int, tr func(int, int) (int, int)) image.Image {
+	f.Materialize()
+	w := f.Width
+	R, G, B := f.Color[0].Pix, f.Color[1].Pix, f.Color[2].Pix
+	var A []float32
+	if alpha != nil {
+		A = alpha.Pix
+	}
+	idx := func(x, y int) int {
+		sx, sy := tr(x, y)
+		return sy*w + sx
+	}
+	switch {
+	case grey && A == nil && !deep:
+		img := image.NewGray(image.Rect(0, 0, ow, oh))
+		for y := 0; y < oh; y++ {
 			for x := 0; x < ow; x++ {
-				v := q16(R[idx(x, y)])
-				row[2*x], row[2*x+1] = uint8(v>>8), uint8(v)
+				img.Pix[y*img.Stride+x] = q8(R[idx(x, y)])
 			}
 		}
 		return img
@@ -93,13 +164,11 @@ func frameToImage(h *jxl.ImageHeader, f *jxl.Frame, opt *Options) image.Image {
 			row := img.Pix[y*img.Stride:]
 			for x := 0; x < ow; x++ {
 				i := idx(x, y)
-				o := row[4*x : 4*x+4 : 4*x+4]
-				o[0], o[1], o[2] = q8(R[i]), q8(G[i]), q8(B[i])
-				if alpha != nil {
-					o[3] = q8(alpha[i])
-				} else {
-					o[3] = 255
+				a := uint8(255)
+				if A != nil {
+					a = q8(A[i])
 				}
+				row[4*x], row[4*x+1], row[4*x+2], row[4*x+3] = q8(R[i]), q8(G[i]), q8(B[i]), a
 			}
 		}
 		return img
@@ -109,14 +178,17 @@ func frameToImage(h *jxl.ImageHeader, f *jxl.Frame, opt *Options) image.Image {
 		row := img.Pix[y*img.Stride:]
 		for x := 0; x < ow; x++ {
 			i := idx(x, y)
-			o := row[8*x : 8*x+8 : 8*x+8]
-			r, g, b := q16(R[i]), q16(G[i]), q16(B[i])
-			a := uint16(65535)
-			if alpha != nil {
-				a = q16(alpha[i])
+			av := uint16(65535)
+			if A != nil {
+				av = q16(A[i])
 			}
-			o[0], o[1], o[2], o[3] = uint8(r>>8), uint8(r), uint8(g>>8), uint8(g)
-			o[4], o[5], o[6], o[7] = uint8(b>>8), uint8(b), uint8(a>>8), uint8(a)
+			rv, gv, bv := q16(R[i]), q16(G[i]), q16(B[i])
+			if grey {
+				gv, bv = rv, rv
+			}
+			o := row[8*x : 8*x+8 : 8*x+8]
+			o[0], o[1], o[2], o[3] = uint8(rv>>8), uint8(rv), uint8(gv>>8), uint8(gv)
+			o[4], o[5], o[6], o[7] = uint8(bv>>8), uint8(bv), uint8(av>>8), uint8(av)
 		}
 	}
 	return img

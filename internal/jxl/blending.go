@@ -234,6 +234,23 @@ func (d *Decoder) blend(fd *frameDecoder) error {
 	if fd.color[0] == nil {
 		return invalid("frame without colour")
 	}
+	// Fast path: a full-canvas frame replacing everything needs no background.
+	full := fh.X0 == 0 && fh.Y0 == 0 && fd.color[0].W == W && fd.color[0].H == H
+	replaceAll := fh.Blending.Mode == BlendReplace
+	for i := range fh.ECBlending {
+		replaceAll = replaceAll && fh.ECBlending[i].Mode == BlendReplace
+	}
+	if full && replaceAll && len(fd.ec) == nec {
+		ok := true
+		for _, p := range fd.ec {
+			ok = ok && p.W == W && p.H == H
+		}
+		if ok {
+			canvas := &refFrame{color: fd.color, ec: append([]*Plane(nil), fd.ec...)}
+			d.canvas = canvas
+			return nil
+		}
+	}
 	// background planes (copies of the source reference frames)
 	planes := make([]*Plane, 3+nec)
 	for c := 0; c < 3+nec; c++ {

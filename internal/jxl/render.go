@@ -24,10 +24,14 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 			}
 		}
 		if fh.Filter.Gab {
+			st := startStage()
 			fd.applyGaborish()
+			st.done("gaborish")
 		}
 		if fh.Filter.EPFIters > 0 {
+			st := startStage()
 			fd.applyEPF()
+			st.done("epf")
 		}
 	}
 	// 3. patches and splines (at decoded resolution), then upsampling
@@ -66,8 +70,15 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		d.saveReference(fd, fh.SaveAsReference)
 	}
 
-	// 5. colour transform
-	fd.colorTransform()
+	// 5. colour transform (deferred to the output stage when possible)
+	deferCT := ih.XYBEncoded && fh.IsLast && !canBeRef && !hasSpot(ih) &&
+		(fh.Type == FrameRegular || fh.Type == FrameSkipProgressive) &&
+		fd.isFullReplace()
+	st := startStage()
+	if !deferCT {
+		fd.colorTransform()
+	}
+	st.done("colour")
 
 	// 6. blending onto the canvas
 	if err := d.blend(fd); err != nil {
@@ -85,10 +96,17 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		Width: int(ih.Size.Width), Height: int(ih.Size.Height),
 		Duration: fh.Duration, Name: fh.Name, IsLast: fh.IsLast,
 	}
-	cv := d.canvas.clone()
+	cv := d.canvas
+	if !fh.IsLast || hasSpot(ih) {
+		cv = d.canvas.clone()
+	}
 	renderSpotColors(cv, ih)
 	f.Color = cv.color
 	f.EC = cv.ec
+	if deferCT {
+		f.conv = newXYBConv(ih)
+		f.grey = ih.IsGrey()
+	}
 	return true, f, nil
 }
 
@@ -223,12 +241,12 @@ func srgbFromLinear(v float32) float32 {
 	return float32(1.055*math.Pow(float64(v), 1/2.4) - 0.055)
 }
 
-// applyTransferFromLinear encodes linear planes with the transfer function.
-func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity float32) {
+// tfFunc returns the encoding (from linear) function of a transfer function.
+func tfFunc(tf uint32, gamma float64, intensity float32) func(float32) float32 {
 	var f func(float32) float32
 	switch tf {
 	case TFLinear:
-		return
+		return func(v float32) float32 { return v }
 	case TFGamma:
 		g := gamma
 		f = func(v float32) float32 {
@@ -270,6 +288,20 @@ func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity fl
 	default:
 		f = srgbFromLinear
 	}
+	if tf == TFSRGB || f == nil {
+		f = srgbFromLinear
+	}
+	return f
+}
+
+// applyTransferFromLinear encodes linear planes with the transfer function.
+func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity float32) {
+	if tf == TFLinear {
+		return
+	}
+	f := tfFunc(tf, gamma, intensity)
+
+	lut := buildTFLUT(f)
 	done := map[*Plane]bool{}
 	for _, pl := range p {
 		if pl == nil || done[pl] {
@@ -277,17 +309,41 @@ func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity fl
 		}
 		done[pl] = true
 		px := pl.Pix
-		if tf == TFSRGB || f == nil {
-			parallelRows(len(px), func(lo, hi int) {
-				srgbEncodeSlice(px[lo:hi])
-			})
-			continue
-		}
 		parallelRows(len(px), func(lo, hi int) {
-			for i := lo; i < hi; i++ {
-				px[i] = f(px[i])
-			}
+			lut.apply(px[lo:hi], f)
 		})
+	}
+}
+
+// tfLUT approximates a transfer function on [0,1] by linear interpolation.
+type tfLUT struct {
+	t []float32
+}
+
+const tfLUTSize = 16384
+
+func buildTFLUT(f func(float32) float32) *tfLUT {
+	t := make([]float32, tfLUTSize+2)
+	for i := range t {
+		t[i] = f(float32(i) / tfLUTSize)
+	}
+	return &tfLUT{t: t}
+}
+
+func (l *tfLUT) apply(px []float32, f func(float32) float32) {
+	t := l.t
+	for i, v := range px {
+		if v >= 1.0/tfLUTSize && v < 1 {
+			fv := v * tfLUTSize
+			k := int(fv)
+			fr := fv - float32(k)
+			a := t[k]
+			px[i] = a + (t[k+1]-a)*fr
+		} else if v < 0 {
+			px[i] = -f(-v)
+		} else {
+			px[i] = f(v)
+		}
 	}
 }
 
@@ -359,4 +415,30 @@ func renderSpotColors(r *refFrame, ih *ImageHeader) {
 			}
 		}
 	}
+}
+
+func hasSpot(ih *ImageHeader) bool {
+	for _, e := range ih.ExtraChannels {
+		if e.Type == ECSpotColour {
+			return true
+		}
+	}
+	return false
+}
+
+// isFullReplace reports whether the frame replaces the whole canvas.
+func (fd *frameDecoder) isFullReplace() bool {
+	fh, ih := fd.fh, fd.ih
+	if fh.X0 != 0 || fh.Y0 != 0 || fh.Width != ih.Size.Width || fh.Height != ih.Size.Height {
+		return false
+	}
+	if fh.Blending.Mode != BlendReplace {
+		return false
+	}
+	for _, b := range fh.ECBlending {
+		if b.Mode != BlendReplace {
+			return false
+		}
+	}
+	return true
 }

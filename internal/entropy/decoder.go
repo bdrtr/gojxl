@@ -297,11 +297,54 @@ func (d *Decoder) ReadUint(br *bitio.Reader, ctx int) uint32 {
 
 // ReadUintClustered decodes a hybrid integer for an explicit cluster.
 func (d *Decoder) ReadUintClustered(br *bitio.Reader, cluster uint8) uint32 {
-	if !d.lz77 {
-		tok := d.readSymbol(br, cluster)
+	if d.lz77 {
+		return d.readLZ77(br, cluster)
+	}
+	if d.usePrefix {
+		tok := d.prefix[cluster].readSymbol(br)
 		return d.configs[cluster].readUint(br, tok)
 	}
-	return d.readLZ77(br, cluster)
+	// ANS fast path, manually inlined.
+	br.Refill()
+	buf, nbits := br.State()
+	h := d.ans[cluster]
+	s := d.state
+	idx := s & 0xfff
+	b := &h.buckets[idx>>h.logBucket]
+	pos := idx & h.bucketMask
+	sym := idx >> h.logBucket
+	freq := uint32(b.freq0)
+	if pos >= uint32(b.cutoff) {
+		sym = uint32(b.aliasSymbol)
+		freq ^= uint32(b.freq1XorF0)
+		pos += uint32(b.offset1)
+	}
+	s = (s>>12)*freq + pos
+	if s < 1<<16 {
+		s = s<<16 | uint32(buf&0xffff)
+		buf >>= 16
+		nbits -= 16
+	}
+	d.state = s
+	c := &d.configs[cluster]
+	if sym < c.Split {
+		br.SetState(buf, nbits)
+		return sym
+	}
+	ml := c.MsbInTok + c.LsbInTok
+	n := (c.SplitExp - ml + ((sym - c.Split) >> ml)) & 31
+	low := sym & (1<<c.LsbInTok - 1)
+	tok := sym >> c.LsbInTok
+	tok &= 1<<c.MsbInTok - 1
+	tok |= 1 << c.MsbInTok
+	if nbits < uint(n) {
+		br.SetState(buf, nbits)
+		rest := br.Read(uint(n))
+		return uint32((((uint64(tok) << n) | uint64(rest)) << c.LsbInTok) | uint64(low))
+	}
+	rest := buf & (1<<(n&63) - 1)
+	br.SetState(buf>>(n&63), nbits-uint(n))
+	return uint32((((uint64(tok) << n) | rest) << c.LsbInTok) | uint64(low))
 }
 
 func (d *Decoder) readLZ77(br *bitio.Reader, cluster uint8) uint32 {

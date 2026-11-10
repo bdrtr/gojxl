@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image/png"
 	"os"
+	"runtime/pprof"
 	"time"
 
 	"gojxl"
@@ -46,6 +47,7 @@ func cmdDecode(args []string) {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
 	bench := fs.Int("bench", 0, "decode N times and report speed")
 	depth := fs.Int("depth", 0, "output bit depth (16 forces 16-bit PNG)")
+	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
@@ -53,6 +55,14 @@ func cmdDecode(args []string) {
 	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
 		fatal(err)
+	}
+	if *cpuprof != "" {
+		pf, err := os.Create(*cpuprof)
+		if err != nil {
+			fatal(err)
+		}
+		pprof.StartCPUProfile(pf)
+		defer pprof.StopCPUProfile()
 	}
 	t0 := time.Now()
 	opt := &gojxl.Options{Force16: *depth == 16}
