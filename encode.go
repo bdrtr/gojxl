@@ -12,7 +12,10 @@ import (
 
 // EncodeOptions controls lossless encoding.
 type EncodeOptions struct {
-	// Effort (1-3): larger values use a richer context model.
+	// Effort (1-6) for lossless encoding; 0 selects the default (4).
+	// 1-3 use fixed context models (fast); 4+ learn an MA tree from the
+	// image, choose colour transforms and per-group channel palettes, and
+	// tune the entropy coder (slower, typically 5-40% smaller).
 	Effort int
 	// Distance > 0 selects lossy (VarDCT) encoding with the given
 	// perceptual distance (1.0 ~ visually lossless). 0 means lossless.
@@ -31,7 +34,7 @@ func Encode(w io.Writer, img image.Image, opt *EncodeOptions) error {
 
 // EncodeBytes encodes img losslessly and returns the JPEG XL bytes.
 func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
-	o := enc.Options{Effort: 2}
+	o := enc.Options{Effort: 4}
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}

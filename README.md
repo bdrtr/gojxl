@@ -35,10 +35,16 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   kodlama 1.7 s (cjxl ~2.5 s)
 
 **Kayıpsız kodlayıcı (Modular)**
-- YCoCg RCT, otomatik palet (≤1024 renk, parlaklığa göre sıralı)
-- Gradient ve Weighted predictor, sabit bağlam ağaçları (efor 1–3)
-- ANS entropi kodlama, gruplar arası paralel kodlama
-- 8/16-bit, gri/RGB/RGBA
+- Efor 1–3: sabit bağlam ağaçları, YCoCg, Gradient/Weighted predictor (hızlı)
+- Efor 4+ (varsayılan 4): **MA ağacı öğrenme** — örneklenmiş piksellerden
+  entropi kazancına göre açgözlü bölme; 16 özellik + önceki kanallara
+  referans veren özellikler (16–23), 5–14 aday predictor, yaprak başına
+  en iyi predictor
+- RCT seçimi (42 varyant tahminle; efor 5+'ta adaylar için küçük ağaç
+  öğrenerek), kanal paletleri (global ve **grup başına yerel**), otomatik
+  bit derinliği indirimi (ör. 16-bit kapta 8-bit veri)
+- Küme başına hibrit uint yapılandırması araması, kümelenmiş ANS
+- Otomatik palet (≤1024 renk), gruplar arası paralel kodlama; 8/16-bit, gri/RGB/RGBA
 
 ## Kurulum ve kullanım
 
@@ -49,7 +55,8 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl decode resim.jxl cikti.png          # JXL → PNG
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
-./gojxl encode -e 3 girdi.png cikti.jxl     # PNG/JPEG → kayıpsız JXL
+./gojxl encode girdi.png cikti.jxl          # PNG/JPEG → kayıpsız JXL (efor 4)
+./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
 ./gojxl encode -d 1 girdi.png cikti.jxl     # kayıplı (d≈1 görsel olarak kayıpsız)
 ./gojxl info resim.jxl
 ```
@@ -61,7 +68,7 @@ import "gojxl"
 
 img, err := gojxl.Decode(r)                 // image.Image
 anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
-err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 3})       // kayıpsız
+err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 ```
 
@@ -94,13 +101,22 @@ Kod çözme, MP/s (yüksek iyi):
 WASM derlemeleri tek thread çalışır ve native'in kabaca yarısı hızındadır;
 gojxl tüm çekirdekleri kullanarak çoğu dosyada bunun üzerindedir.
 
-Kayıpsız sıkıştırma (bayt, düşük iyi):
+Kayıpsız sıkıştırma (bayt, düşük iyi; cjxl v0.12):
 
-| Görüntü | gojxl e2 | gojxl e3 | cjxl e2 | cjxl e3 | cjxl e7 |
+| Görüntü | gojxl e3 | gojxl e4 | gojxl e5 | cjxl e3 | cjxl e7 |
 |---|---|---|---|---|---|
-| 4K nebula foto | 14 091 832 | **13 679 914** | 14 573 786 | 13 765 478 | 13 708 348 |
-| 640×480 foto kırpıntısı | 502 734 | 484 117 | 519 505 | 483 981 | 477 278 |
-| 648 renkli görsel | 184 645 | 184 192 | 188 166 | 176 479 | 154 700 |
+| 4K foto (3840×2160) | 12 947 496 | 12 052 258 | **11 943 401** | — | 12 420 691 |
+| bike (2048×2560 foto) | 5 191 623 | 4 882 756 | **4 820 471** | 5 212 891 | 4 866 475 |
+| 640×480 foto kırpıntısı | 463 767 | 439 625 | **437 543** | 465 109 | 446 345 |
+| blendmodes (16-bit gradyan, RGBA) | 1 001 120 | 619 258 | **500 531** | 1 068 867 | 627 621 |
+| sunset_logo (16-bit, kanal paleti) | 2 171 492 | 845 792 | **761 110** | 3 210 948 | 888 081 |
+| delta_palette (sentetik) | 451 023 | 361 108 | **246 695** | 467 687 | 372 699 |
+| patches_lossless (ekran görüntüsü) | 144 197 | **69 036** | 69 725 | 213 670 | 107 500 |
+| lz77_flower | 280 871 | 268 559 | **263 445** | 281 699 | 270 951 |
+
+Efor 4, tek iş parçacığında cjxl e7 ile benzer CPU süresi harcar (640×480
+fotoğrafta 0.75 s'ye karşı 0.93 s) ve çok çekirdekte belirgin şekilde
+daha hızlıdır; efor 5–6 daha yavaştır (RCT denemeleri, daha büyük ağaçlar).
 
 ## Mimari
 
@@ -108,7 +124,7 @@ Kayıpsız sıkıştırma (bayt, düşük iyi):
 internal/bitio     LSB-first bit okuyucu/yazıcı, U32/U64/F16
 internal/entropy   ANS/prefix/LZ77/bağlam haritası kod çözücü
 internal/jxl       header'lar, Modular, VarDCT, filtreler, render, blending
-internal/enc       kayıpsız kodlayıcı (ağaç, ANS, prefix kodlar)
+internal/enc       kodlayıcılar: Modular (ağaç öğrenme, ANS) ve VarDCT
 cmd/gojxl          CLI
 ```
 
@@ -131,6 +147,6 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 ## Yol haritası
 
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
-- MA ağacı öğrenme, LZ77
+- LZ77, grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+)
 - HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
 - APNG/animasyon çıktısı, akış (streaming) kod çözme

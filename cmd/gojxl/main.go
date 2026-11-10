@@ -143,9 +143,18 @@ func cmdInfo(args []string) {
 
 func cmdEncode(args []string) {
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
-	effort := fs.Int("e", 2, "effort 1-3")
+	effort := fs.Int("e", 4, "lossless effort 1-6 (1-3: fixed context model, 4+: learned MA tree)")
 	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
+	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	fs.Parse(args)
+	if *cpuprof != "" {
+		pf, err := os.Create(*cpuprof)
+		if err != nil {
+			fatal(err)
+		}
+		pprof.StartCPUProfile(pf)
+		defer pprof.StopCPUProfile()
+	}
 	if fs.NArg() < 2 {
 		usage()
 	}

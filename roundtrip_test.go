@@ -25,6 +25,25 @@ func randomImage(kind string, w, h int, r *rand.Rand) image.Image {
 		im := image.NewNRGBA64(image.Rect(0, 0, w, h))
 		r.Read(im.Pix)
 		return im
+	case "sparse16":
+		// few distinct, widely spaced values: channel palettes
+		im := image.NewNRGBA64(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				im.Set(x, y, color.NRGBA64{uint16((x*7 + y*3) * 41), uint16((x/3 + y) * 97), uint16(r.Intn(40) * 1500), 0xffff})
+			}
+		}
+		return im
+	case "deep8":
+		// 16-bit expansions of 8-bit samples: bit depth reduction
+		im := image.NewNRGBA64(image.Rect(0, 0, w, h))
+		ex := func(v int) uint16 { return uint16(v * 257) }
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				im.Set(x, y, color.NRGBA64{ex((x * 5) % 256), ex(r.Intn(256)), ex((x + y) % 256), ex(255 - y%256)})
+			}
+		}
+		return im
 	case "smooth":
 		im := image.NewNRGBA(image.Rect(0, 0, w, h))
 		for y := 0; y < h; y++ {
@@ -64,10 +83,10 @@ func sameImage(t *testing.T, a, b image.Image) {
 func TestLosslessRoundTrip(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	sizes := [][2]int{{1, 1}, {7, 3}, {256, 256}, {257, 1}, {1, 300}, {300, 260}, {513, 77}}
-	kinds := []string{"rgb", "rgba", "gray", "gray16", "rgba64", "smooth"}
+	kinds := []string{"rgb", "rgba", "gray", "gray16", "rgba64", "smooth", "sparse16", "deep8"}
 	for _, sz := range sizes {
 		for _, k := range kinds {
-			for _, e := range []int{1, 2, 3} {
+			for _, e := range []int{1, 2, 3, 4, 5, 6} {
 				img := randomImage(k, sz[0], sz[1], r)
 				data, err := EncodeBytes(img, &EncodeOptions{Effort: e})
 				if err != nil {

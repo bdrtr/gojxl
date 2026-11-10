@@ -443,7 +443,7 @@ func writeModularLocal(w *bitio.Writer, chs []channel) {
 	}
 	root := buildTree(len(chs), n, 2)
 	nodes, nleaves := bfs(root)
-	roots := channelRoots(root, len(chs))
+
 	s := stream{w: 1 << 30, h: 1 << 30}
 	for i := range chs {
 		s.chans = append(s.chans, i)
@@ -454,10 +454,10 @@ func writeModularLocal(w *bitio.Writer, chs []channel) {
 	tc := writeCode(w, treeH)
 	treeTokens(nodes, func(ctx int, v uint32) { tc.write(w, ctx, v) })
 	data := newHistograms(nleaves, defaultCfg)
-	walkStream(chs, s, roots, data.add)
+	walkStream(chs, s, root, data.add)
 	dc := writeANSCode(w, data)
 	st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}
-	walkStream(chs, s, roots, st.add)
+	walkStream(chs, s, root, st.add)
 	st.flush(w)
 }
 
@@ -1018,7 +1018,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 type alphaPlan struct {
 	chs    []channel
 	nodes  []*tnode
-	roots  []*tnode
+	root   *tnode
 	global stream
 	groups []stream
 	data   *histograms
@@ -1030,7 +1030,7 @@ func planAlpha(a []int32, W, H, xg, yg int) *alphaPlan {
 	root := buildTree(1, W*H, 2)
 	var nl int
 	p.nodes, nl = bfs(root)
-	p.roots = channelRoots(root, 1)
+	p.root = root
 	p.global = stream{w: 1 << 30, h: 1 << 30}
 	if W <= groupDim && H <= groupDim {
 		p.global.chans, p.global.ctxIdx = []int{0}, []int{0}
@@ -1043,9 +1043,9 @@ func planAlpha(a []int32, W, H, xg, yg int) *alphaPlan {
 		}
 	}
 	p.data = newHistograms(nl, defaultCfg)
-	walkStream(p.chs, p.global, p.roots, p.data.add)
+	walkStream(p.chs, p.global, p.root, p.data.add)
 	for _, s := range p.groups {
-		walkStream(p.chs, s, p.roots, p.data.add)
+		walkStream(p.chs, s, p.root, p.data.add)
 	}
 	return p
 }
@@ -1061,7 +1061,7 @@ func (p *alphaPlan) writeGlobal(w *bitio.Writer) {
 	w.WriteBool(true) // default WP
 	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
 	st := &ansStream{c: p.code}
-	walkStream(p.chs, p.global, p.roots, st.add)
+	walkStream(p.chs, p.global, p.root, st.add)
 	st.flush(w)
 }
 
@@ -1073,6 +1073,6 @@ func (p *alphaPlan) writeGroup(w *bitio.Writer, g int) {
 	w.WriteBool(true)
 	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
 	st := &ansStream{c: p.code}
-	walkStream(p.chs, p.groups[g], p.roots, st.add)
+	walkStream(p.chs, p.groups[g], p.root, st.add)
 	st.flush(w)
 }

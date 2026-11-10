@@ -42,6 +42,7 @@ func (c uintCfg) write(w *bitio.Writer, logAlpha uint32) {
 // histograms accumulates token counts per context.
 type histograms struct {
 	cfg    uintCfg
+	cfgs   []uintCfg // optional per-histogram configs (ANS only)
 	counts [][]uint64
 }
 
