@@ -179,7 +179,7 @@ func scaledIDCT2D(rows, cols int, in []float32, out []float32, stride int, scrat
 }
 
 // idct8x8 is the DCT8 fast path (transposed storage).
-func idct8x8(c []float32, out []float32, stride int) {
+func idct8x8Scalar(c []float32, out []float32, stride int) {
 	_ = c[63]
 	for a := 0; a < 8; a++ {
 		idct8(c[a*8 : a*8+8])
@@ -494,20 +494,7 @@ func (v *vardctState) finish() error {
 				m := tables[c][:n]
 				o := coef[c][:n]
 				mul := muls[c]
-				bias := biases[c]
-				for k, qv := range q {
-					switch {
-					case qv == 0:
-						o[k] = 0
-					case qv == 1:
-						o[k] = bias * m[k] * mul
-					case qv == -1:
-						o[k] = -bias * m[k] * mul
-					default:
-						f := float32(qv)
-						o[k] = (f - numer/f) * m[k] * mul
-					}
-				}
+				dequantRow(q, m, o, mul, biases[c], numer)
 			}
 			if !v.sub {
 				tx, ty := int(vb.bx)/8, int(vb.by)/8

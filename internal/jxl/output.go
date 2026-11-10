@@ -42,19 +42,7 @@ func newXYBConv(ih *ImageHeader) *xybConv {
 func (c *xybConv) row(x, y, b, r, g, bo []float32) {
 	n := len(r)
 	x, y, b, g, bo = x[:n], y[:n], b[:n], g[:n], bo[:n]
-	m := &c.m
-	for i := 0; i < n; i++ {
-		X, Y, B := x[i], y[i], b[i]
-		gr := Y + X - c.cbrtBias[0]
-		gg := Y - X - c.cbrtBias[1]
-		gb := B - c.cbrtBias[2]
-		mr := gr*gr*gr + c.bias[0]
-		mg := gg*gg*gg + c.bias[1]
-		mb := gb*gb*gb + c.bias[2]
-		r[i] = m[0]*mr + m[1]*mg + m[2]*mb
-		g[i] = m[3]*mr + m[4]*mg + m[5]*mb
-		bo[i] = m[6]*mr + m[7]*mg + m[8]*mb
-	}
+	xybRow(c, x, y, b, r, g, bo)
 	if !c.linear {
 		c.lut.apply(r, c.f)
 		c.lut.apply(g, c.f)

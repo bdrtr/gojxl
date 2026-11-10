@@ -55,11 +55,7 @@ func (fd *frameDecoder) applyGaborish() {
 					continue
 				}
 				o[0] = px(0)
-				for x := 1; x < W-1; x++ {
-					sum1 := (m[x-1] + m[x+1]) + (t[x] + b[x])
-					sum2 := (t[x-1] + t[x+1]) + (b[x-1] + b[x+1])
-					o[x] = sum2*w2 + (sum1*w1 + m[x]*w0)
-				}
+				gabRow(o, t, m, b, w0, w1, w2)
 				o[W-1] = px(W - 1)
 			}
 		})
@@ -227,9 +223,7 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 				a0, b0 := pads[0][ia:ia+n], pads[0][ib:ib+n]
 				a1, b1 := pads[1][ia:ia+n], pads[1][ib:ib+n]
 				a2, b2 := pads[2][ia:ia+n], pads[2][ib:ib+n]
-				for x := range drow {
-					drow[x] = abs32(a0[x]-b0[x])*s0 + abs32(a1[x]-b1[x])*s1 + abs32(a2[x]-b2[x])*s2
-				}
+				epfDiffRow(drow, a0, b0, a1, b1, a2, b2, s0, s1, s2)
 			}
 		}
 		S := D
@@ -244,9 +238,7 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 					mid := dk[r*dw : (r+1)*dw]
 					dn := dk[(r+1)*dw : (r+2)*dw]
 					out := pk[r*dw : (r+1)*dw]
-					for x := 1; x < dw-1; x++ {
-						out[x] = mid[x] + mid[x-1] + mid[x+1] + up[x] + dn[x]
-					}
+					plusRow(out, up, mid, dn)
 				}
 				P[k] = pk
 			}
@@ -280,23 +272,13 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 				rr0, rr1, rr2 := p0[base+1:base+1+tw], p1[base+1:base+1+tw], p2[base+1:base+1+tw]
 				u0, u1, u2 := p0[up:up+tw], p1[up:up+tw], p2[up:up+tw]
 				d0, d1, d2 := p0[dn:dn+tw], p1[dn:dn+tw], p2[dn:dn+tw]
-				for lx := 0; lx < tw; lx++ {
-					x := tx0 + lx
-					is := srow[x>>3]
-					if is < minSigma {
-						o0[lx], o1[lx], o2[lx] = c0[lx], c1[lx], c2[lx]
-						continue
-					}
-					inv := is * rowMul[x&7]
-					wd := relu32(sv[lx]*inv + 1)
-					wu := relu32(svu[lx]*inv + 1)
-					wr := relu32(sh[lx]*inv + 1)
-					wl := relu32(shl[lx]*inv + 1)
-					iw := 1 / (1 + wd + wu + wr + wl)
-					o0[lx] = (c0[lx] + wd*d0[lx] + wu*u0[lx] + wr*rr0[lx] + wl*l0[lx]) * iw
-					o1[lx] = (c1[lx] + wd*d1[lx] + wu*u1[lx] + wr*rr1[lx] + wl*l1[lx]) * iw
-					o2[lx] = (c2[lx] + wd*d2[lx] + wu*u2[lx] + wr*rr2[lx] + wl*l2[lx]) * iw
-				}
+				epfRow4(&epf4Args{
+					o: [3][]float32{o0, o1, o2}, c: [3][]float32{c0, c1, c2},
+					l: [3][]float32{l0, l1, l2}, r: [3][]float32{rr0, rr1, rr2},
+					u: [3][]float32{u0, u1, u2}, d: [3][]float32{d0, d1, d2},
+					sv: sv, svu: svu, sh: sh, shl: shl,
+					sig: srow[tx0>>3:], rowMul: &rowMul, n: tw,
+				})
 				continue
 			}
 			for lx := 0; lx < tw; lx++ {
