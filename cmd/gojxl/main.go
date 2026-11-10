@@ -44,6 +44,7 @@ func fatal(err error) {
 func cmdDecode(args []string) {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
 	bench := fs.Int("bench", 0, "decode N times and report speed")
+	depth := fs.Int("depth", 0, "output bit depth (16 forces 16-bit PNG)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
@@ -53,7 +54,8 @@ func cmdDecode(args []string) {
 		fatal(err)
 	}
 	t0 := time.Now()
-	img, err := gojxl.DecodeBytes(data)
+	opt := &gojxl.Options{Force16: *depth == 16}
+	img, err := gojxl.DecodeBytesOptions(data, opt)
 	if err != nil {
 		fatal(err)
 	}
@@ -61,7 +63,7 @@ func cmdDecode(args []string) {
 	if *bench > 0 {
 		t0 = time.Now()
 		for i := 0; i < *bench; i++ {
-			if _, err := gojxl.DecodeBytes(data); err != nil {
+			if _, err := gojxl.DecodeBytesOptions(data, opt); err != nil {
 				fatal(err)
 			}
 		}

@@ -399,3 +399,8 @@ func coeffOrderCtx(x uint32) int {
 	}
 	return n
 }
+
+// ReadContextMap reads a clustering map for numDist contexts.
+func ReadContextMap(br *bitio.Reader, numDist int) ([]uint8, int, error) {
+	return readContextMap(br, numDist)
+}

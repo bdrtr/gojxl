@@ -97,8 +97,19 @@ func Decode(r io.Reader) (image.Image, error) {
 	return DecodeBytes(data)
 }
 
+// Options controls decoding.
+type Options struct {
+	// Force16 always produces 16-bit images.
+	Force16 bool
+}
+
 // DecodeBytes decodes a JPEG XL image held in memory.
 func DecodeBytes(data []byte) (image.Image, error) {
+	return DecodeBytesOptions(data, nil)
+}
+
+// DecodeBytesOptions decodes with options.
+func DecodeBytesOptions(data []byte, opt *Options) (image.Image, error) {
 	d, err := jxl.NewDecoder(data)
 	if err != nil {
 		return nil, err
@@ -110,7 +121,7 @@ func DecodeBytes(data []byte) (image.Image, error) {
 	if f == nil {
 		return nil, jxl.ErrInvalid
 	}
-	return frameToImage(d.Header, f), nil
+	return frameToImage(d.Header, f, opt), nil
 }
 
 // Frame is one frame of an animation.
@@ -143,7 +154,7 @@ func DecodeAll(data []byte) (*Animation, error) {
 		if f == nil {
 			break
 		}
-		fr := Frame{Image: frameToImage(d.Header, f)}
+		fr := Frame{Image: frameToImage(d.Header, f, nil)}
 		if an := d.Header.Animation; d.Header.HaveAnimation && an.TpsNumerator > 0 {
 			fr.Duration = float64(f.Duration) * float64(an.TpsDenominator) / float64(an.TpsNumerator)
 		}

@@ -48,14 +48,14 @@ func orient(o int, w, h int) (ow, oh int, f func(ox, oy int) (int, int)) {
 	return w, h, nil
 }
 
-func frameToImage(h *jxl.ImageHeader, f *jxl.Frame) image.Image {
+func frameToImage(h *jxl.ImageHeader, f *jxl.Frame, opt *Options) image.Image {
 	w, ht := f.Width, f.Height
 	ai := h.AlphaChannel()
 	var alpha []float32
 	if ai >= 0 && ai < len(f.EC) {
 		alpha = f.EC[ai].Pix
 	}
-	deep := h.BitDepth.BitsPerSample > 8
+	deep := h.BitDepth.BitsPerSample > 8 || (opt != nil && opt.Force16)
 	grey := h.IsGrey()
 	ow, oh, tr := orient(int(h.Orientation), w, ht)
 	R, G, B := f.Color[0].Pix, f.Color[1].Pix, f.Color[2].Pix
