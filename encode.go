@@ -46,6 +46,10 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 		}
 		lo.NoGaborish = os.Getenv("GOJXL_NOGAB") != ""
 		lo.NoCfL = os.Getenv("GOJXL_NOCFL") != ""
+		lo.OnlyDCT8 = os.Getenv("GOJXL_DCT8") != ""
+		if v := os.Getenv("GOJXL_MU"); v != "" {
+			lo.RDMu, _ = strconv.ParseFloat(v, 64)
+		}
 		lo.AQ = 0
 		if v := os.Getenv("GOJXL_AQ"); v != "" {
 			lo.AQ, _ = strconv.ParseFloat(v, 64)

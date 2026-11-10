@@ -22,3 +22,17 @@ func DefaultBlockCtxMap() []uint8 { return defaultBlockCtxMap }
 
 // OpsinInverseDefault returns the default XYB inverse matrix and bias.
 func OpsinInverseDefault() OpsinInverse { return defaultOpsinInverse() }
+
+// QuantMultipliers returns default dequantisation multipliers for a quant
+// table index (0 = DCT8, 4 = DCT16, 5 = DCT32).
+func QuantMultipliers(table int) [3][]float32 {
+	q := defaultQuantEncoding(table)
+	t, _ := cachedQuantTable(&q, table)
+	return t
+}
+
+// NaturalOrder returns the natural coefficient order for an order id.
+func NaturalOrder(id int) []int32 { return naturalOrder(id) }
+
+// ResampleScale is the LLF<->DC scale for an N-point LF DCT.
+func ResampleScale(n, k int) float32 { return resampleScale(n, k) }

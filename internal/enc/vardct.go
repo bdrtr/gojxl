@@ -3,6 +3,7 @@ package enc
 import (
 	"errors"
 	"math"
+	"math/bits"
 
 	"gojxl/internal/bitio"
 	"gojxl/internal/jxl"
@@ -18,6 +19,8 @@ type LossyOptions struct {
 	Sharpness  int     // EPF sharpness per block (0-7), -1: default
 	AQ         float64 // adaptive quantisation strength (0 = off)
 	NoCfL      bool    // disable per-tile chroma-from-luma
+	OnlyDCT8   bool    // disable larger transforms
+	RDMu       float64 // rate weight in AC strategy decisions
 }
 
 func abs32(v float32) float32 {
@@ -189,6 +192,142 @@ func dequantAC(q int32, step, bias, numer float32) float32 {
 	return (f - numer/f) * step
 }
 
+type vtype struct{ acs, n, table, order int }
+
+// vtypes are the supported varblock types: DCT8, DCT16, DCT32.
+var vtypes = [3]vtype{{0, 1, 0, 0}, {4, 2, 4, 2}, {5, 4, 5, 3}}
+
+var chanScale = [3]float32{0.8, 1, 1} // x_qm_scale 3, b_qm_scale 2
+
+// chanDistW weights channel errors by their visibility (from the DC-ish
+// quantisation weights of the default DCT8 table).
+var chanDistW = [3]float64{31.6, 1, 0.84}
+
+// refMult is the Y DCT8 multiplier of the first AC coefficient, used to
+// normalise distortion.
+var refMult = float64(jxl.DCT8Multipliers()[1][1])
+
+var dctBases [65][]float32
+
+func dctBasisN(n int) []float32 {
+	if b := dctBases[n]; b != nil {
+		return b
+	}
+	return nil
+}
+
+func init() {
+	for _, n := range []int{2, 4, 8, 16, 32} {
+		b := make([]float32, n*n)
+		for k := 0; k < n; k++ {
+			for i := 0; i < n; i++ {
+				v := 1.0 / float64(n)
+				if k > 0 {
+					v *= math.Sqrt2 * math.Cos(math.Pi*float64((2*i+1)*k)/float64(2*n))
+				}
+				b[k*n+i] = float32(v)
+			}
+		}
+		dctBases[n] = b
+	}
+}
+
+// fdctN computes the scaled NxN DCT of the block at src (row stride) and
+// stores it in the decoder's transposed layout out[kx*n+ky].
+func fdctN(src []float32, stride, n int, out []float32) {
+	bas := dctBasisN(n)
+	tmp := make([]float32, n*n)
+	for y := 0; y < n; y++ {
+		row := src[y*stride : y*stride+n]
+		for k := 0; k < n; k++ {
+			bk := bas[k*n : k*n+n]
+			var a float32
+			for i, v := range row {
+				a += bk[i] * v
+			}
+			tmp[y*n+k] = a
+		}
+	}
+	for kx := 0; kx < n; kx++ {
+		for ky := 0; ky < n; ky++ {
+			bk := bas[ky*n : ky*n+n]
+			var a float32
+			for i := 0; i < n; i++ {
+				a += bk[i] * tmp[i*n+kx]
+			}
+			out[kx*n+ky] = a
+		}
+	}
+}
+
+// llfToDC derives the k x k block DC values (row-major) that reproduce the
+// lowest frequencies of an n=8k transform in the decoder.
+func llfToDC(coef []float32, k int, dc []float32) {
+	n := 8 * k
+	if k == 1 {
+		dc[0] = coef[0]
+		return
+	}
+	// natural LLF L[ky][kx] = coef[kx*n+ky], unscaled
+	var L [16]float32
+	for ky := 0; ky < k; ky++ {
+		for kx := 0; kx < k; kx++ {
+			L[ky*k+kx] = coef[kx*n+ky] / (jxl.ResampleScale(k, ky) * jxl.ResampleScale(k, kx))
+		}
+	}
+	// k x k scaled IDCT: x[i] = c0 + sqrt2 sum c_j cos(pi(2i+1)j/2k)
+	idct := func(c []float32, out []float32) {
+		for i := 0; i < k; i++ {
+			v := float64(c[0])
+			for j := 1; j < k; j++ {
+				v += math.Sqrt2 * float64(c[j]) * math.Cos(math.Pi*float64((2*i+1)*j)/float64(2*k))
+			}
+			out[i] = float32(v)
+		}
+	}
+	var tmp [16]float32
+	var row, col [4]float32
+	for ky := 0; ky < k; ky++ {
+		idct(L[ky*k:ky*k+k], row[:k])
+		copy(tmp[ky*k:], row[:k])
+	}
+	for x := 0; x < k; x++ {
+		for ky := 0; ky < k; ky++ {
+			col[ky] = tmp[ky*k+x]
+		}
+		var o [4]float32
+		idct(col[:k], o[:k])
+		for y := 0; y < k; y++ {
+			dc[y*k+x] = o[y]
+		}
+	}
+}
+
+// rdCost estimates distortion (in units of step^2, pixel domain via
+// Parseval) and rate for a block's AC coefficients.
+func rdCost(coef, mult []float32, order []int32, k int, step float32, cw float64) (float64, float64) {
+	n := 8 * k
+	var r, d float64
+	last := k * k
+	for i := k * k; i < n*n; i++ {
+		p := order[i]
+		st := mult[p] * step
+		q := quantAC(coef[p], st)
+		e := float64(coef[p] - dequantAC(q, st, 0.95, 0.145))
+		d += e * e
+		if q != 0 {
+			if q < 0 {
+				q = -q
+			}
+			r += 3.5 + 2*math.Log2(float64(q))
+			last = i + 1
+		}
+	}
+	r += 0.35*float64(last-k*k) + 5
+	ref := float64(step) * refMult
+	return d * float64(n*n) * cw / (ref * ref), r
+}
+
 // writeModularLocal writes a self-contained modular stream (own tree).
 func writeModularLocal(w *bitio.Writer, chs []channel) {
 	w.WriteBool(false) // local tree
@@ -258,69 +397,179 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	for c := 0; c < 3; c++ {
 		mulDC[c] = float32(65536.0/float64(gs)/float64(qlf)) * lfDeq[c]
 	}
-	mults := jxl.DCT8Multipliers()
 	op := jxl.OpsinInverseDefault()
 	biases, numer := op.QuantBias, op.QuantBiasNumerator
-
-	// per block: quantised DC (3) and AC coefficients (3x64)
+	var tmul [3][3][]float32
+	var torder [3][]int32
+	for i, t := range vtypes {
+		tmul[i] = jxl.QuantMultipliers(t.table)
+		torder[i] = jxl.NaturalOrder(t.order)
+	}
 	nb := bw * bh
+	baseStep := float32(65536.0) / float32(gs) / float32(qf)
+
+	// --- AC strategy selection on 4x4 block cells
+	vtyp := make([]int8, nb)
+	first := make([]bool, nb)
+	for i := range first {
+		first[i] = true
+	}
+	mu := opt.RDMu
+	if mu <= 0 {
+		mu = 0.5
+	}
+	if !opt.OnlyDCT8 {
+		cw4, ch4 := (bw+3)/4, (bh+3)/4
+		parallel(ch4, func(cy int) {
+			var buf []float32
+			for cx := 0; cx < cw4; cx++ {
+				bx0, by0 := cx*4, cy*4
+				cost := func(ti, bx, by int) float64 {
+					n := vtypes[ti].n * 8
+					if bx*8+n > pw || by*8+n > ph {
+						return math.Inf(1)
+					}
+					if len(buf) < n*n {
+						buf = make([]float32, n*n)
+					}
+					var j float64
+					for c := 0; c < 3; c++ {
+						fdctN(xyb[c][(by*8)*pw+bx*8:], pw, n, buf[:n*n])
+						dd, rr := rdCost(buf[:n*n], tmul[ti][c], torder[ti], vtypes[ti].n, baseStep, chanDistW[c])
+						j += dd/64 + mu*rr
+					}
+					return j
+				}
+				set := func(ti, bx, by int) {
+					n := vtypes[ti].n
+					for y := 0; y < n; y++ {
+						for x := 0; x < n; x++ {
+							i := (by+y)*bw + bx + x
+							vtyp[i] = int8(ti)
+							first[i] = x == 0 && y == 0
+						}
+					}
+				}
+				var sub [4]float64
+				var subT [4]int
+				for k := 0; k < 4; k++ {
+					sx, sy := bx0+2*(k%2), by0+2*(k/2)
+					if sx >= bw || sy >= bh {
+						continue
+					}
+					c8 := 0.0
+					for j := 0; j < 4; j++ {
+						x, y := sx+j%2, sy+j/2
+						if x < bw && y < bh {
+							c8 += cost(0, x, y)
+						}
+					}
+					c16 := math.Inf(1)
+					if sx+2 <= bw && sy+2 <= bh {
+						c16 = cost(1, sx, sy)
+					}
+					if c16 < c8 {
+						sub[k], subT[k] = c16, 1
+					} else {
+						sub[k], subT[k] = c8, 0
+					}
+				}
+				if bx0+4 <= bw && by0+4 <= bh && cost(2, bx0, by0) < sub[0]+sub[1]+sub[2]+sub[3] {
+					set(2, bx0, by0)
+					continue
+				}
+				for k := 0; k < 4; k++ {
+					if subT[k] == 1 {
+						set(1, bx0+2*(k%2), by0+2*(k/2))
+					}
+				}
+			}
+		})
+	}
+
+	// --- pass A: coefficients, AQ, DC (from LLF), Y AC, CfL statistics
 	qdc := [3][]int32{make([]int32, nb), make([]int32, nb), make([]int32, nb)}
-	qac := make([]int32, nb*192)
 	bqf := make([]int32, nb)
+	vq := make([][]int32, nb)
 	aqStrength := float32(opt.AQ)
 	tw := (bw + 7) / 8
 	thh := (bh + 7) / 8
-	// per block-row partial least-squares sums per 64x64 tile: sxy, sbY, syy
 	rowSums := make([][]float64, bh)
-	loadBlock := func(bx, by int, coef *[3][64]float32) {
-		var blk, s [64]float32
+	coefOf := func(ti, bx, by int, out *[3][]float32) {
+		n := vtypes[ti].n * 8
 		for c := 0; c < 3; c++ {
-			p := xyb[c]
-			for y := 0; y < 8; y++ {
-				copy(blk[y*8:y*8+8], p[(by*8+y)*pw+bx*8:])
+			if len(out[c]) < n*n {
+				out[c] = make([]float32, n*n)
 			}
-			fdct8x8(&blk, &s)
-			coef[c] = s
+			fdctN(xyb[c][(by*8)*pw+bx*8:], pw, n, out[c][:n*n])
 		}
 	}
-	blockSteps := func(b int) [3]float32 {
-		bs := float32(65536.0) / float32(gs) / float32(bqf[b])
-		return [3]float32{bs * 0.8, bs, bs}
+	isLLF := func(ti, idx int) bool {
+		k := vtypes[ti].n
+		n := k * 8
+		return idx/n < k && idx%n < k
 	}
-	// pass A: AQ, DC, Y AC and CfL statistics
+	stepsOf := func(b int) [3]float32 {
+		bs := float32(65536.0) / float32(gs) / float32(bqf[b])
+		return [3]float32{bs * chanScale[0], bs * chanScale[1], bs * chanScale[2]}
+	}
 	parallel(bh, func(by int) {
-		var coef [3][64]float32
+		var coef [3][]float32
 		sums := make([]float64, 3*tw)
 		for bx := 0; bx < bw; bx++ {
 			b := by*bw + bx
-			loadBlock(bx, by, &coef)
+			if !first[b] {
+				continue
+			}
+			ti := int(vtyp[b])
+			k := vtypes[ti].n
+			n := k * 8
+			coefOf(ti, bx, by, &coef)
 			bq := qf
 			if aqStrength > 0 {
 				var act float32
-				for k := 1; k < 64; k++ {
-					act += abs32(coef[1][k])
+				for i := 0; i < n*n; i++ {
+					if !isLLF(ti, i) {
+						act += abs32(coef[1][i])
+					}
 				}
+				act /= float32(k * k)
 				m := float32(math.Pow(float64(0.02/(act+0.02)), float64(aqStrength)))
 				bq = int32(math.Round(float64(float32(qf) * min(max(m*1.6, 0.5), 2.5))))
 				bq = min(max(bq, 1), 256)
 			}
 			bqf[b] = bq
-			bsteps := blockSteps(b)
-			qy := int32(math.Round(float64(coef[1][0] / mulDC[1])))
-			yDC := float32(qy) * mulDC[1]
-			qdc[1][b] = qy
-			qdc[0][b] = int32(math.Round(float64(coef[0][0] / mulDC[0])))
-			qdc[2][b] = int32(math.Round(float64((coef[2][0] - yDC) / mulDC[2])))
-			q := qac[b*192 : b*192+192]
+			steps := stepsOf(b)
+			// DC values per covered block from the LLF coefficients
+			var dcv [3][16]float32
+			for c := 0; c < 3; c++ {
+				llfToDC(coef[c], k, dcv[c][:k*k])
+			}
+			for iy := 0; iy < k; iy++ {
+				for ix := 0; ix < k; ix++ {
+					i := (by+iy)*bw + bx + ix
+					j := iy*k + ix
+					qy := int32(math.Round(float64(dcv[1][j] / mulDC[1])))
+					qdc[1][i] = qy
+					qdc[0][i] = int32(math.Round(float64(dcv[0][j] / mulDC[0])))
+					qdc[2][i] = int32(math.Round(float64((dcv[2][j] - float32(qy)*mulDC[1]) / mulDC[2])))
+				}
+			}
+			q := make([]int32, 3*n*n)
+			mY := tmul[ti][1]
 			t := bx / 8
-			for k := 1; k < 64; k++ {
-				st := mults[1][k] * bsteps[1]
-				q[64+k] = quantAC(coef[1][k], st)
-				yd := float64(dequantAC(q[64+k], st, biases[1], numer))
-				sums[3*t] += float64(coef[0][k]) * yd
-				sums[3*t+1] += float64(coef[2][k]) * yd
+			for i := 0; i < n*n; i++ {
+				if isLLF(ti, i) {
+					continue
+				}
+				st := mY[i] * steps[1]
+				q[n*n+i] = quantAC(coef[1][i], st)
+				yd := float64(dequantAC(q[n*n+i], st, biases[1], numer))
+				sums[3*t] += float64(coef[0][i]) * yd
+				sums[3*t+1] += float64(coef[2][i]) * yd
 				sums[3*t+2] += yd * yd
 			}
+			vq[b] = q
 		}
 		rowSums[by] = sums
 	})
@@ -345,19 +594,28 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	}
 	// pass B: X and B AC with tile CfL
 	parallel(bh, func(by int) {
-		var coef [3][64]float32
+		var coef [3][]float32
 		for bx := 0; bx < bw; bx++ {
 			b := by*bw + bx
-			loadBlock(bx, by, &coef)
-			bsteps := blockSteps(b)
-			ti := (by/8)*tw + bx/8
-			kx := float32(ytox[ti]) / 84
-			kb := 1 + float32(ytob[ti])/84
-			q := qac[b*192 : b*192+192]
-			for k := 1; k < 64; k++ {
-				yd := dequantAC(q[64+k], mults[1][k]*bsteps[1], biases[1], numer)
-				q[k] = quantAC(coef[0][k]-kx*yd, mults[0][k]*bsteps[0])
-				q[128+k] = quantAC(coef[2][k]-kb*yd, mults[2][k]*bsteps[2])
+			if !first[b] {
+				continue
+			}
+			ti := int(vtyp[b])
+			n := vtypes[ti].n * 8
+			coefOf(ti, bx, by, &coef)
+			steps := stepsOf(b)
+			tix := (by/8)*tw + bx/8
+			kx := float32(ytox[tix]) / 84
+			kb := 1 + float32(ytob[tix])/84
+			q := vq[b]
+			mm := tmul[ti]
+			for i := 0; i < n*n; i++ {
+				if isLLF(ti, i) {
+					continue
+				}
+				yd := dequantAC(q[n*n+i], mm[1][i]*steps[1], biases[1], numer)
+				q[i] = quantAC(coef[0][i]-kx*yd, mm[0][i]*steps[0])
+				q[2*n*n+i] = quantAC(coef[2][i]-kb*yd, mm[2][i]*steps[2])
 			}
 		}
 	})
@@ -369,7 +627,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	xlf, ylf := (bw+lfd-1)/lfd, (bh+lfd-1)/lfd
 	nlf := xlf * ylf
 
-	order := jxl.NaturalOrderDCT8()
 	freqCtx := jxl.CoeffFreqCtx()
 	nzCtx := jxl.CoeffNumNonzeroCtx()
 	bctxMap := jxl.DefaultBlockCtxMap()
@@ -382,14 +639,23 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		bx1, by1 := min(bx0+gd, bw), min(by0+gd, bh)
 		var nzRow [3][]int32
 		for c := range nzRow {
-			nzRow[c] = make([]int32, gd)
+			nzRow[c] = make([]int32, gd+4)
 		}
 		for by := by0; by < by1; by++ {
 			for bx := bx0; bx < bx1; bx++ {
 				b := by*bw + bx
+				if !first[b] {
+					continue
+				}
+				ti := int(vtyp[b])
+				vt := vtypes[ti]
+				nbk := int32(vt.n * vt.n)
+				lg := uint(bits.TrailingZeros32(uint32(nbk)))
+				n := vt.n * 8
+				ord := torder[ti]
 				for i, c := range chanOrder {
-					q := qac[b*192+c*64 : b*192+c*64+64]
-					bctx := int(bctxMap[i*13])
+					q := vq[b][c*n*n : (c+1)*n*n]
+					bctx := int(bctxMap[i*13+vt.order])
 					sx, sy := bx-bx0, by-by0
 					var pred int32
 					switch {
@@ -407,24 +673,27 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 						pidx = 4 + pred/2
 					}
 					nz := int32(0)
-					for k := 1; k < 64; k++ {
-						if q[order[k]] != 0 {
+					for k := int(nbk); k < n*n; k++ {
+						if q[ord[k]] != 0 {
 							nz++
 						}
 					}
 					emit(bctx+int(pidx)*numBlockCtx, uint32(nz))
-					nzRow[c][sx] = nz
+					nzv := (nz + nbk - 1) >> lg
+					for dx := 0; dx < vt.n; dx++ {
+						nzRow[c][sx+dx] = nzv
+					}
 					if nz == 0 {
 						continue
 					}
 					base := bctx*458 + 37*numBlockCtx
 					prev := 0
-					if nz <= 4 {
+					if nz <= 4*nbk {
 						prev = 1
 					}
-					for k := 1; k < 64 && nz > 0; k++ {
-						v := q[order[k]]
-						ctx := base + (int(nzCtx[nz-1])+int(freqCtx[k-1]))*2 + prev
+					for k := int(nbk); k < n*n && nz > 0; k++ {
+						v := q[ord[k]]
+						ctx := base + (int(nzCtx[(nz-1)>>lg])+int(freqCtx[(k-int(nbk))>>lg]))*2 + prev
 						emit(ctx, bitio.PackSigned(v))
 						if v != 0 {
 							nz--
@@ -484,9 +753,19 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			lf = append(lf, ch)
 		}
 		writeModularLocal(w, lf)
-		// HF metadata: all DCT8, constant quant field, no CfL, no sharpness
-		count := cw * chh
-		w.Write(uint(ceilLog2(count)), uint64(count-1))
+		// HF metadata: strategies, quant field, CfL, sharpness
+		var acsT, acsQ []int32
+		for y := y0; y < y0+chh; y++ {
+			for x := x0; x < x0+cw; x++ {
+				if b := y*bw + x; first[b] {
+					acsT = append(acsT, int32(vtypes[vtyp[b]].acs))
+					acsQ = append(acsQ, bqf[b]-1)
+				}
+			}
+		}
+		count := len(acsT)
+		w.Write(uint(ceilLog2(cw*chh)), uint64(count-1))
+		acs := channel{w: count, h: 2, pix: append(acsT, acsQ...)}
 		ltw, lth := (cw+7)/8, (chh+7)/8
 		cx := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
 		cb := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
@@ -496,11 +775,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				cx.pix[y*ltw+x] = ytox[ti]
 				cb.pix[y*ltw+x] = ytob[ti]
 			}
-		}
-		acs := channel{w: count, h: 2, pix: make([]int32, 2*count)}
-		for i := 0; i < count; i++ {
-			bx, by := x0+i%cw, y0+i/cw
-			acs.pix[count+i] = bqf[by*bw+bx] - 1
 		}
 		sh := channel{w: cw, h: chh, pix: make([]int32, cw*chh)}
 		for i := range sh.pix {
