@@ -21,7 +21,7 @@ func usage() {
 
 Usage:
   gojxl decode [-bench N] input.jxl output.png
-  gojxl encode [-e effort] input.png output.jxl   (lossless)
+  gojxl encode [-e effort] [-d distance] input.png output.jxl  (d=0: lossless)
   gojxl info input.jxl
 `)
 	os.Exit(2)
@@ -139,6 +139,7 @@ func cmdInfo(args []string) {
 func cmdEncode(args []string) {
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
 	effort := fs.Int("e", 2, "effort 1-3")
+	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
 	fs.Parse(args)
 	if fs.NArg() < 2 {
 		usage()
@@ -153,7 +154,7 @@ func cmdEncode(args []string) {
 		fatal(err)
 	}
 	t0 := time.Now()
-	data, err := gojxl.EncodeBytes(img, &gojxl.EncodeOptions{Effort: *effort})
+	data, err := gojxl.EncodeBytes(img, &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist)})
 	if err != nil {
 		fatal(err)
 	}

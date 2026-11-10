@@ -12,6 +12,9 @@ import (
 type EncodeOptions struct {
 	// Effort (1-3): larger values use a richer context model.
 	Effort int
+	// Distance > 0 selects lossy (VarDCT) encoding with the given
+	// perceptual distance (1.0 ~ visually lossless). 0 means lossless.
+	Distance float32
 }
 
 // Encode writes img as a lossless JPEG XL codestream.
@@ -30,7 +33,11 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}
-	return enc.EncodeLossless(toPlanar(img), o)
+	im := toPlanar(img)
+	if opt != nil && opt.Distance > 0 && !im.Alpha {
+		return enc.EncodeVarDCT(im, enc.LossyOptions{Distance: opt.Distance})
+	}
+	return enc.EncodeLossless(im, o)
 }
 
 func toPlanar(img image.Image) *enc.Image {

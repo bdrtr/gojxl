@@ -183,12 +183,23 @@ func writeANSHistogram(w *bitio.Writer, counts []uint16, logAlpha uint) *ansTabl
 type ansCode struct {
 	cfg    uintCfg
 	tables []*ansTable
+	cm     []uint8
 }
 
 func writeANSCode(w *bitio.Writer, h *histograms) *ansCode {
+	return writeANSCodeCM(w, h, nil)
+}
+
+// writeANSCodeCM writes an ANS code; cm maps contexts to the histograms in
+// h (nil = identity).
+func writeANSCodeCM(w *bitio.Writer, h *histograms, cm []uint8) *ansCode {
 	n := len(h.counts)
 	w.WriteBool(false) // lz77
-	if n > 1 {
+	if cm != nil {
+		if len(cm) > 1 {
+			writeContextMap(w, cm, n)
+		}
+	} else if n > 1 {
 		writeIdentityContextMap(w, n)
 	}
 	w.WriteBool(false) // ANS
@@ -206,7 +217,7 @@ func writeANSCode(w *bitio.Writer, h *histograms) *ansCode {
 	for i := 0; i < n; i++ {
 		h.cfg.write(w, uint32(logAlpha))
 	}
-	ac := &ansCode{cfg: h.cfg, tables: make([]*ansTable, n)}
+	ac := &ansCode{cfg: h.cfg, tables: make([]*ansTable, n), cm: cm}
 	for i, c := range h.counts {
 		f := make([]uint64, 1<<logAlpha)
 		copy(f, c)
@@ -230,6 +241,9 @@ type ansStream struct {
 }
 
 func (s *ansStream) add(ctx int, v uint32) {
+	if s.c.cm != nil {
+		ctx = int(s.c.cm[ctx])
+	}
 	tok, nb, bv := s.c.cfg.encode(v)
 	s.toks = append(s.toks, ansToken{ctx: uint16(ctx), tok: uint16(tok), nb: uint8(nb), bits: bv, chunk: -1})
 }

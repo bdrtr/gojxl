@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"math"
 	"math/rand"
 	"testing"
 )
@@ -78,6 +79,45 @@ func TestLosslessRoundTrip(t *testing.T) {
 				}
 				sameImage(t, img, out)
 			}
+		}
+	}
+}
+
+func psnr(a, b image.Image) float64 {
+	var se float64
+	n := 0
+	ab, bb := a.Bounds(), b.Bounds()
+	for y := 0; y < ab.Dy(); y++ {
+		for x := 0; x < ab.Dx(); x++ {
+			r1, g1, b1, _ := a.At(ab.Min.X+x, ab.Min.Y+y).RGBA()
+			r2, g2, b2, _ := b.At(bb.Min.X+x, bb.Min.Y+y).RGBA()
+			for _, d := range []float64{float64(r1) - float64(r2), float64(g1) - float64(g2), float64(b1) - float64(b2)} {
+				d /= 257
+				se += d * d
+				n++
+			}
+		}
+	}
+	if se == 0 {
+		return 99
+	}
+	return 10 * math.Log10(255*255/(se/float64(n)))
+}
+
+func TestLossyRoundTrip(t *testing.T) {
+	r := rand.New(rand.NewSource(3))
+	for _, sz := range [][2]int{{1, 1}, {9, 17}, {256, 256}, {300, 260}, {700, 500}} {
+		img := randomImage("smooth", sz[0], sz[1], r)
+		data, err := EncodeBytes(img, &EncodeOptions{Distance: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%v: %v", sz, err)
+		}
+		if p := psnr(img, out); p < 28 {
+			t.Fatalf("%v: PSNR %.1f too low", sz, p)
 		}
 	}
 }
