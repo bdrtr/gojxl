@@ -255,19 +255,19 @@ func walkStream(chs []channel, s stream, root []*tnode, fn func(ctx int, v uint3
 			}
 			for x := 0; x < sw; x++ {
 				var Wv, N, NW, NE, NN int32
-				if x > 0 {
-					Wv = row[x-1]
-				} else if y > 0 {
-					Wv = prev[x]
-				}
-				if y > 0 {
-					N = prev[x]
-				} else {
-					N = Wv
-				}
 				if x > 0 && y > 0 {
-					NW = prev[x-1]
+					Wv, N, NW = row[x-1], prev[x], prev[x-1]
 				} else {
+					if x > 0 {
+						Wv = row[x-1]
+					} else if y > 0 {
+						Wv = prev[x]
+					}
+					if y > 0 {
+						N = prev[x]
+					} else {
+						N = Wv
+					}
 					NW = Wv
 				}
 				var wpPred, maxErr int64
@@ -316,6 +316,15 @@ func walkStream(chs []channel, s stream, root []*tnode, fn func(ctx int, v uint3
 			}
 		}
 	}
+}
+
+func streamSamples(chs []channel, s stream) int {
+	n := 0
+	for _, ci := range s.chans {
+		c := chs[ci]
+		n += max(0, min(s.w, c.w-s.x0)) * max(0, min(s.h, c.h-s.y0))
+	}
+	return n
 }
 
 func usesProp(n *tnode, p int) bool {
@@ -564,11 +573,13 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	lfg.WriteBool(true) // global tree present
 	tc := writeCode(lfg, treeH)
 	treeTokens(nodes, func(ctx int, v uint32) { tc.write(lfg, ctx, v) })
-	dc := writeCode(lfg, data)
+	dc := writeANSCode(lfg, data)
 	lfg.WriteBool(true) // use global tree
 	lfg.WriteBool(true) // default WP header
 	transforms(lfg)
-	walkStream(chs, global, roots, func(ctx int, v uint32) { dc.write(lfg, ctx, v) })
+	gs := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, global))}
+	walkStream(chs, global, roots, gs.add)
+	gs.flush(lfg)
 
 	out := &bitio.Writer{}
 	writeImageHeader(out, im)
@@ -590,7 +601,9 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 			w.WriteBool(true) // use global tree
 			w.WriteBool(true) // default WP
 			w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
-			walkStream(chs, groups[i], roots, func(ctx int, v uint32) { dc.write(w, ctx, v) })
+			st := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, groups[i]))}
+			walkStream(chs, groups[i], roots, st.add)
+			st.flush(w)
 		}
 		secs[i] = w.Bytes()
 	})

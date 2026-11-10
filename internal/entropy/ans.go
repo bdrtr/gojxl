@@ -67,8 +67,6 @@ func readLogCount(br *bitio.Reader) uint16 {
 
 func readANSHistogram(br *bitio.Reader, logAlpha uint) (*ansHistogram, error) {
 	tableSize := 1 << logAlpha
-	logBucket := ansLogTabSize - logAlpha
-	bucketSize := uint16(1) << logBucket
 	dist := make([]uint16, tableSize)
 	var alphabetSize int
 
@@ -191,6 +189,14 @@ func readANSHistogram(br *bitio.Reader, logAlpha uint) (*ansHistogram, error) {
 		dist[omitPos] = uint16(ansTabSize - acc)
 	}
 
+	return buildAlias(dist, alphabetSize, logAlpha), nil
+}
+
+// buildAlias builds the alias table for a distribution summing to 4096.
+func buildAlias(dist []uint16, alphabetSize int, logAlpha uint) *ansHistogram {
+	tableSize := 1 << logAlpha
+	logBucket := ansLogTabSize - logAlpha
+	bucketSize := uint16(1) << logBucket
 	h := &ansHistogram{
 		buckets:      make([]ansBucket, tableSize),
 		logBucket:    logBucket,
@@ -209,7 +215,7 @@ func readANSHistogram(br *bitio.Reader, logAlpha uint) (*ansHistogram, error) {
 					aliasSymbol: uint16(i),
 				}
 			}
-			return h, nil
+			return h
 		}
 	}
 
@@ -258,7 +264,7 @@ func readANSHistogram(br *bitio.Reader, logAlpha uint) (*ansHistogram, error) {
 			b.freq1XorF0 = dist[i] ^ dist[alias[i]]
 		}
 	}
-	return h, nil
+	return h
 }
 
 // readSymbol decodes one symbol updating the ANS state.
@@ -282,4 +288,26 @@ func (h *ansHistogram) readSymbol(br *bitio.Reader, state *uint32) uint32 {
 	}
 	*state = s
 	return sym
+}
+
+// ANSEncodeSlots returns, for each symbol, the table slots ordered by
+// offset, as needed by an encoder producing streams for this decoder.
+func ANSEncodeSlots(dist []uint16, alphabetSize int, logAlpha uint) [][]uint16 {
+	h := buildAlias(dist, alphabetSize, logAlpha)
+	slots := make([][]uint16, len(dist))
+	for i, d := range dist {
+		slots[i] = make([]uint16, d)
+	}
+	for idx := uint32(0); idx < ansTabSize; idx++ {
+		i := idx >> h.logBucket
+		pos := idx & h.bucketMask
+		b := &h.buckets[i]
+		sym, off := i, pos
+		if pos >= uint32(b.cutoff) {
+			sym = uint32(b.aliasSymbol)
+			off = pos + uint32(b.offset1)
+		}
+		slots[sym][off] = uint16(idx)
+	}
+	return slots
 }
