@@ -536,6 +536,7 @@ func (v *vardctState) finish() error {
 	if err != nil {
 		return err
 	}
+	v.groups = nil // coefficients are no longer needed
 	if fn := os.Getenv("JXLDUMPACS"); fn != "" {
 		f, _ := os.Create(fn)
 		fmt.Fprintf(f, "%d %d\n", v.bw, v.bh)

@@ -48,6 +48,7 @@ func cmdDecode(args []string) {
 	bench := fs.Int("bench", 0, "decode N times and report speed")
 	depth := fs.Int("depth", 0, "output bit depth (16 forces 16-bit PNG)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
+	memprof := fs.String("memprofile", "", "write allocation profile to file")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
@@ -79,6 +80,14 @@ func cmdDecode(args []string) {
 			}
 		}
 		el = time.Since(t0) / time.Duration(*bench)
+	}
+	if *memprof != "" {
+		mf, err := os.Create(*memprof)
+		if err != nil {
+			fatal(err)
+		}
+		pprof.Lookup("allocs").WriteTo(mf, 0)
+		mf.Close()
 	}
 	b := img.Bounds()
 	mp := float64(b.Dx()*b.Dy()) / 1e6

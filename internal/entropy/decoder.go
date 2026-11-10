@@ -348,12 +348,17 @@ func (d *Decoder) ReadUintClustered(br *bitio.Reader, cluster uint8) uint32 {
 }
 
 func (d *Decoder) readLZ77(br *bitio.Reader, cluster uint8) uint32 {
-	if d.window == nil {
-		d.window = make([]uint32, lzWindow)
+	if int(d.numDecoded) >= len(d.window) && len(d.window) < lzWindow {
+		// grow the window lazily (it is a ring buffer once full size)
+		n := max(1024, 2*len(d.window))
+		n = min(n, lzWindow)
+		w := make([]uint32, n)
+		copy(w, d.window)
+		d.window = w
 	}
 	var r uint32
 	if d.numToCopy > 0 {
-		r = d.window[d.copyPos&(lzWindow-1)]
+		r = d.window[d.copyPos&(lzWindow-1)&uint32(len(d.window)-1)]
 		d.copyPos++
 		d.numToCopy--
 	} else {
@@ -390,14 +395,14 @@ func (d *Decoder) readLZ77(br *bitio.Reader, cluster uint8) uint32 {
 			}
 			d.copyPos = d.numDecoded - dist
 			d.numToCopy = n
-			r = d.window[d.copyPos&(lzWindow-1)]
+			r = d.window[d.copyPos&(lzWindow-1)&uint32(len(d.window)-1)]
 			d.copyPos++
 			d.numToCopy--
 		} else {
 			r = d.configs[cluster].readUint(br, tok)
 		}
 	}
-	d.window[d.numDecoded&(lzWindow-1)] = r
+	d.window[d.numDecoded&(lzWindow-1)&uint32(len(d.window)-1)] = r
 	d.numDecoded++
 	return r
 }

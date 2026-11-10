@@ -144,7 +144,6 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 	f := &fd.fh.Filter
 	W, H := fd.color[0].W, fd.color[0].H
 	const B = 5 // border
-	pw := W + 2*B
 	in := fd.color
 	var outPlanes [3]*Plane
 	for c := 0; c < 3; c++ {
@@ -171,16 +170,26 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 	}
 	no := len(offs)
 	const band = 16
-	nb := (H + band - 1) / band
+	const tileW = 256
+	nby := (H + band - 1) / band
+	nbx := (W + tileW - 1) / tileW
 	outs := [3][]float32{outPlanes[0].Pix, outPlanes[1].Pix, outPlanes[2].Pix}
 	nw := numWorkers()
 	scratch := make([][]float32, nw)
-	_ = parallelForW(nb, func(wk, bi int) error {
-		y0 := bi * band
+	s0, s1, s2 := sc[0], sc[1], sc[2]
+	_ = parallelForW(nby*nbx, func(wk, ti int) error {
+		y0 := (ti / nbx) * band
 		y1 := min(H, y0+band)
+		tx0 := (ti % nbx) * tileW
+		tx1 := min(W, tx0+tileW)
+		tw := tx1 - tx0
 		ybase := y0 - B
 		prow := (y1 + B) - ybase
-		need := 3*prow*pw + 2*len(offs)*(band+4)*(W+6)
+		pw := tw + 2*B
+		ry0 := y0 - 3
+		rows := y1 - ry0 + 1
+		dw := tw + 6
+		need := 3*prow*pw + 2*no*rows*dw
 		if len(scratch[wk]) < need {
 			scratch[wk] = make([]float32, need)
 		}
@@ -192,24 +201,21 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 			for r := 0; r < prow; r++ {
 				srow := src.Row(mirror(ybase+r, H))
 				dst := pads[c][r*pw : (r+1)*pw]
-				copy(dst[B:B+W], srow)
-				for x := 0; x < B; x++ {
-					dst[x] = srow[mirror(x-B, W)]
-					dst[B+W+x] = srow[mirror(W+x, W)]
+				if tx0-B >= 0 && tx1+B <= W {
+					copy(dst, srow[tx0-B:tx1+B])
+					continue
+				}
+				for i := range dst {
+					dst[i] = srow[mirror(tx0-B+i, W)]
 				}
 			}
 		}
 		dbuf := buf[3*prow*pw:]
-		// D rows cover y in [y0-3, y1], x in [-3, W+2]
-		ry0 := y0 - 3
-		rows := y1 - ry0 + 1
-		dw := W + 6
 		D := make([][]float32, no)
 		for k := range D {
 			D[k] = dbuf[:rows*dw]
 			dbuf = dbuf[rows*dw:]
 		}
-		s0, s1, s2 := sc[0], sc[1], sc[2]
 		for k, o := range offs {
 			dk := D[k]
 			for r := 0; r < rows; r++ {
@@ -226,10 +232,9 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 				}
 			}
 		}
-		// plus sums (for steps 0 and 1)
-		var P [][]float32
+		S := D
 		if step != 2 {
-			P = make([][]float32, no)
+			P := make([][]float32, no)
 			for k := range P {
 				pk := dbuf[:rows*dw]
 				dbuf = dbuf[rows*dw:]
@@ -245,60 +250,9 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 				}
 				P[k] = pk
 			}
-		}
-		S := D
-		if step != 2 {
 			S = P
 		}
-		if no == 2 {
-			// fast path: 4 neighbours (down/up via S[0], right/left via S[1])
-			SV, SH := S[0], S[1]
-			p0, p1, p2 := pads[0], pads[1], pads[2]
-			for y := y0; y < y1; y++ {
-				var rowMul [8]float32
-				if y%8 == 0 || y%8 == 7 {
-					for i := range rowMul {
-						rowMul[i] = bsm
-					}
-				} else {
-					rowMul = [8]float32{bsm, sm, sm, sm, sm, sm, sm, bsm}
-				}
-				srow := sig[(y/8)*sbw:]
-				r := y - ry0
-				o0 := outs[0][y*W : (y+1)*W]
-				o1 := outs[1][y*W : (y+1)*W]
-				o2 := outs[2][y*W : (y+1)*W]
-				base := (y-ybase)*pw + B
-				up, dn := base-pw, base+pw
-				sv := SV[r*dw+3 : r*dw+3+W]
-				svu := SV[(r-1)*dw+3 : (r-1)*dw+3+W]
-				sh := SH[r*dw+3 : r*dw+3+W]
-				shl := SH[r*dw+2 : r*dw+2+W]
-				c0, c1, c2 := p0[base:base+W], p1[base:base+W], p2[base:base+W]
-				l0, l1, l2 := p0[base-1:base-1+W], p1[base-1:base-1+W], p2[base-1:base-1+W]
-				rr0, rr1, rr2 := p0[base+1:base+1+W], p1[base+1:base+1+W], p2[base+1:base+1+W]
-				u0, u1, u2 := p0[up:up+W], p1[up:up+W], p2[up:up+W]
-				d0, d1, d2 := p0[dn:dn+W], p1[dn:dn+W], p2[dn:dn+W]
-				for x := 0; x < W; x++ {
-					is := srow[x>>3]
-					if is < minSigma {
-						o0[x], o1[x], o2[x] = c0[x], c1[x], c2[x]
-						continue
-					}
-					inv := is * rowMul[x&7]
-					wd := relu32(sv[x]*inv + 1)
-					wu := relu32(svu[x]*inv + 1)
-					wr := relu32(sh[x]*inv + 1)
-					wl := relu32(shl[x]*inv + 1)
-					iw := 1 / (1 + wd + wu + wr + wl)
-					o0[x] = (c0[x] + wd*d0[x] + wu*u0[x] + wr*rr0[x] + wl*l0[x]) * iw
-					o1[x] = (c1[x] + wd*d1[x] + wu*u1[x] + wr*rr1[x] + wl*l1[x]) * iw
-					o2[x] = (c2[x] + wd*d2[x] + wu*u2[x] + wr*rr2[x] + wl*l2[x]) * iw
-				}
-			}
-			return nil
-		}
-
+		p0, p1, p2 := pads[0], pads[1], pads[2]
 		for y := y0; y < y1; y++ {
 			var rowMul [8]float32
 			if y%8 == 0 || y%8 == 7 {
@@ -310,42 +264,70 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 			}
 			srow := sig[(y/8)*sbw:]
 			r := y - ry0
-			o0 := outs[0][y*W : (y+1)*W]
-			o1 := outs[1][y*W : (y+1)*W]
-			o2 := outs[2][y*W : (y+1)*W]
-			c0 := pads[0][(y-ybase)*pw+B:]
-			c1 := pads[1][(y-ybase)*pw+B:]
-			c2 := pads[2][(y-ybase)*pw+B:]
-			for x := 0; x < W; x++ {
+			o0 := outs[0][y*W+tx0 : y*W+tx1]
+			o1 := outs[1][y*W+tx0 : y*W+tx1]
+			o2 := outs[2][y*W+tx0 : y*W+tx1]
+			base := (y-ybase)*pw + B
+			c0, c1, c2 := p0[base:base+tw], p1[base:base+tw], p2[base:base+tw]
+			if no == 2 {
+				SV, SH := S[0], S[1]
+				up, dn := base-pw, base+pw
+				sv := SV[r*dw+3 : r*dw+3+tw]
+				svu := SV[(r-1)*dw+3 : (r-1)*dw+3+tw]
+				sh := SH[r*dw+3 : r*dw+3+tw]
+				shl := SH[r*dw+2 : r*dw+2+tw]
+				l0, l1, l2 := p0[base-1:base-1+tw], p1[base-1:base-1+tw], p2[base-1:base-1+tw]
+				rr0, rr1, rr2 := p0[base+1:base+1+tw], p1[base+1:base+1+tw], p2[base+1:base+1+tw]
+				u0, u1, u2 := p0[up:up+tw], p1[up:up+tw], p2[up:up+tw]
+				d0, d1, d2 := p0[dn:dn+tw], p1[dn:dn+tw], p2[dn:dn+tw]
+				for lx := 0; lx < tw; lx++ {
+					x := tx0 + lx
+					is := srow[x>>3]
+					if is < minSigma {
+						o0[lx], o1[lx], o2[lx] = c0[lx], c1[lx], c2[lx]
+						continue
+					}
+					inv := is * rowMul[x&7]
+					wd := relu32(sv[lx]*inv + 1)
+					wu := relu32(svu[lx]*inv + 1)
+					wr := relu32(sh[lx]*inv + 1)
+					wl := relu32(shl[lx]*inv + 1)
+					iw := 1 / (1 + wd + wu + wr + wl)
+					o0[lx] = (c0[lx] + wd*d0[lx] + wu*u0[lx] + wr*rr0[lx] + wl*l0[lx]) * iw
+					o1[lx] = (c1[lx] + wd*d1[lx] + wu*u1[lx] + wr*rr1[lx] + wl*l1[lx]) * iw
+					o2[lx] = (c2[lx] + wd*d2[lx] + wu*u2[lx] + wr*rr2[lx] + wl*l2[lx]) * iw
+				}
+				continue
+			}
+			for lx := 0; lx < tw; lx++ {
+				x := tx0 + lx
 				is := srow[x>>3]
-				X, Y, Bv := c0[x], c1[x], c2[x]
+				X, Y, Bv := c0[lx], c1[lx], c2[lx]
 				if is < minSigma {
-					o0[x], o1[x], o2[x] = X, Y, Bv
+					o0[lx], o1[lx], o2[lx] = X, Y, Bv
 					continue
 				}
 				inv := is * rowMul[x&7]
 				wsum := float32(1)
 				ax, ay, ab := X, Y, Bv
-				di := r*dw + x + 3
+				di := r*dw + lx + 3
 				for k, o := range offs {
 					sk := S[k]
-					// towards +o
 					w := relu32(sk[di]*inv + 1)
-					q := (y-ybase+o[0])*pw + B + x + o[1]
+					q := base + o[0]*pw + lx + o[1]
 					wsum += w
-					ax += w * pads[0][q]
-					ay += w * pads[1][q]
-					ab += w * pads[2][q]
-					// towards -o: value at q-o
+					ax += w * p0[q]
+					ay += w * p1[q]
+					ab += w * p2[q]
 					w = relu32(sk[di-o[0]*dw-o[1]]*inv + 1)
-					q = (y-ybase-o[0])*pw + B + x - o[1]
+					q = base - o[0]*pw + lx - o[1]
 					wsum += w
-					ax += w * pads[0][q]
-					ay += w * pads[1][q]
-					ab += w * pads[2][q]
+					ax += w * p0[q]
+					ay += w * p1[q]
+					ab += w * p2[q]
 				}
 				iw := 1 / wsum
-				o0[x], o1[x], o2[x] = ax*iw, ay*iw, ab*iw
+				o0[lx], o1[lx], o2[lx] = ax*iw, ay*iw, ab*iw
 			}
 		}
 		return nil
