@@ -232,9 +232,113 @@ func init() {
 	}
 }
 
+var secTab = func() (t [65][]float32) {
+	for n := 2; n <= 64; n *= 2 {
+		t[n] = make([]float32, n/2)
+		for i := range t[n] {
+			t[n][i] = float32(1 / (2 * math.Cos((float64(i)+0.5)*math.Pi/float64(n))))
+		}
+	}
+	return
+}()
+
+// fdct1d computes M^T x (unnormalised), the transpose of the decoder's
+// scaled IDCT; dividing by N gives the scaled forward DCT.
+func fdct1d(x, tmp []float32) {
+	n := len(x)
+	switch n {
+	case 1:
+		return
+	case 2:
+		a, b := x[0], x[1]
+		x[0], x[1] = a+b, a-b
+		return
+	case 8:
+		fdct8(x)
+		return
+	}
+	h := n / 2
+	sh := secTab[n]
+	u, v := tmp[:h], tmp[h:n]
+	for i := 0; i < h; i++ {
+		a, b := x[i], x[n-1-i]
+		u[i] = a + b
+		v[i] = (a - b) * sh[i]
+	}
+	fdct1d(u, x[:h])
+	fdct1d(v, x[h:n])
+	// B^T on the odd part
+	for i := 0; i < h; i++ {
+		x[2*i] = u[i]
+	}
+	for i := 0; i < h; i++ {
+		w := v[i]
+		if i == 0 {
+			w *= math.Sqrt2
+		}
+		if i+1 < h {
+			w += v[i+1]
+		}
+		x[2*i+1] = w
+	}
+}
+
+var (
+	f4a = secTab[4][0]
+	f4b = secTab[4][1]
+	f8  = secTab[8]
+)
+
+// fdct8 is the unrolled transpose of the decoder's idct8 (unnormalised).
+func fdct8(x []float32) {
+	_ = x[7]
+	const r2 = math.Sqrt2
+	E0, O0 := x[0]+x[7], x[0]-x[7]
+	E1, O1 := x[1]+x[6], x[1]-x[6]
+	E2, O2 := x[2]+x[5], x[2]-x[5]
+	E3, O3 := x[3]+x[4], x[3]-x[4]
+	P0, P1, P2, P3 := O0*f8[0], O1*f8[1], O2*f8[2], O3*f8[3]
+	f0, fp0 := P0+P3, P0-P3
+	f1, fp1 := P1+P2, P1-P2
+	G0, G1 := fp0*f4a, fp1*f4b
+	fo0, fo1 := G0+G1, G0-G1
+	o0, o1, o2, o3 := f0+f1, fo0*r2+fo1, f0-f1, fo1
+	e0, ep0 := E0+E3, E0-E3
+	e1, ep1 := E1+E2, E1-E2
+	H0, H1 := ep0*f4a, ep1*f4b
+	eo0, eo1 := H0+H1, H0-H1
+	x[0], x[4] = e0+e1, e0-e1
+	x[2], x[6] = eo0*r2+eo1, eo1
+	x[1], x[3], x[5], x[7] = o0*r2+o1, o1+o2, o2+o3, o3
+}
+
 // fdctN computes the scaled NxN DCT of the block at src (row stride) and
 // stores it in the decoder's transposed layout out[kx*n+ky].
 func fdctN(src []float32, stride, n int, out []float32) {
+	var tmpA [32 * 32]float32
+	var col, scr [64]float32
+	tmp := tmpA[:n*n]
+	inv := 1 / float32(n*n)
+	for y := 0; y < n; y++ {
+		r := tmp[y*n : y*n+n]
+		copy(r, src[y*stride:y*stride+n])
+		fdct1d(r, scr[:])
+	}
+	for kx := 0; kx < n; kx++ {
+		c := col[:n]
+		for y := 0; y < n; y++ {
+			c[y] = tmp[y*n+kx]
+		}
+		fdct1d(c, scr[:])
+		o := out[kx*n : kx*n+n]
+		for ky := range o {
+			o[ky] = c[ky] * inv
+		}
+	}
+}
+
+// fdctNRef is the direct O(N^3) reference.
+func fdctNRef(src []float32, stride, n int, out []float32) {
 	bas := dctBasisN(n)
 	tmp := make([]float32, n*n)
 	for y := 0; y < n; y++ {
@@ -491,6 +595,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	qdc := [3][]int32{make([]int32, nb), make([]int32, nb), make([]int32, nb)}
 	bqf := make([]int32, nb)
 	vq := make([][]int32, nb)
+	vc := make([][]float32, nb) // cached X and B coefficients per varblock
 	aqStrength := float32(opt.AQ)
 	tw := (bw + 7) / 8
 	thh := (bh + 7) / 8
@@ -570,6 +675,10 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				sums[3*t+2] += yd * yd
 			}
 			vq[b] = q
+			cc := make([]float32, 2*n*n)
+			copy(cc, coef[0][:n*n])
+			copy(cc[n*n:], coef[2][:n*n])
+			vc[b] = cc
 		}
 		rowSums[by] = sums
 	})
@@ -602,7 +711,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 			ti := int(vtyp[b])
 			n := vtypes[ti].n * 8
-			coefOf(ti, bx, by, &coef)
+			coef[0], coef[2] = vc[b][:n*n], vc[b][n*n:]
 			steps := stepsOf(b)
 			tix := (by/8)*tw + bx/8
 			kx := float32(ytox[tix]) / 84
@@ -617,6 +726,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				q[i] = quantAC(coef[0][i]-kx*yd, mm[0][i]*steps[0])
 				q[2*n*n+i] = quantAC(coef[2][i]-kb*yd, mm[2][i]*steps[2])
 			}
+			vc[b] = nil
 		}
 	})
 
