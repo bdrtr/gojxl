@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg"
 	"image/png"
 	"os"
 	"runtime/pprof"
@@ -19,6 +21,7 @@ func usage() {
 
 Usage:
   gojxl decode [-bench N] input.jxl output.png
+  gojxl encode [-e effort] input.png output.jxl   (lossless)
   gojxl info input.jxl
 `)
 	os.Exit(2)
@@ -33,6 +36,8 @@ func main() {
 		cmdDecode(os.Args[2:])
 	case "info", "i":
 		cmdInfo(os.Args[2:])
+	case "encode", "e":
+		cmdEncode(os.Args[2:])
 	default:
 		usage()
 	}
@@ -129,4 +134,34 @@ func cmdInfo(args []string) {
 	fmt.Printf("bits per sample: %d (float=%v)\n", info.BitsPerSample, info.FloatSamples)
 	fmt.Printf("xyb: %v, grey: %v, alpha: %v, animated: %v\n", info.XYB, info.Grey, info.HasAlpha, info.Animated)
 	fmt.Printf("orientation: %d, extra channels: %d, icc: %d bytes\n", info.Orientation, info.NumExtraChannels, len(info.ICC))
+}
+
+func cmdEncode(args []string) {
+	fs := flag.NewFlagSet("encode", flag.ExitOnError)
+	effort := fs.Int("e", 2, "effort 1-3")
+	fs.Parse(args)
+	if fs.NArg() < 2 {
+		usage()
+	}
+	f, err := os.Open(fs.Arg(0))
+	if err != nil {
+		fatal(err)
+	}
+	img, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		fatal(err)
+	}
+	t0 := time.Now()
+	data, err := gojxl.EncodeBytes(img, &gojxl.EncodeOptions{Effort: *effort})
+	if err != nil {
+		fatal(err)
+	}
+	el := time.Since(t0)
+	if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
+		fatal(err)
+	}
+	b := img.Bounds()
+	mp := float64(b.Dx()*b.Dy()) / 1e6
+	fmt.Fprintf(os.Stderr, "%dx%d, %d bytes (%.3f bpp), %v, %.2f MP/s\n", b.Dx(), b.Dy(), len(data), float64(len(data)*8)/float64(b.Dx()*b.Dy()), el, mp/el.Seconds())
 }
