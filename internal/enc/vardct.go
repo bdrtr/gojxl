@@ -12,6 +12,51 @@ import (
 type LossyOptions struct {
 	// Distance is the target perceptual distance (1.0 ~ visually lossless).
 	Distance float32
+	// NoGaborish / EPFIters tune the decoder-side restoration filters.
+	NoGaborish bool
+	EPFIters   int     // -1: default
+	Sharpness  int     // EPF sharpness per block (0-7), -1: default
+	AQ         float64 // adaptive quantisation strength (0 = off)
+	NoCfL      bool    // disable per-tile chroma-from-luma
+}
+
+func abs32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// gaborishInverse sharpens a plane with a truncated Neumann series of the
+// inverse Gaborish kernel so that the decoder blur restores the input.
+func gaborishInverse(p []float32, w, h int) {
+	const w1, w2 = 0.115169525, 0.061248592
+	div := float32(1 + 4*(w1+w2))
+	k0, k1, k2 := 1/div, float32(w1)/div, float32(w2)/div
+	blur := func(src []float32) []float32 {
+		out := make([]float32, len(src))
+		parallel(h, func(y int) {
+			t := src[max(y-1, 0)*w:]
+			m := src[y*w:]
+			b := src[min(y+1, h-1)*w:]
+			for x := 0; x < w; x++ {
+				xl, xr := max(x-1, 0), min(x+1, w-1)
+				out[y*w+x] = k0*m[x] + k1*(m[xl]+m[xr]+t[x]+b[x]) + k2*(t[xl]+t[xr]+b[xl]+b[xr])
+			}
+		})
+		return out
+	}
+	// y = x + r + r2 + r3 with r_{n+1} = r_n - K r_n
+	r := append([]float32(nil), p...)
+	acc := append([]float32(nil), p...)
+	for it := 0; it < 3; it++ {
+		kr := blur(r)
+		for i := range r {
+			r[i] -= kr[i]
+			acc[i] += r[i]
+		}
+	}
+	copy(p, acc)
 }
 
 const (
@@ -188,6 +233,20 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	bw, bh := (im.W+7)/8, (im.H+7)/8
 	pw, ph := bw*8, bh*8
 	xyb := toXYB(im, pw, ph)
+	gab := !opt.NoGaborish
+	if gab {
+		for c := 0; c < 3; c++ {
+			gaborishInverse(xyb[c], pw, ph)
+		}
+	}
+	epfIters := opt.EPFIters
+	if epfIters < 0 {
+		epfIters = 0
+	}
+	sharp := opt.Sharpness
+	if sharp < 0 {
+		sharp = 4
+	}
 
 	// quantiser parameters
 	const gs = 2048
@@ -196,7 +255,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	qlf := int(math.Round(float64(64 / d)))
 	qlf = min(max(qlf, 16), 1024)
 	scale := float32(65536.0) / float32(gs) / float32(qf)
-	steps := [3]float32{scale * 0.8, scale, scale} // x_qm_scale 3, b_qm_scale 2
+	_ = scale
 	lfDeq := [3]float32{1.0 / 32 / 128, 1.0 / 4 / 128, 1.0 / 2 / 128}
 	var mulDC [3]float32
 	for c := 0; c < 3; c++ {
@@ -210,38 +269,98 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	nb := bw * bh
 	qdc := [3][]int32{make([]int32, nb), make([]int32, nb), make([]int32, nb)}
 	qac := make([]int32, nb*192)
-	parallel(bh, func(by int) {
+	bqf := make([]int32, nb)
+	aqStrength := float32(opt.AQ)
+	tw := (bw + 7) / 8
+	thh := (bh + 7) / 8
+	// per block-row partial least-squares sums per 64x64 tile: sxy, sbY, syy
+	rowSums := make([][]float64, bh)
+	loadBlock := func(bx, by int, coef *[3][64]float32) {
 		var blk, s [64]float32
+		for c := 0; c < 3; c++ {
+			p := xyb[c]
+			for y := 0; y < 8; y++ {
+				copy(blk[y*8:y*8+8], p[(by*8+y)*pw+bx*8:])
+			}
+			fdct8x8(&blk, &s)
+			coef[c] = s
+		}
+	}
+	blockSteps := func(b int) [3]float32 {
+		bs := float32(65536.0) / float32(gs) / float32(bqf[b])
+		return [3]float32{bs * 0.8, bs, bs}
+	}
+	// pass A: AQ, DC, Y AC and CfL statistics
+	parallel(bh, func(by int) {
 		var coef [3][64]float32
+		sums := make([]float64, 3*tw)
 		for bx := 0; bx < bw; bx++ {
 			b := by*bw + bx
-			for c := 0; c < 3; c++ {
-				p := xyb[c]
-				for y := 0; y < 8; y++ {
-					copy(blk[y*8:y*8+8], p[(by*8+y)*pw+bx*8:])
+			loadBlock(bx, by, &coef)
+			bq := qf
+			if aqStrength > 0 {
+				var act float32
+				for k := 1; k < 64; k++ {
+					act += abs32(coef[1][k])
 				}
-				fdct8x8(&blk, &s)
-				coef[c] = s
+				m := float32(math.Pow(float64(0.02/(act+0.02)), float64(aqStrength)))
+				bq = int32(math.Round(float64(float32(qf) * min(max(m*1.6, 0.5), 2.5))))
+				bq = min(max(bq, 1), 256)
 			}
-			// DC: Y, X direct; B relative to dequantised Y
+			bqf[b] = bq
+			bsteps := blockSteps(b)
 			qy := int32(math.Round(float64(coef[1][0] / mulDC[1])))
 			yDC := float32(qy) * mulDC[1]
 			qdc[1][b] = qy
 			qdc[0][b] = int32(math.Round(float64(coef[0][0] / mulDC[0])))
 			qdc[2][b] = int32(math.Round(float64((coef[2][0] - yDC) / mulDC[2])))
-			// AC: Y first (B is coded relative to dequantised Y)
 			q := qac[b*192 : b*192+192]
-			var yDeq [64]float32
+			t := bx / 8
 			for k := 1; k < 64; k++ {
-				st := mults[1][k] * steps[1]
+				st := mults[1][k] * bsteps[1]
 				q[64+k] = quantAC(coef[1][k], st)
-				yDeq[k] = dequantAC(q[64+k], st, biases[1], numer)
+				yd := float64(dequantAC(q[64+k], st, biases[1], numer))
+				sums[3*t] += float64(coef[0][k]) * yd
+				sums[3*t+1] += float64(coef[2][k]) * yd
+				sums[3*t+2] += yd * yd
 			}
+		}
+		rowSums[by] = sums
+	})
+	// CfL factors per tile
+	ytox := make([]int32, tw*thh)
+	ytob := make([]int32, tw*thh)
+	for ty := 0; ty < thh; ty++ {
+		for tx := 0; tx < tw; tx++ {
+			var sx, sb, syy float64
+			for by := ty * 8; by < min(bh, ty*8+8); by++ {
+				r := rowSums[by]
+				sx += r[3*tx]
+				sb += r[3*tx+1]
+				syy += r[3*tx+2]
+			}
+			if syy > 1e-9 && !opt.NoCfL {
+				clamp := func(v float64) int32 { return int32(min(max(math.Round(v), -128), 127)) }
+				ytox[ty*tw+tx] = clamp(sx / syy * 84)
+				ytob[ty*tw+tx] = clamp((sb/syy - 1) * 84)
+			}
+		}
+	}
+	// pass B: X and B AC with tile CfL
+	parallel(bh, func(by int) {
+		var coef [3][64]float32
+		for bx := 0; bx < bw; bx++ {
+			b := by*bw + bx
+			loadBlock(bx, by, &coef)
+			bsteps := blockSteps(b)
+			ti := (by/8)*tw + bx/8
+			kx := float32(ytox[ti]) / 84
+			kb := 1 + float32(ytob[ti])/84
+			q := qac[b*192 : b*192+192]
 			for k := 1; k < 64; k++ {
-				st := mults[0][k] * steps[0]
-				q[k] = quantAC(coef[0][k], st)
-				st = mults[2][k] * steps[2]
-				q[128+k] = quantAC(coef[2][k]-yDeq[k], st)
+				yd := dequantAC(q[64+k], mults[1][k]*bsteps[1], biases[1], numer)
+				q[k] = quantAC(coef[0][k]-kx*yd, mults[0][k]*bsteps[0])
+				q[128+k] = quantAC(coef[2][k]-kb*yd, mults[2][k]*bsteps[2])
 			}
 		}
 	})
@@ -361,17 +480,26 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		// HF metadata: all DCT8, constant quant field, no CfL, no sharpness
 		count := cw * chh
 		w.Write(uint(ceilLog2(count)), uint64(count-1))
-		tw, th := (cw+7)/8, (chh+7)/8
+		ltw, lth := (cw+7)/8, (chh+7)/8
+		cx := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
+		cb := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
+		for y := 0; y < lth; y++ {
+			for x := 0; x < ltw; x++ {
+				ti := (y0/8+y)*tw + x0/8 + x
+				cx.pix[y*ltw+x] = ytox[ti]
+				cb.pix[y*ltw+x] = ytob[ti]
+			}
+		}
 		acs := channel{w: count, h: 2, pix: make([]int32, 2*count)}
 		for i := 0; i < count; i++ {
-			acs.pix[count+i] = qf - 1
+			bx, by := x0+i%cw, y0+i/cw
+			acs.pix[count+i] = bqf[by*bw+bx] - 1
 		}
-		writeModularLocal(w, []channel{
-			{w: tw, h: th, pix: make([]int32, tw*th)},
-			{w: tw, h: th, pix: make([]int32, tw*th)},
-			acs,
-			{w: cw, h: chh, pix: make([]int32, cw*chh)},
-		})
+		sh := channel{w: cw, h: chh, pix: make([]int32, cw*chh)}
+		for i := range sh.pix {
+			sh.pix[i] = int32(sharp)
+		}
+		writeModularLocal(w, []channel{cx, cb, acs, sh})
 	}
 	writeHfGlobal := func(w *bitio.Writer) *ansCode {
 		w.WriteBool(true)                                           // default dequant matrices
@@ -405,8 +533,16 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	out.WriteBool(true)                                                     // is_last
 	out.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48)) // name
 	out.WriteBool(false)                                                    // restoration not default
-	out.WriteBool(false)                                                    // no gaborish
-	out.Write(2, 0)                                                         // no EPF
+	out.WriteBool(gab)
+	if gab {
+		out.WriteBool(false) // default weights
+	}
+	out.Write(2, uint64(epfIters))
+	if epfIters > 0 {
+		out.WriteBool(false) // default sharpness LUT
+		out.WriteBool(false) // default channel scale
+		out.WriteBool(false) // default sigma
+	}
 	out.WriteU64(0)
 	out.WriteU64(0) // frame extensions
 

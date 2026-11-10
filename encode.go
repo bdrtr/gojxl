@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"os"
+	"strconv"
 
 	"gojxl/internal/enc"
 )
@@ -35,7 +37,20 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 	}
 	im := toPlanar(img)
 	if opt != nil && opt.Distance > 0 && !im.Alpha {
-		return enc.EncodeVarDCT(im, enc.LossyOptions{Distance: opt.Distance})
+		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1}
+		if v := os.Getenv("GOJXL_EPF"); v != "" {
+			lo.EPFIters, _ = strconv.Atoi(v)
+		}
+		if v := os.Getenv("GOJXL_SHARP"); v != "" {
+			lo.Sharpness, _ = strconv.Atoi(v)
+		}
+		lo.NoGaborish = os.Getenv("GOJXL_NOGAB") != ""
+		lo.NoCfL = os.Getenv("GOJXL_NOCFL") != ""
+		lo.AQ = 0
+		if v := os.Getenv("GOJXL_AQ"); v != "" {
+			lo.AQ, _ = strconv.ParseFloat(v, 64)
+		}
+		return enc.EncodeVarDCT(im, lo)
 	}
 	return enc.EncodeLossless(im, o)
 }
