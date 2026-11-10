@@ -35,6 +35,11 @@ type frameDecoder struct {
 
 	vd *vardctState // VarDCT state (nil for modular frames)
 
+	noiseLUT [8]float32
+	hasNoise bool
+	patches  *patchDict
+	splines  *splineSet
+
 	// output: colour planes (3) and extra channels, at frame (pre-upsampling) resolution
 	color [3]*Plane
 	ec    []*Plane

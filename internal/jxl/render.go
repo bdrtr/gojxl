@@ -16,7 +16,13 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		}
 	}
 	// 2. restoration filters
-	if fd.color[0] != nil {
+	if fd.color[0] != nil && (fh.Filter.Gab || fh.Filter.EPFIters > 0) {
+		// filters operate on three independent planes
+		for c := 1; c < 3; c++ {
+			if fd.color[c] == fd.color[0] {
+				fd.color[c] = &Plane{W: fd.color[0].W, H: fd.color[0].H, Pix: append([]float32(nil), fd.color[0].Pix...)}
+			}
+		}
 		if fh.Filter.Gab {
 			fd.applyGaborish()
 		}
@@ -24,11 +30,13 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 			fd.applyEPF()
 		}
 	}
-	// 3. upsampling
+	// 3. patches and splines (at decoded resolution), then upsampling
+	if err := fd.applyPatchesSplines(); err != nil {
+		return false, nil, err
+	}
 	if fh.Upsampling > 1 && fd.color[0] != nil {
 		for c := 0; c < 3; c++ {
 			if c > 0 && fd.color[c] == fd.color[0] {
-				fd.color[c] = fd.color[0]
 				continue
 			}
 			fd.color[c] = upsample(fd.color[c], int(fh.Upsampling), ih, int(fh.Width), int(fh.Height))
@@ -42,9 +50,9 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 			fd.ec[i] = upsample(fd.ec[i], up, ih, int(fh.Width), int(fh.Height))
 		}
 	}
-	// 4. patches, splines, noise
-	if err := fd.applyFeatures(); err != nil {
-		return false, nil, err
+	// 4. noise
+	if fd.hasNoise && fd.color[0] != nil {
+		fd.renderNoise()
 	}
 
 	// LF frames are kept (in XYB) for later VarDCT frames.

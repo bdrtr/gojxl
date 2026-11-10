@@ -154,7 +154,7 @@ func (img *ModularImage) invPalette(t *Transform) error {
 				out[i] = paletteValue(pal, int64(idx), c, bitDepth)
 			}
 		}
-		if t.NbDeltas > 0 && t.DPred != predZero {
+		if t.DPred != predZero {
 			for c := 0; c < nb; c++ {
 				ch := outs[c]
 				var wp *wpState

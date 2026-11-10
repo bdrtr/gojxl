@@ -30,6 +30,8 @@ type Decoder struct {
 	canvas     *refFrame
 	done       bool
 	frameIndex int
+
+	visibleIdx, nonvisibleIdx int
 }
 
 // NewDecoder parses the container, image header and ICC profile.
@@ -141,6 +143,12 @@ func (d *Decoder) decodeOneFrame() (*Frame, bool, error) {
 	end := start + toc.Total
 	if end > len(d.cs) {
 		return nil, false, bitio.ErrEOF
+	}
+	if (fh.IsLast || fh.Duration > 0) && (fh.Type == FrameRegular || fh.Type == FrameSkipProgressive) {
+		d.visibleIdx++
+		d.nonvisibleIdx = 0
+	} else {
+		d.nonvisibleIdx++
 	}
 	fd := &frameDecoder{dec: d, ih: ih, fh: fh, toc: toc, data: d.cs[start:end]}
 	if toc.Single {
