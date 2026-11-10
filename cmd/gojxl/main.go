@@ -2,7 +2,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"image/png"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gojxl"
+	"gojxl/internal/pngx"
 )
 
 func usage() {
@@ -77,12 +78,18 @@ func cmdDecode(args []string) {
 		if err != nil {
 			fatal(err)
 		}
-		w := bufio.NewWriter(f)
+		var buf bytes.Buffer
 		enc := png.Encoder{CompressionLevel: png.BestSpeed}
-		if err := enc.Encode(w, img); err != nil {
+		if err := enc.Encode(&buf, img); err != nil {
 			fatal(err)
 		}
-		w.Flush()
+		out := buf.Bytes()
+		if info, err := gojxl.Stat(data); err == nil && info.OutputICC != nil {
+			out = pngx.InsertICC(out, info.OutputICC)
+		}
+		if _, err := f.Write(out); err != nil {
+			fatal(err)
+		}
 		f.Close()
 	}
 }

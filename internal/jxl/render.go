@@ -86,6 +86,7 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		Duration: fh.Duration, Name: fh.Name, IsLast: fh.IsLast,
 	}
 	cv := d.canvas.clone()
+	renderSpotColors(cv, ih)
 	f.Color = cv.color
 	f.EC = cv.ec
 	return true, f, nil
@@ -339,4 +340,23 @@ func cropPlane(p *Plane, w, h int) *Plane {
 		copy(out.Row(y), p.Row(y)[:min(w, p.W)])
 	}
 	return out
+}
+
+// renderSpotColors mixes spot colour channels into the colour planes.
+func renderSpotColors(r *refFrame, ih *ImageHeader) {
+	for i, e := range ih.ExtraChannels {
+		if e.Type != ECSpotColour || i >= len(r.ec) || r.ec[i] == nil {
+			continue
+		}
+		sp := r.ec[i].Pix
+		scale := e.Spot[3]
+		for c := 0; c < 3; c++ {
+			px := r.color[c].Pix
+			col := e.Spot[c]
+			for k := range px {
+				mix := scale * sp[k]
+				px[k] = mix*col + (1-mix)*px[k]
+			}
+		}
+	}
 }

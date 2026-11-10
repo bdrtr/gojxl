@@ -27,6 +27,9 @@ type Info struct {
 	Orientation      int
 	NumExtraChannels int
 	ICC              []byte
+	// OutputICC is the profile that describes the decoded pixels, or nil if
+	// they are sRGB.
+	OutputICC []byte
 }
 
 func readAll(r io.Reader) ([]byte, error) {
@@ -71,6 +74,7 @@ func Stat(data []byte) (*Info, error) {
 		Orientation:      int(h.Orientation),
 		NumExtraChannels: len(h.ExtraChannels),
 		ICC:              d.ICC,
+		OutputICC:        outputICC(d),
 	}, nil
 }
 
@@ -161,4 +165,14 @@ func DecodeAll(data []byte) (*Animation, error) {
 		a.Frames = append(a.Frames, fr)
 	}
 	return a, nil
+}
+
+// outputICC returns the ICC profile describing decoded pixels: the embedded
+// profile for non-XYB images (pixels are stored in that space), nil when the
+// decoder converts to sRGB.
+func outputICC(d *jxl.Decoder) []byte {
+	if d.Header.XYBEncoded {
+		return nil
+	}
+	return d.ICC
 }
