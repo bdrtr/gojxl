@@ -3,6 +3,7 @@ package gojxl
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -113,7 +114,8 @@ func DecodeBytes(data []byte) (image.Image, error) {
 }
 
 // DecodeBytesOptions decodes with options.
-func DecodeBytesOptions(data []byte, opt *Options) (image.Image, error) {
+func DecodeBytesOptions(data []byte, opt *Options) (img image.Image, err error) {
+	defer recoverErr(&err)
 	d, err := jxl.NewDecoder(data)
 	if err != nil {
 		return nil, err
@@ -141,7 +143,8 @@ type Animation struct {
 }
 
 // DecodeAll decodes all displayed frames.
-func DecodeAll(data []byte) (*Animation, error) {
+func DecodeAll(data []byte) (anim *Animation, err error) {
+	defer recoverErr(&err)
 	d, err := jxl.NewDecoder(data)
 	if err != nil {
 		return nil, err
@@ -175,4 +178,11 @@ func outputICC(d *jxl.Decoder) []byte {
 		return nil
 	}
 	return d.ICC
+}
+
+// recoverErr converts a panic caused by malformed input into an error.
+func recoverErr(err *error) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("%w: malformed input (%v)", jxl.ErrInvalid, r)
+	}
 }

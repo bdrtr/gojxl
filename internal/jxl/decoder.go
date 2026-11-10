@@ -15,6 +15,10 @@ type refFrame struct {
 	ec    []*Plane
 }
 
+// MaxPixels limits the image area accepted by the decoder (protects against
+// corrupt headers requesting huge allocations).
+var MaxPixels uint64 = 1 << 28
+
 // Decoder decodes a JPEG XL codestream.
 type Decoder struct {
 	Container  *Container
@@ -44,6 +48,9 @@ func NewDecoder(data []byte) (*Decoder, error) {
 	br := bitio.NewReader(d.cs)
 	if d.Header, err = readImageHeader(br); err != nil {
 		return nil, err
+	}
+	if uint64(d.Header.Size.Width)*uint64(d.Header.Size.Height) > MaxPixels {
+		return nil, unsupported("image too large")
 	}
 	if d.Header.Colour.WantICC {
 		if d.EncodedICC, err = readEncodedICC(br); err != nil {

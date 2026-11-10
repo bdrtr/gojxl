@@ -2,7 +2,11 @@ package enc
 
 import (
 	"errors"
+	"fmt"
+	"math"
+	"os"
 	"runtime"
+	"sort"
 	"sync"
 
 	"gojxl/internal/bitio"
@@ -148,6 +152,15 @@ func buildTree(nc int, pixels int, effort int) *tnode {
 	chanTree := func() *tnode {
 		return bucketTree(10, th, func() *tnode { return bucketTree(11, th, leaf) })
 	}
+	cut := []int32{-500, -392, -255, -191, -127, -95, -63, -47, -31, -23, -15,
+		-11, -7, -4, -3, -1, 0, 1, 3, 5, 7, 11,
+		15, 23, 31, 47, 63, 95, 127, 191, 255, 392, 500}
+	if pixels < 1<<15 {
+		cut = []int32{-63, -15, -4, -1, 0, 1, 3, 15, 63}
+	}
+	if effort >= 3 {
+		chanTree = func() *tnode { return bucketTree(15, cut, func() *tnode { return &tnode{leaf: true, pred: 6} }) }
+	}
 	var byChan func(lo, hi int) *tnode
 	byChan = func(lo, hi int) *tnode {
 		if hi-lo == 1 {
@@ -192,9 +205,17 @@ func treeTokens(nodes []*tnode, emit func(ctx int, v uint32)) {
 
 // ---------------------------------------------------------------- streams
 
+type channel struct {
+	w, h int
+	pix  []int32
+}
+
 // stream is a set of channel rectangles coded together.
 type stream struct {
-	x0, y0, w, h int
+	chans  []int // channel indices (into the modular image)
+	x0, y0 int   // rect origin (same for all channels)
+	w, h   int   // rect size (clipped per channel)
+	ctxIdx []int // property 0 value per channel in this stream
 }
 
 func clampedGradient(n, w, l int32) int32 {
@@ -209,18 +230,31 @@ func clampedGradient(n, w, l int32) int32 {
 }
 
 // walkStream visits every sample of a stream calling fn(ctx, residual).
-func walkStream(im *Image, chans [][]int32, s stream, root []*tnode, fn func(ctx int, v uint32)) {
-	W := im.W
-	for c, ch := range chans {
-		tree := root[c]
-		for y := 0; y < s.h; y++ {
-			row := ch[(s.y0+y)*W+s.x0 : (s.y0+y)*W+s.x0+s.w]
-			var prev []int32
+func walkStream(chs []channel, s stream, root []*tnode, fn func(ctx int, v uint32)) {
+	for k, ci := range s.chans {
+		chn := chs[ci]
+		W := chn.w
+		sw, sh := min(s.w, chn.w-s.x0), min(s.h, chn.h-s.y0)
+		if sw <= 0 || sh <= 0 {
+			continue
+		}
+		tree := root[min(s.ctxIdx[k], len(root)-1)]
+		var wp *wpState
+		if usesWP(tree) || usesProp(tree, 15) {
+			wp = newWP(sw)
+		}
+		ch := chn.pix
+		for y := 0; y < sh; y++ {
+			row := ch[(s.y0+y)*W+s.x0 : (s.y0+y)*W+s.x0+sw]
+			var prev, prev2 []int32
 			if y > 0 {
-				prev = ch[(s.y0+y-1)*W+s.x0 : (s.y0+y-1)*W+s.x0+s.w]
+				prev = ch[(s.y0+y-1)*W+s.x0 : (s.y0+y-1)*W+s.x0+sw]
 			}
-			for x := 0; x < s.w; x++ {
-				var Wv, N, NW int32
+			if y > 1 {
+				prev2 = ch[(s.y0+y-2)*W+s.x0 : (s.y0+y-2)*W+s.x0+sw]
+			}
+			for x := 0; x < sw; x++ {
+				var Wv, N, NW, NE, NN int32
 				if x > 0 {
 					Wv = row[x-1]
 				} else if y > 0 {
@@ -236,15 +270,32 @@ func walkStream(im *Image, chans [][]int32, s stream, root []*tnode, fn func(ctx
 				} else {
 					NW = Wv
 				}
-				p10 := Wv - NW
-				p11 := NW - N
+				var wpPred, maxErr int64
+				if wp != nil {
+					if x+1 < sw && y > 0 {
+						NE = prev[x+1]
+					} else {
+						NE = N
+					}
+					if y > 1 {
+						NN = prev2[x]
+					} else {
+						NN = N
+					}
+					wpPred, maxErr = wp.predict(x, y, int64(N), int64(Wv), int64(NE), int64(NW), int64(NN))
+				}
 				n := tree
 				for !n.leaf {
 					var pv int32
-					if n.prop == 10 {
-						pv = p10
-					} else {
-						pv = p11
+					switch n.prop {
+					case 10:
+						pv = Wv - NW
+					case 11:
+						pv = NW - N
+					case 15:
+						pv = int32(maxErr)
+					case 9:
+						pv = Wv + N - NW
 					}
 					if pv > n.split {
 						n = n.left
@@ -252,11 +303,33 @@ func walkStream(im *Image, chans [][]int32, s stream, root []*tnode, fn func(ctx
 						n = n.right
 					}
 				}
-				pred := clampedGradient(N, Wv, NW)
+				var pred int32
+				if n.pred == 6 {
+					pred = int32(wpPred)
+				} else {
+					pred = clampedGradient(N, Wv, NW)
+				}
 				fn(n.ctx, bitio.PackSigned(row[x]-pred))
+				if wp != nil {
+					wp.update(int64(row[x]), x, y)
+				}
 			}
 		}
 	}
+}
+
+func usesProp(n *tnode, p int) bool {
+	if n.leaf {
+		return false
+	}
+	return n.prop == p || usesProp(n.left, p) || usesProp(n.right, p)
+}
+
+func usesWP(n *tnode) bool {
+	if n.leaf {
+		return n.pred == 6
+	}
+	return n.prop == 15 || usesWP(n.left) || usesWP(n.right)
 }
 
 // channelRoots returns the per-channel subtree (after the channel splits).
@@ -274,6 +347,66 @@ func channelRoots(root *tnode, nc int) []*tnode {
 		out[c] = n
 	}
 	return out
+}
+
+// buildPalette returns a sorted palette and index channel if the image has
+// few enough distinct colours.
+func buildPalette(chans [][]int32, limit int) ([][]int32, []int32, bool) {
+	nc := len(chans)
+	n := len(chans[0])
+	if nc > 4 {
+		return nil, nil, false
+	}
+	key := func(i int) uint64 {
+		var k uint64
+		for c := 0; c < nc; c++ {
+			k = k<<16 | uint64(uint16(chans[c][i]))
+		}
+		return k
+	}
+	set := make(map[uint64]int32)
+	for i := 0; i < n; i++ {
+		k := key(i)
+		if _, ok := set[k]; !ok {
+			if len(set) >= limit {
+				return nil, nil, false
+			}
+			set[k] = 0
+		}
+	}
+	keys := make([]uint64, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	comp := func(k uint64, c int) int32 { return int32(uint16(k >> (16 * uint(nc-1-c)))) }
+	lum := func(k uint64) int64 {
+		if nc >= 3 {
+			return 299*int64(comp(k, 0)) + 587*int64(comp(k, 1)) + 114*int64(comp(k, 2))
+		}
+		return int64(comp(k, 0))
+	}
+	sort.Slice(keys, func(a, b int) bool {
+		la, lb := lum(keys[a]), lum(keys[b])
+		if la != lb {
+			return la < lb
+		}
+		return keys[a] < keys[b]
+	})
+	pal := make([][]int32, nc)
+	for c := range pal {
+		pal[c] = make([]int32, len(keys))
+	}
+	for i, k := range keys {
+		set[k] = int32(i)
+		for c := 0; c < nc; c++ {
+			pal[c][i] = comp(k, c)
+		}
+	}
+	idx := make([]int32, n)
+	for i := 0; i < n; i++ {
+		idx[i] = set[key(i)]
+	}
+	return pal, idx, true
 }
 
 // forwardYCoCg applies the lossless RCT type 6.
@@ -317,44 +450,110 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		return nil, errors.New("jxl: unsupported bit depth")
 	}
 	nc := len(im.Chans)
-	chans := make([][]int32, nc)
-	for i := range chans {
-		chans[i] = append([]int32(nil), im.Chans[i]...)
+	src := make([][]int32, nc)
+	for i := range src {
+		src[i] = append([]int32(nil), im.Chans[i]...)
 	}
-	useRCT := !im.Grey
-	if useRCT {
-		forwardYCoCg(chans[0], chans[1], chans[2])
+	// choose transforms
+	var chs []channel
+	nbMeta := 0
+	var transforms func(w *bitio.Writer)
+	limit := min(1024, max(16, im.W*im.H/64))
+	if pal, idx, ok := buildPalette(src, limit); ok && opt.Effort >= 2 {
+		n := len(pal[0])
+		pc := channel{w: n, h: nc, pix: make([]int32, n*nc)}
+		for c := 0; c < nc; c++ {
+			copy(pc.pix[c*n:], pal[c])
+		}
+		chs = []channel{pc, {w: im.W, h: im.H, pix: idx}}
+		nbMeta = 1
+		transforms = func(w *bitio.Writer) {
+			w.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
+			w.Write(2, 1) // palette
+			w.WriteU32(0, bitio.Bits(3), bitsOff(6, 8), bitsOff(10, 72), bitsOff(13, 1096))
+			w.WriteU32(uint32(nc), val(1), val(3), val(4), bitsOff(13, 1))
+			w.WriteU32(uint32(n), bitsOff(8, 0), bitsOff(10, 256), bitsOff(12, 1280), bitsOff(16, 5376))
+			w.WriteU32(0, val(0), bitsOff(8, 1), bitsOff(10, 257), bitsOff(16, 1281))
+			w.Write(4, 0) // zero predictor
+		}
+	} else {
+		if !im.Grey {
+			forwardYCoCg(src[0], src[1], src[2])
+			transforms = func(w *bitio.Writer) {
+				w.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
+				w.Write(2, 0) // RCT
+				w.WriteU32(0, bitio.Bits(3), bitsOff(6, 8), bitsOff(10, 72), bitsOff(13, 1096))
+				w.WriteU32(6, val(6), bitio.Bits(2), bitsOff(4, 2), bitsOff(6, 10))
+			}
+		} else {
+			transforms = func(w *bitio.Writer) { w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18)) }
+		}
+		for _, c := range src {
+			chs = append(chs, channel{w: im.W, h: im.H, pix: c})
+		}
 	}
-	root := buildTree(nc, im.W*im.H, opt.Effort)
+	ntree := len(chs)
+	root := buildTree(ntree, im.W*im.H, opt.Effort)
 	nodes, nleaves := bfs(root)
-	roots := channelRoots(root, nc)
+	roots := channelRoots(root, ntree)
 
-	// stream layout
-	single := im.W <= groupDim && im.H <= groupDim
+	// stream layout: global stream gets meta channels and channels that fit
+	// in a group; the rest is split over groups.
+	global := stream{x0: 0, y0: 0, w: 1 << 30, h: 1 << 30}
+	firstGroupCh := len(chs)
+	for i, c := range chs {
+		if i >= nbMeta && (c.w > groupDim || c.h > groupDim) {
+			firstGroupCh = i
+			break
+		}
+		global.chans = append(global.chans, i)
+		global.ctxIdx = append(global.ctxIdx, i)
+	}
 	xg := (im.W + groupDim - 1) / groupDim
 	yg := (im.H + groupDim - 1) / groupDim
-	var streams []stream
-	if single {
-		streams = []stream{{0, 0, im.W, im.H}}
-	} else {
+	single := xg == 1 && yg == 1
+	var groups []stream
+	if !single {
 		for gy := 0; gy < yg; gy++ {
 			for gx := 0; gx < xg; gx++ {
-				x0, y0 := gx*groupDim, gy*groupDim
-				streams = append(streams, stream{x0, y0, min(groupDim, im.W-x0), min(groupDim, im.H-y0)})
+				s := stream{x0: gx * groupDim, y0: gy * groupDim, w: groupDim, h: groupDim}
+				for i := firstGroupCh; i < len(chs); i++ {
+					s.chans = append(s.chans, i)
+					s.ctxIdx = append(s.ctxIdx, i-firstGroupCh)
+				}
+				groups = append(groups, s)
 			}
 		}
 	}
+	all := append([]stream{global}, groups...)
 
 	// pass 1: histograms
-	hs := make([]*histograms, len(streams))
-	parallel(len(streams), func(i int) {
+	hs := make([]*histograms, len(all))
+	parallel(len(all), func(i int) {
 		h := newHistograms(nleaves, defaultCfg)
-		walkStream(im, chans, streams[i], roots, h.add)
+		walkStream(chs, all[i], roots, h.add)
 		hs[i] = h
 	})
 	data := newHistograms(nleaves, defaultCfg)
 	for _, h := range hs {
 		data.merge(h)
+	}
+	if os.Getenv("GOJXL_STATS") != "" {
+		var bitsIdeal float64
+		var nsamp uint64
+		for _, c := range data.counts {
+			var tot uint64
+			for _, v := range c {
+				tot += v
+			}
+			for _, v := range c {
+				if v > 0 {
+					bitsIdeal += float64(v) * -math.Log2(float64(v)/float64(tot))
+				}
+			}
+			nsamp += tot
+		}
+		fmt.Fprintf(os.Stderr, "ideal token bytes %.0f (%.3f bits/sample)\n", bitsIdeal/8, bitsIdeal/float64(max(nsamp, 1)))
 	}
 	treeH := newHistograms(6, defaultCfg)
 	treeTokens(nodes, treeH.add)
@@ -366,24 +565,15 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	tc := writeCode(lfg, treeH)
 	treeTokens(nodes, func(ctx int, v uint32) { tc.write(lfg, ctx, v) })
 	dc := writeCode(lfg, data)
-	// global modular group header
 	lfg.WriteBool(true) // use global tree
 	lfg.WriteBool(true) // default WP header
-	if useRCT {
-		lfg.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
-		lfg.Write(2, 0) // RCT
-		lfg.WriteU32(0, bitio.Bits(3), bitsOff(6, 8), bitsOff(10, 72), bitsOff(13, 1096))
-		lfg.WriteU32(6, val(6), bitio.Bits(2), bitsOff(4, 2), bitsOff(6, 10))
-	} else {
-		lfg.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
-	}
+	transforms(lfg)
+	walkStream(chs, global, roots, func(ctx int, v uint32) { dc.write(lfg, ctx, v) })
 
 	out := &bitio.Writer{}
 	writeImageHeader(out, im)
 	writeFrameHeader(out, im)
-
 	if single {
-		walkStream(im, chans, streams[0], roots, func(ctx int, v uint32) { dc.write(lfg, ctx, v) })
 		sec := lfg.Bytes()
 		out.WriteBool(false) // no permutation
 		out.ZeroPadToByte()
@@ -392,21 +582,21 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		out.AppendBytes(sec)
 		return out.Bytes(), nil
 	}
-
 	// pass 2: group sections
-	secs := make([][]byte, len(streams))
-	parallel(len(streams), func(i int) {
+	secs := make([][]byte, len(groups))
+	parallel(len(groups), func(i int) {
 		w := &bitio.Writer{}
-		w.WriteBool(true) // use global tree
-		w.WriteBool(true) // default WP
-		w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
-		walkStream(im, chans, streams[i], roots, func(ctx int, v uint32) { dc.write(w, ctx, v) })
+		if len(groups[i].chans) > 0 {
+			w.WriteBool(true) // use global tree
+			w.WriteBool(true) // default WP
+			w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
+			walkStream(chs, groups[i], roots, func(ctx int, v uint32) { dc.write(w, ctx, v) })
+		}
 		secs[i] = w.Bytes()
 	})
 	nlf := ((im.W + groupDim*8 - 1) / (groupDim * 8)) * ((im.H + groupDim*8 - 1) / (groupDim * 8))
-	sizes := []int{}
 	lfSec := lfg.Bytes()
-	sizes = append(sizes, len(lfSec))
+	sizes := []int{len(lfSec)}
 	for i := 0; i < nlf; i++ {
 		sizes = append(sizes, 0)
 	}
@@ -425,4 +615,16 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		out.AppendBytes(s)
 	}
 	return out.Bytes(), nil
+}
+
+// tokValue returns a representative value for a token (for statistics).
+func tokValue(tok uint32) uint32 {
+	c := defaultCfg
+	if tok < 1<<c.se {
+		return tok
+	}
+	ml := c.msb + c.lsb
+	n := c.se - ml + ((tok - (1 << c.se)) >> ml)
+	t := tok>>c.lsb&(1<<c.msb-1) | 1<<c.msb
+	return t << n << c.lsb
 }

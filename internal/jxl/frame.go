@@ -1,6 +1,7 @@
 package jxl
 
 import (
+	"fmt"
 	"math"
 	"runtime"
 	"sync"
@@ -78,11 +79,18 @@ func parallelForW(n int, fn func(w, i int) error) error {
 	}
 	var next atomic.Int64
 	var firstErr atomic.Value
+	var panicked atomic.Value
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicked.CompareAndSwap(nil, fmt.Sprint(r))
+					next.Store(int64(n)) // stop other workers
+				}
+			}()
 			for {
 				i := int(next.Add(1) - 1)
 				if i >= n || firstErr.Load() != nil {
@@ -96,6 +104,9 @@ func parallelForW(n int, fn func(w, i int) error) error {
 		}(w)
 	}
 	wg.Wait()
+	if p := panicked.Load(); p != nil {
+		panic(p) // re-raise in the calling goroutine
+	}
 	if e := firstErr.Load(); e != nil {
 		return e.(error)
 	}
