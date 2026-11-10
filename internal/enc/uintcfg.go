@@ -56,17 +56,22 @@ var cfgCandidates = func() []uintCfg {
 func bestCfg(h *valueHist, maxTok uint32) uintCfg {
 	best, bestCost := defaultCfg, math.Inf(1)
 	counts := make([]uint64, 512)
+	type vn struct{ v, n uint32 }
+	var nzv []vn
+	for v, n := range h.small {
+		if n != 0 {
+			nzv = append(nzv, vn{uint32(v), n})
+		}
+	}
 	for _, c := range cfgCandidates {
 		if t, _, _ := c.encode(h.maxV); t >= maxTok {
 			continue
 		}
 		clear(counts)
 		var extra float64
-		for v, n := range h.small {
-			if n == 0 {
-				continue
-			}
-			t, nb, _ := c.encode(uint32(v))
+		for _, e := range nzv {
+			v, n := e.v, e.n
+			t, nb, _ := c.encode(v)
 			counts[t] += uint64(n)
 			extra += float64(n) * float64(nb)
 		}
@@ -96,7 +101,7 @@ func bestCfg(h *valueHist, maxTok uint32) uintCfg {
 // from value statistics (two extra passes over the streams) and writes the
 // resulting ANS code.
 func writeANSCodeTuned(w *bitio.Writer, nstreams int, visit func(i int, fn func(ctx int, v uint32)), counts [][]uint64) *ansCode {
-	cm, cl := clusterHistograms(counts, 64)
+	cm, cl := clusterHistograms(counts, 128)
 	ncl := len(cl)
 	vhs := make([][]valueHist, nstreams)
 	parallel(nstreams, func(i int) {

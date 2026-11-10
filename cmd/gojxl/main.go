@@ -146,6 +146,7 @@ func cmdEncode(args []string) {
 	effort := fs.Int("e", 4, "lossless effort 1-6 (1-3: fixed context model, 4+: learned MA tree)")
 	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
+	pixels := fs.Bool("pixels", false, "for JPEG input: encode decoded pixels instead of recompressing")
 	fs.Parse(args)
 	if *cpuprof != "" {
 		pf, err := os.Create(*cpuprof)
@@ -158,12 +159,25 @@ func cmdEncode(args []string) {
 	if fs.NArg() < 2 {
 		usage()
 	}
-	f, err := os.Open(fs.Arg(0))
+	raw, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
 		fatal(err)
 	}
-	img, _, err := image.Decode(f)
-	f.Close()
+	if *dist == 0 && !*pixels && len(raw) > 2 && raw[0] == 0xff && raw[1] == 0xd8 {
+		// JPEG input: lossless recompression of the DCT coefficients
+		t0 := time.Now()
+		data, err := gojxl.TranscodeJPEG(raw)
+		if err == nil {
+			el := time.Since(t0)
+			if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
+				fatal(err)
+			}
+			fmt.Fprintf(os.Stderr, "JPEG recompressed: %d -> %d bytes (%.1f%%), %v\n", len(raw), len(data), 100*float64(len(data))/float64(len(raw)), el)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "JPEG recompression not possible (%v); encoding pixels\n", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		fatal(err)
 	}

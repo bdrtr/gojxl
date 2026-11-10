@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"gojxl/internal/enc"
+	"gojxl/internal/jpeg"
 )
 
 // EncodeOptions controls lossless encoding.
@@ -135,4 +136,16 @@ func toPlanar(img image.Image) *enc.Image {
 		im.Chans = append(im.Chans, a)
 	}
 	return im
+}
+
+// TranscodeJPEG losslessly recompresses a JPEG file into JPEG XL: the DCT
+// coefficients are kept, so decoding gives the same image as decoding the
+// JPEG (typically ~20% smaller).
+func TranscodeJPEG(data []byte) (out []byte, err error) {
+	defer recoverErr(&err)
+	j, err := jpeg.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	return enc.EncodeJPEG(j)
 }

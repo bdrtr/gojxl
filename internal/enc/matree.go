@@ -2,6 +2,7 @@ package enc
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"sync"
 
@@ -330,10 +331,11 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		tok   [][]uint8
 	}
 	parts := make([]part, len(streams))
+	useWP := slices.Contains(lp.preds, 6)
 	parallel(len(streams), func(i int) {
 		pt := part{props: make([][]int32, np), tok: make([][]uint8, npred)}
 		rng := uint64(i)*0x9E3779B97F4A7C15 + 1
-		iterStream(chs, streams[i], true, lp.nrefs, true, func(_, _, _ int, props *[maxProps]int32, nb *nbhd, cur int32) {
+		iterStream(chs, streams[i], useWP, lp.nrefs, true, func(_, _, _ int, props *[maxProps]int32, nb *nbhd, cur int32) {
 			rng ^= rng << 13
 			rng ^= rng >> 7
 			rng ^= rng << 17

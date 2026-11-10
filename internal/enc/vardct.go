@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"math/bits"
+	"slices"
 
 	"gojxl/internal/bitio"
 	"gojxl/internal/jxl"
@@ -434,6 +435,17 @@ func rdCost(coef, mult []float32, order []int32, k int, step float32, cw float64
 
 // writeModularLocal writes a self-contained modular stream (own tree).
 func writeModularLocal(w *bitio.Writer, chs []channel) {
+	writeModularLocalEffort(w, chs, 2)
+}
+
+// writeModularLocalEffort is writeModularLocal with a choice of context
+// model: effort >= 4 learns the tree from the data.
+func writeModularLocalEffort(w *bitio.Writer, chs []channel, effort int) {
+	writeModularLocalOpts(w, chs, effort, false)
+}
+
+// writeModularLocalOpts can exclude the (slow) weighted predictor.
+func writeModularLocalOpts(w *bitio.Writer, chs []channel, effort int, noWP bool) {
 	w.WriteBool(false) // local tree
 	w.WriteBool(true)  // default WP
 	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
@@ -441,21 +453,60 @@ func writeModularLocal(w *bitio.Writer, chs []channel) {
 	for _, c := range chs {
 		n += c.w * c.h
 	}
-	root := buildTree(len(chs), n, 2)
-	nodes, nleaves := bfs(root)
-
 	s := stream{w: 1 << 30, h: 1 << 30}
 	for i := range chs {
 		s.chans = append(s.chans, i)
 		s.ctxIdx = append(s.ctxIdx, i)
 	}
+	allZero := true
+	for _, c := range chs {
+		for _, v := range c.pix {
+			if v != 0 {
+				allZero = false
+				break
+			}
+		}
+	}
+	var root *tnode
+	if allZero {
+		root = &tnode{leaf: true, pred: 0}
+	} else if effort >= 4 && n >= 64 {
+		lp := learnParamsFor(effort)
+		if noWP {
+			lp.preds = slices.DeleteFunc(slices.Clone(lp.preds), func(p int) bool { return p == 6 })
+		}
+		root = learnTree(collectSamples(chs, []stream{s}, lp), lp)
+	} else {
+		root = buildTree(len(chs), n, 2)
+	}
+	nodes, nleaves := bfs(root)
+
 	treeH := newHistograms(6, defaultCfg)
 	treeTokens(nodes, treeH.add)
 	tc := writeCode(w, treeH)
 	treeTokens(nodes, func(ctx int, v uint32) { tc.write(w, ctx, v) })
 	data := newHistograms(nleaves, defaultCfg)
+	var dc *ansCode
+	if effort >= 4 {
+		var cache residCache
+		walkStream(chs, s, root, func(ctx int, v uint32) {
+			cache.ctx = append(cache.ctx, uint16(ctx))
+			cache.v = append(cache.v, v)
+			data.add(ctx, v)
+		})
+		visit := func(_ int, fn func(ctx int, v uint32)) {
+			for k, v := range cache.v {
+				fn(int(cache.ctx[k]), v)
+			}
+		}
+		dc = writeANSCodeTuned(w, 1, visit, data.counts)
+		st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}
+		visit(0, st.add)
+		st.flush(w)
+		return
+	}
 	walkStream(chs, s, root, data.add)
-	dc := writeANSCode(w, data)
+	dc = writeANSCode(w, data)
 	st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}
 	walkStream(chs, s, root, st.add)
 	st.flush(w)
