@@ -108,6 +108,13 @@ func TestLossyRoundTrip(t *testing.T) {
 	r := rand.New(rand.NewSource(3))
 	for _, sz := range [][2]int{{1, 1}, {9, 17}, {256, 256}, {300, 260}, {700, 500}} {
 		img := randomImage("smooth", sz[0], sz[1], r)
+		if sz[0]%2 == 1 {
+			// add a varying alpha channel
+			nm := img.(*image.NRGBA)
+			for i := 3; i < len(nm.Pix); i += 4 {
+				nm.Pix[i] = uint8(i / 4 % 251)
+			}
+		}
 		data, err := EncodeBytes(img, &EncodeOptions{Distance: 1})
 		if err != nil {
 			t.Fatal(err)
@@ -115,6 +122,15 @@ func TestLossyRoundTrip(t *testing.T) {
 		out, err := Decode(bytes.NewReader(data))
 		if err != nil {
 			t.Fatalf("%v: %v", sz, err)
+		}
+		if nm, ok := img.(*image.NRGBA); ok && sz[0]%2 == 1 {
+			o := out.(*image.NRGBA)
+			for i := 3; i < len(nm.Pix); i += 4 {
+				if nm.Pix[i] != o.Pix[i] {
+					t.Fatalf("%v: alpha mismatch at %d", sz, i)
+				}
+			}
+			continue
 		}
 		if p := psnr(img, out); p < 28 {
 			t.Fatalf("%v: PSNR %.1f too low", sz, p)

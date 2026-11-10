@@ -36,7 +36,7 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 		o.Effort = opt.Effort
 	}
 	im := toPlanar(img)
-	if opt != nil && opt.Distance > 0 && !im.Alpha {
+	if opt != nil && opt.Distance > 0 && im.BitDepth == 8 {
 		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1}
 		if v := os.Getenv("GOJXL_EPF"); v != "" {
 			lo.EPFIters, _ = strconv.Atoi(v)

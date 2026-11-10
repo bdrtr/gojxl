@@ -223,9 +223,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	if im.W <= 0 || im.H <= 0 {
 		return nil, errors.New("jxl: empty image")
 	}
-	if im.Alpha {
-		return nil, errors.New("jxl: lossy alpha not supported yet")
-	}
 	d := opt.Distance
 	if d <= 0 {
 		d = 1
@@ -454,14 +451,24 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		hf.merge(h)
 	}
 
+	// --- alpha as a lossless modular extra channel
+	var alpha *alphaPlan
+	if im.Alpha {
+		alpha = planAlpha(im.Chans[len(im.Chans)-1], im.W, im.H, xg, yg)
+	}
+
 	// --- section writers
 	writeLfGlobal := func(w *bitio.Writer) {
 		w.WriteBool(true) // LF channel dequant default
 		w.WriteU32(gs, bitsOff(11, 1), bitsOff(11, 2049), bitsOff(12, 4097), bitsOff(16, 8193))
 		w.WriteU32(uint32(qlf), val(16), bitsOff(5, 1), bitsOff(8, 1), bitsOff(16, 1))
-		w.WriteBool(true)  // default block context map
-		w.WriteBool(true)  // default LF channel correlation
-		w.WriteBool(false) // no global tree
+		w.WriteBool(true) // default block context map
+		w.WriteBool(true) // default LF channel correlation
+		if alpha == nil {
+			w.WriteBool(false) // no global tree
+			return
+		}
+		alpha.writeGlobal(w)
 	}
 	writeLfGroup := func(w *bitio.Writer, g int) {
 		gx, gy := g%xlf, g/xlf
@@ -511,13 +518,28 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		st := &ansStream{c: hc}
 		emitGroup(g, st.add)
 		st.flush(w)
+		if alpha != nil {
+			alpha.writeGroup(w, g)
+		}
 	}
 
 	// --- headers
 	out := &bitio.Writer{}
 	out.Write(16, 0x0aff)
 	writeSize(out, im.W, im.H)
-	out.WriteBool(true) // metadata all default: 8-bit sRGB, XYB
+	if alpha == nil {
+		out.WriteBool(true) // metadata all default: 8-bit sRGB, XYB
+	} else {
+		out.WriteBool(false) // metadata
+		out.WriteBool(false) // no extra fields
+		writeBitDepth(out, 8)
+		out.WriteBool(true) // 16-bit buffers suffice
+		out.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
+		out.WriteBool(true) // default 8-bit alpha
+		out.WriteBool(true) // xyb
+		out.WriteBool(true) // sRGB
+		out.WriteU64(0)     // extensions
+	}
 	out.WriteBool(true) // default transform data
 	out.ZeroPadToByte()
 	out.WriteBool(false)
@@ -525,11 +547,17 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	out.Write(1, 0)    // VarDCT
 	out.WriteU64(0x80) // skip adaptive LF smoothing
 	out.WriteU32(1, val(1), val(2), val(4), val(8))
+	if alpha != nil {
+		out.WriteU32(1, val(1), val(2), val(4), val(8)) // ec upsampling
+	}
 	out.Write(3, 3) // x_qm_scale
 	out.Write(3, 2) // b_qm_scale
 	out.WriteU32(1, val(1), val(2), val(3), bitsOff(3, 4))
 	out.WriteBool(false) // no crop
 	out.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
+	if alpha != nil {
+		out.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3)) // ec blending
+	}
 	out.WriteBool(true)                                                     // is_last
 	out.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48)) // name
 	out.WriteBool(false)                                                    // restoration not default
@@ -600,4 +628,67 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		out.AppendBytes(s)
 	}
 	return out.Bytes(), nil
+}
+
+// alphaPlan codes an 8-bit alpha channel as a modular extra channel.
+type alphaPlan struct {
+	chs    []channel
+	nodes  []*tnode
+	roots  []*tnode
+	global stream
+	groups []stream
+	data   *histograms
+	code   *ansCode
+}
+
+func planAlpha(a []int32, W, H, xg, yg int) *alphaPlan {
+	p := &alphaPlan{chs: []channel{{w: W, h: H, pix: a}}}
+	root := buildTree(1, W*H, 2)
+	var nl int
+	p.nodes, nl = bfs(root)
+	p.roots = channelRoots(root, 1)
+	p.global = stream{w: 1 << 30, h: 1 << 30}
+	if W <= groupDim && H <= groupDim {
+		p.global.chans, p.global.ctxIdx = []int{0}, []int{0}
+	} else {
+		for gy := 0; gy < yg; gy++ {
+			for gx := 0; gx < xg; gx++ {
+				p.groups = append(p.groups, stream{chans: []int{0}, ctxIdx: []int{0},
+					x0: gx * groupDim, y0: gy * groupDim, w: groupDim, h: groupDim})
+			}
+		}
+	}
+	p.data = newHistograms(nl, defaultCfg)
+	walkStream(p.chs, p.global, p.roots, p.data.add)
+	for _, s := range p.groups {
+		walkStream(p.chs, s, p.roots, p.data.add)
+	}
+	return p
+}
+
+func (p *alphaPlan) writeGlobal(w *bitio.Writer) {
+	w.WriteBool(true) // global tree
+	th := newHistograms(6, defaultCfg)
+	treeTokens(p.nodes, th.add)
+	tc := writeCode(w, th)
+	treeTokens(p.nodes, func(ctx int, v uint32) { tc.write(w, ctx, v) })
+	p.code = writeANSCode(w, p.data)
+	w.WriteBool(true) // use global tree
+	w.WriteBool(true) // default WP
+	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
+	st := &ansStream{c: p.code}
+	walkStream(p.chs, p.global, p.roots, st.add)
+	st.flush(w)
+}
+
+func (p *alphaPlan) writeGroup(w *bitio.Writer, g int) {
+	if len(p.groups) == 0 {
+		return
+	}
+	w.WriteBool(true)
+	w.WriteBool(true)
+	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
+	st := &ansStream{c: p.code}
+	walkStream(p.chs, p.groups[g], p.roots, st.add)
+	st.flush(w)
 }
