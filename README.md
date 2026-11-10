@@ -21,7 +21,14 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - ICC profil çözme (`UnpredictICC`), PNG çıktısına iCCP olarak gömme, yönlendirme (orientation)
 - Bozuk girdilere karşı dayanıklı (panik → hata), devasa boyut koruması
 
-**Kodlayıcı (kayıpsız Modular)**
+**Kayıplı kodlayıcı (VarDCT)**
+- sRGB → XYB, DCT8/DCT16/DCT32 varblokları (RD tabanlı seçim), LLF ile tutarlı DC
+- Karo başına chroma-from-luma (en küçük kareler), ters Gaborish ön işleme
+- Kümelenmiş bağlamlarla ANS, alpha kanalı kayıpsız modular ekstra kanal olarak
+- 4K fotoğrafta (d=1): gojxl 2.43 MB / 36.04 dB PSNR, cjxl 2.53 MB / 35.87 dB;
+  kodlama 1.7 s (cjxl ~2.5 s)
+
+**Kayıpsız kodlayıcı (Modular)**
 - YCoCg RCT, otomatik palet (≤1024 renk, parlaklığa göre sıralı)
 - Gradient ve Weighted predictor, sabit bağlam ağaçları (efor 1–3)
 - ANS entropi kodlama, gruplar arası paralel kodlama
@@ -37,6 +44,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
 ./gojxl encode -e 3 girdi.png cikti.jxl     # PNG/JPEG → kayıpsız JXL
+./gojxl encode -d 1 girdi.png cikti.jxl     # kayıplı (d≈1 görsel olarak kayıpsız)
 ./gojxl info resim.jxl
 ```
 
@@ -47,7 +55,8 @@ import "gojxl"
 
 img, err := gojxl.Decode(r)                 // image.Image
 anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
-err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 3})
+err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 3})       // kayıpsız
+err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 ```
 
 `image.Decode` ile de çalışır (paket `init` içinde format kaydı yapar).
@@ -112,6 +121,7 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 
 ## Yol haritası
 
-- Kayıplı (VarDCT) kodlayıcı, MA ağacı öğrenme, LZ77
-- ICC tabanlı renk yönetimi (CMYK, orijinal uzaya çıktı)
+- Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
+- MA ağacı öğrenme, LZ77
+- ICC tabanlı renk yönetimi (CMYK, geniş gamut/HDR çıktısı ve etiketleme)
 - APNG/animasyon çıktısı, akış (streaming) kod çözme

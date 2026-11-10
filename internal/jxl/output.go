@@ -95,7 +95,17 @@ func (f *Frame) Materialize() {
 }
 
 // xybOutputTF selects the transfer function for XYB images. The inverse
-// XYB transform yields linear sRGB primaries and decoded images are
-// delivered untagged, so sRGB is always used to keep pixels correctly
-// labelled (wide-gamut/HDR content is clipped to sRGB).
-func xybOutputTF(ih *ImageHeader) uint32 { return TFSRGB }
+// XYB transform yields linear sRGB primaries: when the image's declared
+// encoding shares them (D65, sRGB primaries or grey) its transfer function
+// is used, as libjxl does; otherwise output falls back to sRGB so that the
+// untagged pixels are not mislabelled (wide gamut is clipped).
+func xybOutputTF(ih *ImageHeader) uint32 {
+	c := &ih.Colour
+	if c.WantICC || c.ColourSpace == CSXYB || c.WhitePoint != WPD65 {
+		return TFSRGB
+	}
+	if c.ColourSpace != CSGrey && c.Primaries != PrimSRGB {
+		return TFSRGB
+	}
+	return c.TransferFunction
+}
