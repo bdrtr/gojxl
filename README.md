@@ -19,6 +19,12 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - LF frame'ler, referans frame'ler, tüm blend modları, animasyon, crop'lu katmanlar
 - Ekstra kanallar (alpha, premultiplied alpha, spot renkler), 1–32 bit tamsayı/float örnekler
 - ICC profil çözme (`UnpredictICC`), PNG çıktısına iCCP olarak gömme, yönlendirme (orientation)
+- **Renk yönetimi** (saf Go CMS): XYB görüntüler orijinal uzaylarında çıkar —
+  enum uzaylar (Display P3, Rec.2020/2100, DCI, gamma, doğrusal, PQ, HLG + OOTF)
+  için ICC v4 profili sentezlenir; matris/TRC ICC profilleri (RGB ve gri)
+  doğrudan hedeflenir; PQ/HLG çıktılarına PNG `cICP` eklenir
+- **CMYK → sRGB**: LUT tabanlı ICC profilleri (mft1/mft2/mAB, 4B CLUT,
+  lcms tarzı tetrahedral interpolasyon), Black ekstra kanalı ile
 - Bozuk girdilere karşı dayanıklı (panik → hata), devasa boyut koruması
 
 **Kayıplı kodlayıcı (VarDCT)**
@@ -66,9 +72,12 @@ err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 - Resmi [JPEG XL conformance](https://github.com/libjxl/conformance) setinin
   40 dosyasından 33'ü libjxl (djxl) ile 16-bit çıktıda **112–200 dB PSNR**
   (pratikte birebir); kayıpsız dosyalar bit-birebir.
-- Kalan farklar: ICC profilli XYB görüntülerde djxl orijinal ICC uzayına
-  dönüştürür, gojxl sRGB çıkarır (ikisi de geçerli); CMYK → RGB dönüşümü tam
-  bir ICC renk yönetimi gerektirir (henüz yok).
+- Renk uzayları (cjxl ile üretilmiş P3, Rec.2100 PQ/HLG, DCI, ProPhoto,
+  Adobe98, gamma, doğrusal): djxl ile 65–116 dB; kayıpsız olanlar bit-birebir.
+- ICC profilli XYB dosyalarda (grayscale, patches, progressive) djxl doğrusal
+  sRGB çıkarır, gojxl orijinal ICC uzayında; gojxl çıktısı lcms ile sRGB'ye
+  çevrildiğinde djxl'in sRGB çıktısıyla 8-bit sınırında (~52 dB) örtüşür.
+- CMYK (SWOP profili): lcms perceptual dönüşümüyle 69 dB, djxl ile 46 dB.
 - Kodlayıcının ürettiği dosyalar djxl ile bit-birebir çözülür; round-trip
   testleri (`go test ./...`) 1×1'den çok gruplu görüntülere kadar kapsar.
 
@@ -123,5 +132,5 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - MA ağacı öğrenme, LZ77
-- ICC tabanlı renk yönetimi (CMYK, geniş gamut/HDR çıktısı ve etiketleme)
+- HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
 - APNG/animasyon çıktısı, akış (streaming) kod çözme

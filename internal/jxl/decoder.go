@@ -36,6 +36,80 @@ type Decoder struct {
 	frameIndex int
 
 	visibleIdx, nonvisibleIdx int
+
+	target     *outputTarget
+	targetDone bool
+	cmyk       *cmykTransform
+	cmykDone   bool
+}
+
+// CMYK returns the CMYK -> sRGB transform, or nil for non-CMYK images (or
+// CMYK profiles that cannot be evaluated).
+func (d *Decoder) CMYK() *cmykTransform {
+	if !d.cmykDone {
+		d.cmyk = newCMYKTransform(d.Header, d.ICC)
+		d.cmykDone = true
+	}
+	return d.cmyk
+}
+
+// OutputTarget returns the colour space XYB images are rendered to.
+func (d *Decoder) OutputTarget() *outputTarget {
+	if !d.targetDone {
+		d.target = xybTarget(d.Header, d.ICC)
+		d.targetDone = true
+	}
+	return d.target
+}
+
+// OutputCICP returns H.273 colour primaries / transfer characteristics code
+// points for HDR outputs (PQ, HLG), which ICC profiles cannot describe
+// faithfully. ok is false for other images.
+func (d *Decoder) OutputCICP() (primaries, transfer byte, ok bool) {
+	c := &d.Header.Colour
+	if c.WantICC || c.ColourSpace == CSXYB || c.ColourSpace == CSUnknown || c.WhitePoint != WPD65 {
+		return 0, 0, false
+	}
+	switch c.TransferFunction {
+	case TFPQ:
+		transfer = 16
+	case TFHLG:
+		transfer = 18
+	default:
+		return 0, 0, false
+	}
+	switch {
+	case c.ColourSpace == CSGrey:
+		return 0, 0, false
+	case c.Primaries == PrimSRGB:
+		primaries = 1
+	case c.Primaries == Prim2100:
+		primaries = 9
+	case c.Primaries == PrimP3:
+		primaries = 12
+	default:
+		return 0, 0, false
+	}
+	return primaries, transfer, true
+}
+
+// OutputICC returns the ICC profile describing decoded pixels, or nil when
+// they are plain sRGB.
+func (d *Decoder) OutputICC() []byte {
+	if d.Header.XYBEncoded {
+		return d.OutputTarget().icc
+	}
+	if d.Header.Colour.WantICC {
+		if d.CMYK() != nil {
+			return nil // rendered to sRGB
+		}
+		return d.ICC
+	}
+	c := &d.Header.Colour
+	if c.isSRGB() || c.ColourSpace == CSUnknown || c.ColourSpace == CSXYB {
+		return nil
+	}
+	return SynthesizeICC(c)
 }
 
 // NewDecoder parses the container, image header and ICC profile.

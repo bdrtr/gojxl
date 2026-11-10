@@ -101,10 +101,16 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		cv = d.canvas.clone()
 	}
 	renderSpotColors(cv, ih)
+	if t := d.CMYK(); t != nil && cv.color[0] != nil && t.black < len(cv.ec) {
+		if cv == d.canvas && !fh.IsLast {
+			cv = d.canvas.clone()
+		}
+		t.apply(cv.color[0], cv.color[1], cv.color[2], cv.ec[t.black])
+	}
 	f.Color = cv.color
 	f.EC = cv.ec
 	if deferCT {
-		f.conv = newXYBConv(ih)
+		f.conv = newXYBConv(ih, d.OutputTarget())
 		f.grey = ih.IsGrey()
 	}
 	return true, f, nil
@@ -159,13 +165,17 @@ func (fd *frameDecoder) colorTransform() {
 		return
 	}
 	if ih.XYBEncoded {
-		xybToLinearSRGB(fd.color, &ih.Opsin, ih.ToneMapping.IntensityTarget)
-		// output in sRGB transfer (or linear if the image says so)
-		tf := xybOutputTF(ih)
-		applyTransferFromLinear(fd.color, tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
+		conv := newXYBConv(ih, fd.dec.OutputTarget())
+		w, h := fd.color[0].W, fd.color[0].H
+		ParallelRows(h, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				r, g, b := fd.color[0].Row(y), fd.color[1].Row(y), fd.color[2].Row(y)
+				conv.row(r[:w], g[:w], b[:w], r[:w], g[:w], b[:w])
+			}
+		})
 		if ih.IsGrey() {
-			// keep luminance in channel 0 (Y of a grey image ends up equal in RGB)
-			fd.color[1], fd.color[2] = fd.color[0], fd.color[0]
+			// grey images keep the luminance (green) channel
+			fd.color[0], fd.color[2] = fd.color[1], fd.color[1]
 		}
 	} else if fh.DoYCbCr {
 		ycbcrToRGB(fd.color)

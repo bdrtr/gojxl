@@ -42,3 +42,17 @@ func makeChunk(typ string, data []byte) []byte {
 	binary.BigEndian.PutUint32(b[8+len(data):], crc.Sum32())
 	return b
 }
+
+// InsertCICP inserts a cICP chunk (ITU-T H.273 code points, RGB, full
+// range) right after IHDR. It must precede PLTE/IDAT, which holds here.
+func InsertCICP(png []byte, primaries, transfer byte) []byte {
+	if len(png) < 33 {
+		return png
+	}
+	chunk := makeChunk("cICP", []byte{primaries, transfer, 0, 1})
+	out := make([]byte, 0, len(png)+len(chunk))
+	out = append(out, png[:33]...)
+	out = append(out, chunk...)
+	out = append(out, png[33:]...)
+	return out
+}

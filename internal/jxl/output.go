@@ -12,25 +12,39 @@ type xybConv struct {
 	lut      *tfLUT
 	f        func(float32) float32
 	linear   bool
+	hlgExp   float32
+	lum      [3]float32
 }
 
-func newXYBConv(ih *ImageHeader) *xybConv {
+func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 	o := &ih.Opsin
 	c := &xybConv{}
-	scale := float32(255.0) / ih.ToneMapping.IntensityTarget
+	scale := float64(255.0) / float64(ih.ToneMapping.IntensityTarget)
+	var om mat3
+	for i := range om {
+		om[i] = float64(o.Matrix[i]) * scale
+	}
+	if t != nil && !t.srgb {
+		om = t.m.mul(om)
+	}
 	for i := range c.m {
-		c.m[i] = o.Matrix[i] * scale
+		c.m[i] = float32(om[i])
 	}
 	for i := 0; i < 3; i++ {
 		c.bias[i] = o.OpsinBias[i]
 		c.cbrtBias[i] = float32(math.Cbrt(float64(o.OpsinBias[i])))
 	}
-	tf := xybOutputTF(ih)
-	if tf == TFLinear {
-		c.linear = true
-		return c
+	if t != nil && !t.srgb {
+		c.f = t.enc
+		c.hlgExp, c.lum = t.hlgExp, t.lum
+	} else {
+		tf := xybOutputTF(ih)
+		if tf == TFLinear {
+			c.linear = true
+			return c
+		}
+		c.f = tfFunc(tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
 	}
-	c.f = tfFunc(tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
 	c.lut = buildTFLUT(c.f)
 	return c
 }
@@ -40,6 +54,20 @@ func (c *xybConv) row(x, y, b, r, g, bo []float32) {
 	n := len(r)
 	x, y, b, g, bo = x[:n], y[:n], b[:n], g[:n], bo[:n]
 	xybRow(c, x, y, b, r, g, bo)
+	if c.hlgExp != 0 {
+		e := float64(c.hlgExp)
+		for i := range r {
+			l := c.lum[0]*r[i] + c.lum[1]*g[i] + c.lum[2]*bo[i]
+			if l <= 0 {
+				r[i], g[i], bo[i] = 0, 0, 0
+				continue
+			}
+			s := float32(math.Min(math.Pow(float64(l), e), 1e9))
+			r[i] *= s
+			g[i] *= s
+			bo[i] *= s
+		}
+	}
 	if !c.linear {
 		c.lut.apply(r, c.f)
 		c.lut.apply(g, c.f)

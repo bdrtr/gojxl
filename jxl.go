@@ -31,6 +31,9 @@ type Info struct {
 	// OutputICC is the profile that describes the decoded pixels, or nil if
 	// they are sRGB.
 	OutputICC []byte
+	// CICP holds H.273 (primaries, transfer) code points for HDR (PQ/HLG)
+	// output, or nil.
+	CICP []byte
 }
 
 func readAll(r io.Reader) ([]byte, error) {
@@ -76,6 +79,7 @@ func Stat(data []byte) (*Info, error) {
 		NumExtraChannels: len(h.ExtraChannels),
 		ICC:              d.ICC,
 		OutputICC:        outputICC(d),
+		CICP:             outputCICP(d),
 	}, nil
 }
 
@@ -173,11 +177,15 @@ func DecodeAll(data []byte) (anim *Animation, err error) {
 // outputICC returns the ICC profile describing decoded pixels: the embedded
 // profile for non-XYB images (pixels are stored in that space), nil when the
 // decoder converts to sRGB.
-func outputICC(d *jxl.Decoder) []byte {
-	if d.Header.XYBEncoded {
-		return nil
+func outputCICP(d *jxl.Decoder) []byte {
+	if p, t, ok := d.OutputCICP(); ok {
+		return []byte{p, t}
 	}
-	return d.ICC
+	return nil
+}
+
+func outputICC(d *jxl.Decoder) []byte {
+	return d.OutputICC()
 }
 
 // recoverErr converts a panic caused by malformed input into an error.

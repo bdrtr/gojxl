@@ -108,8 +108,13 @@ func cmdDecode(args []string) {
 			fatal(err)
 		}
 		out := buf.Bytes()
-		if info, err := gojxl.Stat(data); err == nil && info.OutputICC != nil {
-			out = pngx.InsertICC(out, info.OutputICC)
+		if info, err := gojxl.Stat(data); err == nil {
+			if info.OutputICC != nil {
+				out = pngx.InsertICC(out, info.OutputICC)
+			}
+			if info.CICP != nil {
+				out = pngx.InsertCICP(out, info.CICP[0], info.CICP[1])
+			}
 		}
 		if _, err := f.Write(out); err != nil {
 			fatal(err)
