@@ -22,6 +22,7 @@ type LossyOptions struct {
 	NoCfL      bool    // disable per-tile chroma-from-luma
 	OnlyDCT8   bool    // disable larger transforms
 	RDMu       float64 // rate weight in AC strategy decisions
+	Frame      FrameOpts
 }
 
 func abs32(v float32) float32 {
@@ -958,40 +959,50 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 
 	// --- headers
 	out := &bitio.Writer{}
-	out.Write(16, 0x0aff)
-	writeSize(out, im.W, im.H)
-	if alpha == nil {
-		out.WriteBool(true) // metadata all default: 8-bit sRGB, XYB
-	} else {
-		out.WriteBool(false) // metadata
-		out.WriteBool(false) // no extra fields
-		writeBitDepth(out, 8)
-		out.WriteBool(true) // 16-bit buffers suffice
-		out.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
-		out.WriteBool(true) // default 8-bit alpha
-		out.WriteBool(true) // xyb
-		out.WriteBool(true) // sRGB
-		out.WriteU64(0)     // extensions
+	fo := opt.Frame
+	if !fo.NoImageHeader {
+		out.Write(16, 0x0aff)
+		writeSize(out, im.W, im.H)
+		if alpha == nil && fo.Anim == nil {
+			out.WriteBool(true) // metadata all default: 8-bit sRGB, XYB
+		} else {
+			out.WriteBool(false) // metadata
+			out.WriteBool(fo.Anim != nil)
+			if fo.Anim != nil {
+				writeAnimHeader(out, fo.Anim)
+			}
+			writeBitDepth(out, 8)
+			out.WriteBool(true) // 16-bit buffers suffice
+			if alpha != nil {
+				out.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
+				out.WriteBool(true) // default 8-bit alpha
+			} else {
+				out.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
+			}
+			out.WriteBool(true) // xyb
+			out.WriteBool(true) // sRGB
+			if fo.Anim != nil {
+				out.WriteBool(true) // default tone mapping
+			}
+			out.WriteU64(0) // extensions
+		}
+		out.WriteBool(true) // default transform data
+		out.ZeroPadToByte()
 	}
-	out.WriteBool(true) // default transform data
-	out.ZeroPadToByte()
 	out.WriteBool(false)
 	out.Write(2, 0)    // regular
 	out.Write(1, 0)    // VarDCT
 	out.WriteU64(0x80) // skip adaptive LF smoothing
 	out.WriteU32(1, val(1), val(2), val(4), val(8))
+	nec := 0
 	if alpha != nil {
+		nec = 1
 		out.WriteU32(1, val(1), val(2), val(4), val(8)) // ec upsampling
 	}
 	out.Write(3, 3) // x_qm_scale
 	out.Write(3, 2) // b_qm_scale
 	out.WriteU32(1, val(1), val(2), val(3), bitsOff(3, 4))
-	out.WriteBool(false) // no crop
-	out.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
-	if alpha != nil {
-		out.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3)) // ec blending
-	}
-	out.WriteBool(true)                                                     // is_last
+	fo.writeCropBlend(out, im.W, im.H, nec)
 	out.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48)) // name
 	out.WriteBool(false)                                                    // restoration not default
 	out.WriteBool(gab)

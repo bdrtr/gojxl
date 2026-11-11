@@ -27,16 +27,69 @@ type Image struct {
 type Options struct {
 	// Effort selects the context model (1 = fastest; 4+ = learned MA tree).
 	Effort int
-	// Animation: set Anim on every frame; the first frame carries the image
-	// header, later ones set NoImageHeader. All but the last set NotLast.
-	Anim          *Anim
-	Duration      uint32 // ticks
-	NotLast       bool
-	NoImageHeader bool
-	// Crop places the (smaller) image at CropX0, CropY0 over the previous
-	// animation frame.
+	FrameOpts
+}
+
+// FrameOpts places a frame in an animation: set Anim on every frame; the
+// first frame carries the image header, later ones set NoImageHeader. All
+// but the last set NotLast. Crop places a (smaller) frame at CropX0,
+// CropY0 over the previous frame.
+type FrameOpts struct {
+	Anim           *Anim
+	Duration       uint32 // ticks
+	NotLast        bool
+	NoImageHeader  bool
 	Crop           bool
 	CropX0, CropY0 int
+}
+
+// writeCropBlend writes a frame header's crop fields (frame size fw x fh),
+// blending info for the colour and nec extra channels, duration, is_last
+// and reference fields.
+func (o FrameOpts) writeCropBlend(w *bitio.Writer, fw, fh, nec int) {
+	w.WriteBool(o.Crop)
+	if o.Crop {
+		cd := [4]bitio.U32Dist{bitio.Bits(8), bitsOff(11, 256), bitsOff(14, 2304), bitsOff(30, 18688)}
+		w.WriteU32(bitio.PackSigned(int32(o.CropX0)), cd[0], cd[1], cd[2], cd[3])
+		w.WriteU32(bitio.PackSigned(int32(o.CropY0)), cd[0], cd[1], cd[2], cd[3])
+		w.WriteU32(uint32(fw), cd[0], cd[1], cd[2], cd[3])
+		w.WriteU32(uint32(fh), cd[0], cd[1], cd[2], cd[3])
+	}
+	// blend replace; a cropped frame replaces part of reference 1
+	for i := 0; i <= nec; i++ {
+		w.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
+		if o.Crop {
+			w.Write(2, 1)
+		}
+	}
+	if o.Anim != nil {
+		w.WriteU32(o.Duration, val(0), val(1), bitio.Bits(8), bitio.Bits(32))
+	}
+	w.WriteBool(!o.NotLast) // is_last
+	if o.NotLast {
+		// animation frames are kept as reference 1 for cropped successors
+		sar := uint64(0)
+		if o.Anim != nil {
+			sar = 1
+		}
+		w.Write(2, sar)
+		if !o.Crop && (o.Duration == 0 || sar != 0) {
+			w.WriteBool(false) // save_before_ct
+		}
+	}
+}
+
+// writeAnimHeader writes the extra-fields part of the image metadata for
+// an animation.
+func writeAnimHeader(w *bitio.Writer, anim *Anim) {
+	w.Write(3, 0)      // orientation
+	w.WriteBool(false) // no intrinsic size
+	w.WriteBool(false) // no preview
+	w.WriteBool(true)  // animation
+	w.WriteU32(anim.TpsNum, val(100), val(1000), bitsOff(10, 1), bitsOff(30, 1))
+	w.WriteU32(anim.TpsDen, val(1), val(1001), bitsOff(8, 1), bitsOff(10, 1))
+	w.WriteU32(anim.Loops, val(0), bitio.Bits(3), bitio.Bits(16), bitio.Bits(32))
+	w.WriteBool(false) // no timecodes
 }
 
 // Anim is the animation header: ticks per second TpsNum/TpsDen.
@@ -70,14 +123,7 @@ func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	w.WriteBool(false) // metadata not all default
 	w.WriteBool(anim != nil)
 	if anim != nil {
-		w.Write(3, 0)      // orientation
-		w.WriteBool(false) // no intrinsic size
-		w.WriteBool(false) // no preview
-		w.WriteBool(true)  // animation
-		w.WriteU32(anim.TpsNum, val(100), val(1000), bitsOff(10, 1), bitsOff(30, 1))
-		w.WriteU32(anim.TpsDen, val(1), val(1001), bitsOff(8, 1), bitsOff(10, 1))
-		w.WriteU32(anim.Loops, val(0), bitio.Bits(3), bitio.Bits(16), bitio.Bits(32))
-		w.WriteBool(false) // no timecodes
+		writeAnimHeader(w, anim)
 	}
 	writeBitDepth(w, im.BitDepth)
 	w.WriteBool(im.BitDepth <= 12) // modular_16bit_buffers
@@ -131,40 +177,11 @@ func writeFrameHeader(w *bitio.Writer, im *Image, opt Options) {
 	}
 	w.Write(2, 1)                                        // group_size_shift: 256
 	w.WriteU32(1, val(1), val(2), val(3), bitsOff(3, 4)) // one pass
-	w.WriteBool(opt.Crop)
-	if opt.Crop {
-		cd := [4]bitio.U32Dist{bitio.Bits(8), bitsOff(11, 256), bitsOff(14, 2304), bitsOff(30, 18688)}
-		w.WriteU32(bitio.PackSigned(int32(opt.CropX0)), cd[0], cd[1], cd[2], cd[3])
-		w.WriteU32(bitio.PackSigned(int32(opt.CropY0)), cd[0], cd[1], cd[2], cd[3])
-		w.WriteU32(uint32(im.W), cd[0], cd[1], cd[2], cd[3])
-		w.WriteU32(uint32(im.H), cd[0], cd[1], cd[2], cd[3])
-	}
-	// blend replace; a cropped frame replaces part of reference 1
-	w.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
-	if opt.Crop {
-		w.Write(2, 1)
-	}
+	nec := 0
 	if im.Alpha {
-		w.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
-		if opt.Crop {
-			w.Write(2, 1)
-		}
+		nec = 1
 	}
-	if opt.Anim != nil {
-		w.WriteU32(opt.Duration, val(0), val(1), bitio.Bits(8), bitio.Bits(32))
-	}
-	w.WriteBool(!opt.NotLast) // is_last
-	if opt.NotLast {
-		// animation frames are kept as reference 1 for cropped successors
-		sar := uint64(0)
-		if opt.Anim != nil {
-			sar = 1
-		}
-		w.Write(2, sar)
-		if !opt.Crop && (opt.Duration == 0 || sar != 0) {
-			w.WriteBool(false) // save_before_ct
-		}
-	}
+	opt.writeCropBlend(w, im.W, im.H, nec)
 	w.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48)) // name
 	// restoration filter: no gaborish, no EPF
 	w.WriteBool(false)

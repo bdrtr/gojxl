@@ -65,3 +65,47 @@ func TestAnimationRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestLossyAnimation(t *testing.T) {
+	const w, h = 96, 64
+	var frames []Frame
+	for k := 0; k < 4; k++ {
+		m := image.NewNRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				v := byte(x*2 + y)
+				if x >= 20+5*k && x < 40+5*k && y > 10 && y < 30 {
+					v = 230
+				}
+				m.SetNRGBA(x, y, color.NRGBA{v, v / 2, 255 - v, 255})
+			}
+		}
+		frames = append(frames, Frame{Image: m, Duration: 0.04})
+	}
+	data, err := EncodeAnimation(&Animation{Frames: frames}, &EncodeOptions{Distance: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeAll(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Frames) != len(frames) {
+		t.Fatalf("%d frames", len(got.Frames))
+	}
+	for i, f := range got.Frames {
+		var se float64
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				a := color.NRGBAModel.Convert(frames[i].Image.At(x, y)).(color.NRGBA)
+				b := color.NRGBAModel.Convert(f.Image.At(x, y)).(color.NRGBA)
+				for _, d := range []float64{float64(a.R) - float64(b.R), float64(a.G) - float64(b.G), float64(a.B) - float64(b.B)} {
+					se += d * d
+				}
+			}
+		}
+		if mse := se / (3 * w * h); mse > 20 {
+			t.Errorf("frame %d: MSE %.1f", i, mse)
+		}
+	}
+}

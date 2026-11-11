@@ -20,7 +20,7 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - Ekstra kanallar (alpha, premultiplied alpha, spot renkler), 1–32 bit tamsayı/float örnekler
 - ICC profil çözme (`UnpredictICC`), PNG çıktısına iCCP olarak gömme, yönlendirme (orientation)
 - Paralel PNG yazıcı; animasyonlu dosyalar APNG olarak yazılır (tüm kareler, süreler, döngü sayısı)
-- Animasyon kodlama: animasyonlu GIF/APNG → kayıpsız JXL animasyonu (yalnız değişen bölge kırpılarak
+- Animasyon kodlama: animasyonlu GIF/APNG → kayıpsız ya da kayıplı (`-d`) JXL animasyonu (yalnız değişen bölge kırpılarak
   kodlanır, aynı kareler birleştirilir; `EncodeAnimation`, `DecodeAnimatedInput`)
 - **Renk yönetimi** (saf Go CMS): XYB görüntüler orijinal uzaylarında çıkar —
   enum uzaylar (Display P3, Rec.2020/2100, DCI, gamma, doğrusal, PQ, HLG + OOTF)
@@ -181,4 +181,4 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - Grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+), daha hızlı JPEG dönüştürme
 - HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
-- Akış (streaming) kod çözme, kayıplı animasyon kodlama
+- Akış (streaming) kod çözme; kayıplı kodlamada alfa kanalı (şu an kayıpsız ve cjxl'den büyük)

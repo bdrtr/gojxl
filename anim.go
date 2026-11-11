@@ -14,16 +14,14 @@ import (
 	"gojxl/internal/pngx"
 )
 
-// EncodeAnimation encodes an animation losslessly. All frames must have
-// the same size; each is shown for its Duration (seconds). NumLoops is
-// the number of plays (0 = forever).
+// EncodeAnimation encodes an animation (lossless, or lossy VarDCT when
+// opt.Distance > 0). All frames must have the same size; each is shown for
+// its Duration (seconds). NumLoops is the number of plays (0 = forever).
 func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 	if anim == nil || len(anim.Frames) == 0 {
 		return nil, errors.New("gojxl: empty animation")
 	}
-	if opt != nil && opt.Distance > 0 {
-		return nil, errors.New("gojxl: lossy animation encoding is not supported")
-	}
+	lossy := opt != nil && opt.Distance > 0
 	effort := 4
 	if opt != nil && opt.Effort > 0 {
 		effort = opt.Effort
@@ -41,7 +39,18 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 		deep = deep || ims[i].BitDepth > 8
 	}
 	// one image header for all frames: common channels and bit depth
+	if lossy {
+		deep = false // VarDCT input is 8-bit
+	}
 	for _, im := range ims {
+		if !deep && im.BitDepth > 8 {
+			for _, c := range im.Chans {
+				for k, v := range c {
+					c[k] = (v + 128) / 257
+				}
+			}
+			im.BitDepth = 8
+		}
 		if deep && im.BitDepth == 8 {
 			for _, c := range im.Chans {
 				for k, v := range c {
@@ -103,8 +112,7 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 			d := math.Round(j.duration * 1000)
-			o := enc.Options{
-				Effort:        effort,
+			fo := enc.FrameOpts{
 				Anim:          an,
 				Duration:      uint32(min(max(d, 0), math.MaxUint32)),
 				NotLast:       i < len(jobs)-1,
@@ -113,7 +121,12 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 				CropX0:        j.x0,
 				CropY0:        j.y0,
 			}
-			outs[i], errs[i] = enc.EncodeLossless(j.im, o)
+			if lossy {
+				lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, Frame: fo}
+				outs[i], errs[i] = enc.EncodeVarDCT(j.im, lo)
+				return
+			}
+			outs[i], errs[i] = enc.EncodeLossless(j.im, enc.Options{Effort: effort, FrameOpts: fo})
 		}()
 	}
 	wg.Wait()
