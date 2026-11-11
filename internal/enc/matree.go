@@ -596,51 +596,107 @@ type splitChoice struct {
 	gain   float64
 }
 
-func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitChoice {
+// nodeHist holds a node's sample histograms for every property, per
+// candidate predictor, bucket and token of a compact token alphabet:
+// h[prop][(cand*buckets+bucket)*T+token]. A child's histograms can be
+// derived from its parent's (parent minus sibling) in the parent's layout.
+type nodeHist struct {
+	cands []int // predictor indices (into ts.preds)
+	tmap  [256]int32
+	T     int
+	ebits [256]float64
+	slab  *[]uint32
+	h     [][]uint32
+}
+
+// slabPool recycles histogram storage between nodes.
+var slabPool = sync.Pool{New: func() any { return new([]uint32) }}
+
+// layout makes an empty nodeHist over the tokens the candidates' columns
+// take in samples lo..hi (in ascending token order).
+func (l *learner) layout(lo, hi int, cands []int) *nodeHist {
 	ts := l.ts
 	np := len(ts.props)
-	nc := len(cands)
-	n := hi - lo
-	// compact the token alphabet of the candidate predictors in this node
-	var tmap [256]int32
-	for i := range tmap {
-		tmap[i] = -1
+	nh := &nodeHist{cands: cands}
+	for i := range nh.tmap {
+		nh.tmap[i] = -1
 	}
-	T := 0
 	for _, pi := range cands {
 		for _, t := range ts.cols[np+pi][lo:hi] {
-			tmap[t] = 0
+			nh.tmap[t] = 0
 		}
 	}
-	var ebits [256]float64
-	for t := range tmap {
-		if tmap[t] == 0 {
-			tmap[t] = int32(T)
-			ebits[T] = ts.ebits[t]
-			T++
+	for t := range nh.tmap {
+		if nh.tmap[t] == 0 {
+			nh.tmap[t] = int32(nh.T)
+			nh.ebits[nh.T] = ts.ebits[t]
+			nh.T++
 		}
 	}
-	// the candidates' token columns in the compact alphabet
+	return nh
+}
+
+// like makes an empty nodeHist with nh's candidates and alphabet.
+func (nh *nodeHist) like() *nodeHist {
+	o := &nodeHist{cands: nh.cands, tmap: nh.tmap, T: nh.T, ebits: nh.ebits}
+	return o
+}
+
+// alloc gives nh zeroed storage.
+func (l *learner) alloc(nh *nodeHist) {
+	ts := l.ts
+	np := len(ts.props)
+	nc := len(nh.cands)
+	size := 0
+	for j := 0; j < np; j++ {
+		size += nc * (len(ts.th[j]) + 1) * nh.T
+	}
+	sp := slabPool.Get().(*[]uint32)
+	if cap(*sp) < size {
+		*sp = make([]uint32, size)
+	}
+	*sp = (*sp)[:size]
+	slab := *sp
+	clear(slab)
+	nh.slab = sp
+	nh.h = make([][]uint32, np)
+	o := 0
+	for j := 0; j < np; j++ {
+		k := nc * (len(ts.th[j]) + 1) * nh.T
+		nh.h[j] = slab[o : o+k]
+		o += k
+	}
+}
+
+func (nh *nodeHist) release() {
+	if nh != nil && nh.slab != nil {
+		slabPool.Put(nh.slab)
+		nh.slab, nh.h = nil, nil
+	}
+}
+
+// size is the number of histogram cells.
+func (nh *nodeHist) size() int { return len(*nh.slab) }
+
+// count allocates and fills nh with samples lo..hi.
+func (l *learner) count(nh *nodeHist, lo, hi int) {
+	l.alloc(nh)
+	ts := l.ts
+	np := len(ts.props)
+	nc := len(nh.cands)
+	n := hi - lo
+	T := nh.T
 	tcc := make([][]uint8, nc)
-	for ci, pi := range cands {
+	for ci, pi := range nh.cands {
 		d := make([]uint8, n)
 		for i, t := range ts.cols[np+pi][lo:hi] {
-			d[i] = uint8(tmap[t])
+			d[i] = uint8(nh.tmap[t])
 		}
 		tcc[ci] = d
 	}
-	res := make([]splitChoice, np)
-	eval := func(j int, buf *[]uint32) {
-		// hist layout: [cand][bucket][token] over all buckets of the
-		// property; buckets absent from this node are skipped below, so
-		// the candidate splits are the same as over the present ones
+	one := func(j int) {
 		nbj := len(ts.th[j]) + 1
-		size := nc * nbj * T
-		if cap(*buf) < size {
-			*buf = make([]uint32, size)
-		}
-		hist := (*buf)[:size]
-		clear(hist)
+		hist := nh.h[j]
 		bc := ts.cols[j][lo:hi]
 		if nc == 2 {
 			h0, h1 := hist[:nbj*T], hist[nbj*T:]
@@ -650,19 +706,72 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 				h0[o+int(t0[i])]++
 				h1[o+int(t1[i])]++
 			}
-		} else {
-			for ci := range cands {
-				hp := hist[ci*nbj*T : (ci+1)*nbj*T]
-				tc := tcc[ci][:len(bc)]
-				for i, b := range bc {
-					hp[int(b)*T+int(tc[i])]++
+			return
+		}
+		for ci := range nh.cands {
+			hp := hist[ci*nbj*T : (ci+1)*nbj*T]
+			tc := tcc[ci][:len(bc)]
+			for i, b := range bc {
+				hp[int(b)*T+int(tc[i])]++
+			}
+		}
+	}
+	if n > 1<<14 {
+		var wg sync.WaitGroup
+		for j := 0; j < np; j++ {
+			wg.Add(1)
+			go func(j int) { defer wg.Done(); one(j) }(j)
+		}
+		wg.Wait()
+	} else {
+		for j := 0; j < np; j++ {
+			one(j)
+		}
+	}
+}
+
+// evalSplits finds the best split of samples lo..hi from their histograms,
+// using the candidates nh.cands[sel] (absent buckets are skipped, so the
+// candidate splits are those between the buckets present).
+func (l *learner) evalSplits(nh *nodeHist, sel []int, lo, hi int, parentCost float64) splitChoice {
+	ts := l.ts
+	np := len(ts.props)
+	T := nh.T
+	best := splitChoice{prop: -1}
+	// per candidate, the node's token counts (the sum over the buckets of
+	// any property) and the entropy terms of the whole node
+	type candTot struct {
+		lft    [256]uint32
+		sL, eL float64
+		nL     uint32
+	}
+	tots := make([]candTot, len(sel))
+	{
+		nb0 := len(ts.th[0]) + 1
+		for si, ci := range sel {
+			ct := &tots[si]
+			hc := nh.h[0][ci*nb0*T : (ci+1)*nb0*T]
+			for b := 0; b < nb0; b++ {
+				for k, v := range hc[b*T : b*T+T] {
+					ct.lft[k] += v
+				}
+			}
+			for k, v := range ct.lft[:T] {
+				if v != 0 {
+					ct.sL += ts.nlog[v]
+					ct.eL += float64(v) * nh.ebits[k]
+					ct.nL += v
 				}
 			}
 		}
+	}
+	for j := 0; j < np; j++ {
+		nbj := len(ts.th[j]) + 1
+		hist := nh.h[j]
 		// buckets present in this node, in order
 		var borig [256]int
 		B := 0
-		if len(bc) < nbj*T {
+		if bc := ts.cols[j][lo:hi]; len(bc) < nbj*T {
 			var seen [256]bool
 			for _, b := range bc {
 				seen[b] = true
@@ -674,8 +783,9 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 				}
 			}
 		} else {
+			h0 := hist[sel[0]*nbj*T:]
 			for b := 0; b < nbj; b++ {
-				for _, v := range hist[b*T : b*T+T] {
+				for _, v := range h0[b*T : b*T+T] {
 					if v != 0 {
 						borig[B] = b
 						B++
@@ -685,30 +795,18 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 			}
 		}
 		if B < 2 {
-			return
+			continue
 		}
 		var costR, costL [256]float64
 		for b := 0; b < B; b++ {
 			costR[b], costL[b] = math.Inf(1), math.Inf(1)
 		}
 		var r, lft [256]uint32
-		for ci := 0; ci < nc; ci++ {
+		for si, ci := range sel {
 			hc := hist[ci*nbj*T : (ci+1)*nbj*T]
-			clear(lft[:T])
-			var sL, eL float64
-			var nL uint32
-			for _, b := range borig[:B] {
-				for k, v := range hc[b*T : b*T+T] {
-					lft[k] += v
-				}
-			}
-			for k, v := range lft[:T] {
-				if v != 0 {
-					sL += ts.nlog[v]
-					eL += float64(v) * ebits[k]
-					nL += v
-				}
-			}
+			ct := &tots[si]
+			copy(lft[:T], ct.lft[:T])
+			sL, eL, nL := ct.sL, ct.eL, ct.nL
 			clear(r[:T])
 			var sR, eR float64
 			var nR uint32
@@ -722,7 +820,7 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 					r[k] += h
 					sL += ts.nlog[lft[k]-h] - ts.nlog[lft[k]]
 					lft[k] -= h
-					e := float64(h) * ebits[k]
+					e := float64(h) * nh.ebits[k]
 					eR += e
 					eL -= e
 					nR += h
@@ -738,53 +836,69 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 				bestGain, bestB = g, b
 			}
 		}
-		if bestB >= 0 {
-			res[j] = splitChoice{prop: j, bucket: borig[bestB], gain: bestGain}
-		}
-	}
-	if n > 1<<14 {
-		var wg sync.WaitGroup
-		for j := 0; j < np; j++ {
-			wg.Add(1)
-			go func(j int) {
-				defer wg.Done()
-				var buf []uint32
-				eval(j, &buf)
-			}(j)
-		}
-		wg.Wait()
-	} else {
-		bp := histPool.Get().(*[]uint32)
-		for j := 0; j < np; j++ {
-			eval(j, bp)
-		}
-		histPool.Put(bp)
-	}
-	best := splitChoice{prop: -1}
-	for _, r := range res {
-		if r.gain > best.gain {
-			best = r
+		if bestB >= 0 && bestGain > best.gain {
+			best = splitChoice{prop: j, bucket: borig[bestB], gain: bestGain}
 		}
 	}
 	return best
 }
 
-// histPool recycles bestSplit's histogram buffers between nodes.
-var histPool = sync.Pool{New: func() any { return new([]uint32) }}
+// positions returns the indices of cands in all, or false if one is
+// missing.
+func positions(cands, all []int) ([]int, bool) {
+	sel := make([]int, len(cands))
+	for i, c := range cands {
+		k := slices.Index(all, c)
+		if k < 0 {
+			return nil, false
+		}
+		sel[i] = k
+	}
+	return sel, true
+}
+
+// nodeInfo is the leafInfo of a node.
+type nodeInfo struct {
+	pi    int
+	cost  float64
+	cands []int
+}
+
+func (l *learner) info(lo, hi int) nodeInfo {
+	pi, c, cands := l.leafInfo(lo, hi)
+	return nodeInfo{pi, c, cands}
+}
 
 // build grows the subtree for samples idx with at most budget leaves (the
 // budget is shared between children in proportion to their sample counts,
 // keeping the result independent of scheduling).
 func (l *learner) build(lo, hi, budget int) (*tnode, float64) {
+	return l.grow(lo, hi, budget, l.info(lo, hi), nil)
+}
+
+// grow is build for a node whose leafInfo is known, with its histograms if
+// the parent derived them (nh is owned by the call).
+func (l *learner) grow(lo, hi, budget int, inf nodeInfo, nh *nodeHist) (*tnode, float64) {
 	n := hi - lo
-	pi, c, cands := l.leafInfo(lo, hi)
-	leaf := &tnode{leaf: true, pred: l.ts.preds[pi]}
+	leaf := &tnode{leaf: true, pred: l.ts.preds[inf.pi]}
 	if n < 32 || budget < 2 {
-		return leaf, c
+		nh.release()
+		return leaf, inf.cost
 	}
-	sc := l.bestSplit(lo, hi, c, cands)
+	sel, ok := []int(nil), false
+	if nh != nil {
+		sel, ok = positions(inf.cands, nh.cands)
+	}
+	if !ok {
+		nh.release()
+		nh = l.layout(lo, hi, inf.cands)
+		l.count(nh, lo, hi)
+		sel, _ = positions(inf.cands, nh.cands)
+	}
+	sc := l.evalSplits(nh, sel, lo, hi, inf.cost)
 	if sc.prop < 0 || sc.gain*l.ts.scale < l.lp.threshold {
-		return leaf, c
+		nh.release()
+		return leaf, inf.cost
 	}
 	// stable partition of every column: right (<= bucket) first
 	b := uint8(sc.bucket)
@@ -820,16 +934,51 @@ func (l *learner) build(lo, hi, budget int) (*tnode, float64) {
 	mid := lo + i
 	br := min(max(1, budget*i/n), budget-1)
 	bl := budget - br
+	infR, infL := l.info(lo, mid), l.info(mid, hi)
+	// histogram subtraction: count the smaller child in this node's
+	// layout and derive the larger one, when the larger child's
+	// candidates are among this node's and that saves work
+	var hR, hL *nodeHist
+	nR, nL := mid-lo, hi-mid
+	needR, needL := nR >= 32 && br >= 2, nL >= 32 && bl >= 2
+	sLo, sHi, nS, nG, infS, infG, needS, needG := lo, mid, nR, nL, infR, infL, needR, needL
+	if nR > nL {
+		sLo, sHi, nS, nG, infS, infG, needS, needG = mid, hi, nL, nR, infL, infR, needL, needR
+	}
+	_, gOK := positions(infG.cands, nh.cands)
+	_, sOK := positions(infS.cands, nh.cands)
+	np := len(l.ts.props)
+	if needG && gOK && nG*np*len(nh.cands) > 2*nh.size() && (sOK || !needS || 2*nS < nG) {
+		hs := nh.like()
+		l.count(hs, sLo, sHi)
+		for k, v := range *hs.slab {
+			(*nh.slab)[k] -= v
+		}
+		hG := nh
+		var hS *nodeHist
+		if needS && sOK {
+			hS = hs
+		} else {
+			hs.release()
+		}
+		if sLo == lo {
+			hR, hL = hS, hG
+		} else {
+			hR, hL = hG, hS
+		}
+	} else {
+		nh.release()
+	}
 	var cl, cr float64
 	if n > 1<<15 {
 		var wg sync.WaitGroup
 		wg.Add(1)
-		go func() { defer wg.Done(); nd.left, cl = l.build(mid, hi, bl) }()
-		nd.right, cr = l.build(lo, mid, br)
+		go func() { defer wg.Done(); nd.left, cl = l.grow(mid, hi, bl, infL, hL) }()
+		nd.right, cr = l.grow(lo, mid, br, infR, hR)
 		wg.Wait()
 	} else {
-		nd.right, cr = l.build(lo, mid, br)
-		nd.left, cl = l.build(mid, hi, bl)
+		nd.right, cr = l.grow(lo, mid, br, infR, hR)
+		nd.left, cl = l.grow(mid, hi, bl, infL, hL)
 	}
 	return nd, cl + cr
 }
