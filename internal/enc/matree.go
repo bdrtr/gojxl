@@ -384,7 +384,7 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		for i := 0; i < len(vals); i += step {
 			sorted = append(sorted, vals[i])
 		}
-		sort.Slice(sorted, func(a, b int) bool { return sorted[a] < sorted[b] })
+		slices.Sort(sorted)
 		var th []int32
 		nb := lp.maxBuckets
 		for b := 1; b < nb; b++ {
@@ -408,7 +408,16 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		}
 		bk := make([]uint8, len(vals))
 		for i, v := range vals {
-			bk[i] = uint8(sort.Search(len(th), func(k int) bool { return th[k] >= v }))
+			lo, hi := 0, len(th) // first k with th[k] >= v
+			for lo < hi {
+				m := int(uint(lo+hi) >> 1)
+				if th[m] < v {
+					lo = m + 1
+				} else {
+					hi = m
+				}
+			}
+			bk[i] = uint8(lo)
 		}
 		ts.bucket[j] = bk
 		ts.th[j] = th

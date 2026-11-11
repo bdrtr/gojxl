@@ -3,6 +3,7 @@ package enc
 import (
 	"math"
 	"math/bits"
+	"runtime"
 
 	"gojxl/internal/bitio"
 )
@@ -114,31 +115,46 @@ func writeANSCodeTunedLZ(w *bitio.Writer, nstreams int, visit func(i int, fn fun
 	}
 	cm, cl := clusterHistograms(counts, 128)
 	ncl := len(cl)
-	vhs := make([][]valueHist, nstreams)
-	parallel(nstreams, func(i int) {
-		vh := make([]valueHist, ncl)
+	// value statistics per worker (16 KiB per used cluster), merged per
+	// cluster
+	nw := min(runtime.GOMAXPROCS(0), nstreams)
+	vhs := make([][]*valueHist, nw)
+	for k := range vhs {
+		vhs[k] = make([]*valueHist, ncl)
+	}
+	parallelWorkers(nstreams, nw, func(k, i int) {
+		vh := vhs[k]
 		visit(i, func(ctx int, v uint32) {
 			if v&lzLenFlag == 0 {
-				vh[cm[ctx]].add(v)
+				h := vh[cm[ctx]]
+				if h == nil {
+					h = &valueHist{}
+					vh[cm[ctx]] = h
+				}
+				h.add(v)
 			}
 		})
-		vhs[i] = vh
 	})
 	vh := make([]valueHist, ncl)
-	for _, v := range vhs {
-		for c := range vh {
-			vh[c].merge(&v[c])
+	parallel(ncl, func(c int) {
+		for _, v := range vhs {
+			if v[c] != nil {
+				vh[c].merge(v[c])
+			}
 		}
-	}
+	})
 	vhs = nil
 	cfgs := make([]uintCfg, ncl)
 	parallel(ncl, func(c int) { cfgs[c] = bestCfg(&vh[c], maxTok) })
-	parts := make([][][]uint64, nstreams)
-	parallel(nstreams, func(i int) {
-		cnt := make([][]uint64, ncl)
-		for c := range cnt {
-			cnt[c] = make([]uint64, 256)
+	parts := make([][][]uint64, nw)
+	for k := range parts {
+		parts[k] = make([][]uint64, ncl)
+		for c := range parts[k] {
+			parts[k][c] = make([]uint64, 256)
 		}
+	}
+	parallelWorkers(nstreams, nw, func(k, i int) {
+		cnt := parts[k]
 		visit(i, func(ctx int, v uint32) {
 			c := cm[ctx]
 			if v&lzLenFlag != 0 {
@@ -149,7 +165,6 @@ func writeANSCodeTunedLZ(w *bitio.Writer, nstreams int, visit func(i int, fn fun
 			t, _, _ := cfgs[c].encode(v)
 			cnt[c][t]++
 		})
-		parts[i] = cnt
 	})
 	final := make([][]uint64, ncl)
 	for c := range final {

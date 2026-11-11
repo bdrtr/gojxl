@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"gojxl/internal/bitio"
 )
@@ -785,12 +786,21 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		} else {
 			dc = writeANSCodeClustered(lfg, defaultCfg, counts, 64)
 		}
+		// writeStream codes stream i; with cached residuals the compact
+		// two-visit writer is used (walking the tree twice would be slow)
+		writeStream := func(w *bitio.Writer, dc *ansCode, i, n int) {
+			if caches != nil {
+				ansWriteVisit(w, dc, n, func(fn func(ctx int, v uint32)) { visit(i, fn) })
+				return
+			}
+			st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}
+			visit(i, st.add)
+			st.flush(w)
+		}
 		lfg.WriteBool(true) // use global tree
 		lfg.WriteBool(true) // default WP header
 		transforms(lfg)
-		gs := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, global))}
-		visit(0, gs.add)
-		gs.flush(lfg)
+		writeStream(lfg, dc, 0, streamSamples(chs, global))
 
 		out := &bitio.Writer{}
 		writeImageHeader(out, im)
@@ -816,9 +826,7 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 				for _, f := range tws {
 					f(w)
 				}
-				st := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, groups[i]))}
-				visit(1+i, st.add)
-				st.flush(w)
+				writeStream(w, dc, 1+i, streamSamples(chs, groups[i]))
 			}
 			secs[i] = w.Bytes()
 		})
@@ -1058,4 +1066,36 @@ func estChannelCost(pix []int32, w, h int) float64 {
 		extra += histCost(hist[q][:])
 	}
 	return extra
+}
+
+// parallelChunks runs fn over [0, n) split into chunks of at least min
+// items, in parallel.
+func parallelChunks(n, minChunk int, fn func(lo, hi int)) {
+	if n <= minChunk {
+		fn(0, n)
+		return
+	}
+	nch := min(runtime.GOMAXPROCS(0)*4, (n+minChunk-1)/minChunk)
+	parallel(nch, func(i int) { fn(i*n/nch, (i+1)*n/nch) })
+}
+
+// parallelWorkers runs fn(w, i) for i in [0, n) on nw workers taking items
+// from a shared queue; w identifies the worker (for per-worker state).
+func parallelWorkers(n, nw int, fn func(w, i int)) {
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < nw; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				fn(w, i)
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -316,3 +316,72 @@ func (s *ansStream) flush(w *bitio.Writer) {
 		w.Write(uint(t.nb), uint64(t.bits))
 	}
 }
+
+// ansWriteVisit encodes the (ctx, value) stream produced by visit (called
+// twice) like an ansStream, but keeps only 2 bytes per token: extra bits
+// are recomputed in a second visit. It needs at most 256 histograms.
+func ansWriteVisit(w *bitio.Writer, c *ansCode, sizeHint int, visit func(fn func(ctx int, v uint32))) {
+	if len(c.tables) > 256 {
+		st := &ansStream{c: c, toks: make([]ansToken, 0, sizeHint)}
+		visit(st.add)
+		st.flush(w)
+		return
+	}
+	cm, cfgs, lz := c.cm, c.cfgs, c.lz
+	toks := make([]uint16, 0, sizeHint)
+	visit(func(ctx int, v uint32) {
+		if cm != nil {
+			ctx = int(cm[ctx])
+		}
+		var t uint32
+		if v&lzLenFlag != 0 && lz != nil {
+			t, _, _ = lz.lenCfg.encode(v &^ lzLenFlag)
+			t += lz.minSym
+		} else {
+			t, _, _ = cfgs[ctx].encode(v)
+		}
+		toks = append(toks, uint16(ctx)<<8|uint16(t))
+	})
+	if len(toks) == 0 {
+		return
+	}
+	// renormalisation words, recorded backwards with their token index
+	type chunk struct {
+		i    int32
+		word uint16
+	}
+	var chunks []chunk
+	x := uint32(0x130000)
+	tables := c.tables
+	for i := len(toks) - 1; i >= 0; i-- {
+		tb := tables[toks[i]>>8]
+		t := toks[i] & 0xff
+		f := uint32(tb.freq[t])
+		if uint64(x) >= uint64(f)<<20 {
+			chunks = append(chunks, chunk{int32(i), uint16(x)})
+			x >>= 16
+		}
+		x = ((x / f) << 12) | uint32(tb.slots[t][x%f])
+	}
+	w.Write(32, uint64(x))
+	toks = nil
+	k, i := len(chunks)-1, int32(0)
+	visit(func(ctx int, v uint32) {
+		if k >= 0 && chunks[k].i == i {
+			w.Write(16, uint64(chunks[k].word))
+			k--
+		}
+		i++
+		if cm != nil {
+			ctx = int(cm[ctx])
+		}
+		var nb uint
+		var bv uint32
+		if v&lzLenFlag != 0 && lz != nil {
+			_, nb, bv = lz.lenCfg.encode(v &^ lzLenFlag)
+		} else {
+			_, nb, bv = cfgs[ctx].encode(v)
+		}
+		w.Write(nb, uint64(bv))
+	})
+}

@@ -500,9 +500,7 @@ func writeModularLocalOpts(w *bitio.Writer, chs []channel, effort int, noWP bool
 			}
 		}
 		dc = writeANSCodeTuned(w, 1, visit, data.counts)
-		st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}
-		visit(0, st.add)
-		st.flush(w)
+		ansWriteVisit(w, dc, n, func(fn func(ctx int, v uint32)) { visit(0, fn) })
 		return
 	}
 	walkStream(chs, s, root, data.add)

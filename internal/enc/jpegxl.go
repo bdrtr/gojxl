@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/bits"
 	"os"
+	"runtime"
 	"sort"
 
 	"gojxl/internal/bitio"
@@ -374,17 +375,21 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	}
 
 	nctx := 495 * numCtx
-	hs2 := make([]*histograms, ngroups)
+	// token caches per group; histograms per worker (a histogram set is
+	// large: hundreds of contexts per block context)
+	nw := min(runtime.GOMAXPROCS(0), ngroups)
+	hs2 := make([]*histograms, nw)
 	caches := make([]residCache, ngroups)
-	parallel(ngroups, func(g int) {
-		h := newHistograms(nctx, defaultCfg)
-		c := &caches[g]
+	for k := range hs2 {
+		hs2[k] = newHistograms(nctx, defaultCfg)
+	}
+	parallelWorkers(ngroups, nw, func(k, g int) {
+		h, c := hs2[k], &caches[g]
 		emitGroup(g, func(ctx int, v uint32) {
 			c.ctx = append(c.ctx, uint16(ctx))
 			c.v = append(c.v, v)
 			h.add(ctx, v)
 		})
-		hs2[g] = h
 	})
 	replay := func(g int, fn func(ctx int, v uint32)) {
 		c := &caches[g]
@@ -494,9 +499,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		return writeANSCodeTuned(w, ngroups, replay, hf.counts)
 	}
 	writeGroup := func(w *bitio.Writer, g int, hc *ansCode) {
-		st := &ansStream{c: hc, toks: make([]ansToken, 0, len(caches[g].v))}
-		replay(g, st.add)
-		st.flush(w)
+		ansWriteVisit(w, hc, len(caches[g].v), func(fn func(ctx int, v uint32)) { replay(g, fn) })
 	}
 
 	// --- headers
@@ -587,6 +590,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	})
 	hfw := &bitio.Writer{}
 	hc := writeHfGlobal(hfw)
+
 	grpSecs := make([][]byte, ngroups)
 	parallel(ngroups, func(g int) {
 		w := &bitio.Writer{}

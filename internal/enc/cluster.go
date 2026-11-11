@@ -100,27 +100,29 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 	var clTot []uint64
 	// addCost is the cost increase of adding context e to cluster k
 	// (computed over the context's non-zero symbols only).
+	// clNl[k][t] caches nlog2n(cl[k][t])
+	var clNl [][]float64
 	addCost := func(k int, e *ent) float64 {
-		h := cl[k]
+		h, nl := cl[k], clNl[k]
 		c := counts[e.i]
 		d := nlog2n(clTot[k]+e.tot) - nlog2n(clTot[k])
 		for _, t := range e.nz {
-			d -= nlog2n(h[t]+c[t]) - nlog2n(h[t])
+			d -= nlog2n(h[t]+c[t]) - nl[t]
 		}
 		return d
 	}
 	// remCost is the cost decrease of removing e from cluster k.
 	remCost := func(k int, e *ent) float64 {
-		h := cl[k]
+		h, nl := cl[k], clNl[k]
 		c := counts[e.i]
 		d := nlog2n(clTot[k]) - nlog2n(clTot[k]-e.tot)
 		for _, t := range e.nz {
-			d -= nlog2n(h[t]) - nlog2n(h[t]-c[t])
+			d -= nl[t] - nlog2n(h[t]-c[t])
 		}
 		return d
 	}
 	move := func(e *ent, k int, sign int) {
-		h := cl[k]
+		h, nl := cl[k], clNl[k]
 		c := counts[e.i]
 		for _, t := range e.nz {
 			if sign > 0 {
@@ -128,6 +130,7 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 			} else {
 				h[t] -= c[t]
 			}
+			nl[t] = nlog2n(h[t])
 		}
 		if sign > 0 {
 			clTot[k] += e.tot
@@ -147,6 +150,7 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 		}
 		if best < 0 || (len(cl) < maxClusters && alone+sigBits(c) < bestInc) {
 			cl = append(cl, make([]uint64, alpha))
+			clNl = append(clNl, make([]float64, alpha))
 			clTot = append(clTot, 0)
 			best = len(cl) - 1
 		}
@@ -156,23 +160,32 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 	if len(cl) == 0 {
 		return cm, [][]uint64{make([]uint64, 1)}
 	}
-	// refinement: move each context to the cluster where it costs least
+	// refinement: move each context to the cluster where it costs least;
+	// targets are searched in parallel against the current clusters, and
+	// moves are applied in order, each rechecked against the live state
+	target := make([]int32, len(es))
 	for round := 0; round < 3; round++ {
+		parallelChunks(len(es), 64, func(lo, hi int) {
+			for ei := lo; ei < hi; ei++ {
+				e := &es[ei]
+				cur := int(cm[e.i])
+				best, bestCost := cur, remCost(cur, e)
+				for k := range cl {
+					if k == cur {
+						continue
+					}
+					if inc := addCost(k, e); inc < bestCost-1e-6 {
+						best, bestCost = k, inc
+					}
+				}
+				target[ei] = int32(best)
+			}
+		})
 		moved := 0
 		for ei := range es {
 			e := &es[ei]
-			cur := int(cm[e.i])
-			stay := remCost(cur, e)
-			best, bestCost := cur, stay
-			for k := range cl {
-				if k == cur {
-					continue
-				}
-				if inc := addCost(k, e); inc < bestCost-1e-6 {
-					best, bestCost = k, inc
-				}
-			}
-			if best == cur {
+			cur, best := int(cm[e.i]), int(target[ei])
+			if best == cur || addCost(best, e) >= remCost(cur, e)-1e-6 {
 				continue
 			}
 			moved++
