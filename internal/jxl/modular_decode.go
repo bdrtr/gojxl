@@ -32,22 +32,29 @@ var wpDivLookup = func() (t [64]uint32) {
 	return
 }()
 
+// wpState is the weighted predictor's state: per position of two rows
+// (current and previous, alternating), the four sub-predictors' errors
+// and the prediction error.
 type wpState struct {
-	hdr        *WPHeader
-	predErr    [4][]uint32
+	pe         [][4]uint32
 	err        []int32
 	prediction [4]int64
 	pred       int64
 	w          int
+	// header parameters
+	wts                                    [4]uint32
+	p1c, p2c, p3ca, p3cb, p3cc, p3cd, p3ce int64
 }
 
 func newWPState(hdr *WPHeader, w int) *wpState {
-	s := &wpState{hdr: hdr, w: w}
-	for i := range s.predErr {
-		s.predErr[i] = make([]uint32, (w+2)*2)
+	return &wpState{
+		pe:  make([][4]uint32, (w+2)*2),
+		err: make([]int32, (w+2)*2),
+		w:   w,
+		wts: hdr.W,
+		p1c: hdr.P1C, p2c: hdr.P2C,
+		p3ca: hdr.P3Ca, p3cb: hdr.P3Cb, p3cc: hdr.P3Cc, p3cd: hdr.P3Cd, p3ce: hdr.P3Ce,
 	}
-	s.err = make([]int32, (w+2)*2)
-	return s
 }
 
 func errorWeight(x uint32, maxw uint32) uint32 {
@@ -55,7 +62,7 @@ func errorWeight(x uint32, maxw uint32) uint32 {
 	if shift < 0 {
 		shift = 0
 	}
-	return 4 + ((maxw * wpDivLookup[x>>uint(shift)]) >> uint(shift))
+	return 4 + ((maxw * wpDivLookup[(x>>uint(shift))&63]) >> uint(shift))
 }
 
 func abs64(v int64) int64 {
@@ -80,24 +87,26 @@ func (s *wpState) predict(x, y int, N, W, NE, NW, NN int64) (int64, int64) {
 	if x > 0 {
 		posNW = posN - 1
 	}
+	en, ene, enw := &s.pe[posN], &s.pe[posNE], &s.pe[posNW]
 	var wts [4]uint32
-	for i := 0; i < 4; i++ {
-		pe := s.predErr[i]
-		wts[i] = errorWeight(pe[posN]+pe[posNE]+pe[posNW], s.hdr.W[i])
-	}
+	wts[0] = errorWeight(en[0]+ene[0]+enw[0], s.wts[0])
+	wts[1] = errorWeight(en[1]+ene[1]+enw[1], s.wts[1])
+	wts[2] = errorWeight(en[2]+ene[2]+enw[2], s.wts[2])
+	wts[3] = errorWeight(en[3]+ene[3]+enw[3], s.wts[3])
 	N <<= 3
 	W <<= 3
 	NE <<= 3
 	NW <<= 3
 	NN <<= 3
+	errs := s.err
 	var teW int64
 	if x > 0 {
-		teW = int64(s.err[curRow+x-1])
+		teW = int64(errs[curRow+x-1])
 	}
-	teN := int64(s.err[posN])
-	teNW := int64(s.err[posNW])
+	teN := int64(errs[posN])
+	teNW := int64(errs[posNW])
 	sumWN := teN + teW
-	teNE := int64(s.err[posNE])
+	teNE := int64(errs[posNE])
 
 	p := teW
 	if abs64(teN) > abs64(p) {
@@ -110,25 +119,19 @@ func (s *wpState) predict(x, y int, N, W, NE, NW, NN int64) (int64, int64) {
 		p = teNE
 	}
 
-	h := s.hdr
-	s.prediction[0] = W + NE - N
-	s.prediction[1] = N - (((sumWN + teNE) * h.P1C) >> 5)
-	s.prediction[2] = W - (((sumWN + teNW) * h.P2C) >> 5)
-	s.prediction[3] = N - ((teNW*h.P3Ca + teN*h.P3Cb + teNE*h.P3Cc + (NN-N)*h.P3Cd + (NW-W)*h.P3Ce) >> 5)
+	p0 := W + NE - N
+	p1 := N - (((sumWN + teNE) * s.p1c) >> 5)
+	p2 := W - (((sumWN + teNW) * s.p2c) >> 5)
+	p3 := N - ((teNW*s.p3ca + teN*s.p3cb + teNE*s.p3cc + (NN-N)*s.p3cd + (NW-W)*s.p3ce) >> 5)
+	s.prediction = [4]int64{p0, p1, p2, p3}
 
 	// weighted average
 	wsum := wts[0] + wts[1] + wts[2] + wts[3]
-	logw := uint(bits.Len32(wsum) - 1)
-	wsum = 0
-	for i := range wts {
-		wts[i] >>= logw - 4
-		wsum += wts[i]
-	}
-	sum := int64(wsum>>1) - 1
-	for i := 0; i < 4; i++ {
-		sum += s.prediction[i] * int64(wts[i])
-	}
-	pred := (sum * int64(wpDivLookup[wsum-1])) >> 24
+	logw := uint(bits.Len32(wsum)-1) - 4
+	w0, w1, w2, w3 := wts[0]>>logw, wts[1]>>logw, wts[2]>>logw, wts[3]>>logw
+	wsum = w0 + w1 + w2 + w3
+	sum := int64(wsum>>1) - 1 + p0*int64(w0) + p1*int64(w1) + p2*int64(w2) + p3*int64(w3)
+	pred := (sum * int64(wpDivLookup[(wsum-1)&63])) >> 24
 
 	if ((teN ^ teW) | (teN ^ teNW)) <= 0 {
 		mx := max(W, NE, N)
@@ -147,11 +150,16 @@ func (s *wpState) update(val int64, x, y int) {
 	}
 	val <<= 3
 	s.err[curRow+x] = int32(s.pred - val)
-	for i := 0; i < 4; i++ {
-		e := uint32((abs64(s.prediction[i]-val) + 3) >> 3)
-		s.predErr[i][curRow+x] = e
-		s.predErr[i][prevRow+x+1] += e
+	var e [4]uint32
+	for i, pr := range s.prediction {
+		e[i] = uint32((abs64(pr-val) + 3) >> 3)
 	}
+	s.pe[curRow+x] = e
+	q := &s.pe[prevRow+x+1]
+	q[0] += e[0]
+	q[1] += e[1]
+	q[2] += e[2]
+	q[3] += e[3]
 }
 
 func clampedGradient(n, w, l int64) int64 {
