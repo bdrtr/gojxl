@@ -32,36 +32,49 @@ func abs32(v float32) float32 {
 	return v
 }
 
-// gaborishInverse sharpens a plane with a truncated Neumann series of the
-// inverse Gaborish kernel so that the decoder blur restores the input.
+// gaborishInverse sharpens a plane so that the decoder's Gaborish blur
+// approximately restores it, with libjxl's 5x5 kernel (enc_gaborish.cc:
+// tuned for rate-distortion rather than an exact inverse) and mirrored
+// borders.
 func gaborishInverse(p []float32, w, h int) {
-	const w1, w2 = 0.115169525, 0.061248592
-	div := float32(1 + 4*(w1+w2))
-	k0, k1, k2 := 1/div, float32(w1)/div, float32(w2)/div
-	blur := func(src []float32) []float32 {
-		out := make([]float32, len(src))
-		parallel(h, func(y int) {
-			t := src[max(y-1, 0)*w:]
-			m := src[y*w:]
-			b := src[min(y+1, h-1)*w:]
-			for x := 0; x < w; x++ {
-				xl, xr := max(x-1, 0), min(x+1, w-1)
-				out[y*w+x] = k0*m[x] + k1*(m[xl]+m[xr]+t[x]+b[x]) + k2*(t[xl]+t[xr]+b[xl]+b[xr])
+	kg := [5]float64{-0.09495815671340026, -0.041031725066768575, 0.013710004822696948,
+		0.006510206083837737, -0.0014789063378272242}
+	norm := 1 / (1 + 4*(kg[0]+kg[1]+kg[2]+kg[4]+2*kg[3]))
+	c := float32(norm)
+	r, R := float32(norm*kg[0]), float32(norm*kg[2]) // axis distance 1, 2
+	d, D := float32(norm*kg[1]), float32(norm*kg[4]) // diagonal (1,1), (2,2)
+	L := float32(norm * kg[3])                       // (1,2) and (2,1)
+	mirror := func(v, n int) int {
+		for v < 0 || v >= n {
+			if v < 0 {
+				v = -v - 1
+			} else {
+				v = 2*n - 1 - v
 			}
-		})
-		return out
-	}
-	// y = x + r + r2 + r3 with r_{n+1} = r_n - K r_n
-	r := append([]float32(nil), p...)
-	acc := append([]float32(nil), p...)
-	for it := 0; it < 3; it++ {
-		kr := blur(r)
-		for i := range r {
-			r[i] -= kr[i]
-			acc[i] += r[i]
 		}
+		return v
 	}
-	copy(p, acc)
+	src := append([]float32(nil), p...)
+	// row weights for vertical offsets 0, 1, 2: (centre, +-1, +-2)
+	wt := [3][3]float32{{c, r, R}, {r, d, L}, {R, L, D}}
+	parallel(h, func(y int) {
+		var rows [5][]float32
+		for k := -2; k <= 2; k++ {
+			yy := mirror(y+k, h)
+			rows[k+2] = src[yy*w : yy*w+w]
+		}
+		for x := 0; x < w; x++ {
+			xm1, xp1 := mirror(x-1, w), mirror(x+1, w)
+			xm2, xp2 := mirror(x-2, w), mirror(x+2, w)
+			var sum float32
+			for k := -2; k <= 2; k++ {
+				row := rows[k+2]
+				kw := wt[max(k, -k)]
+				sum += kw[0]*row[x] + kw[1]*(row[xm1]+row[xp1]) + kw[2]*(row[xm2]+row[xp2])
+			}
+			p[y*w+x] = sum
+		}
+	})
 }
 
 const (
