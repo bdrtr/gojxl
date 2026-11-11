@@ -74,9 +74,9 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 **Kayıpsız kodlayıcı (Modular)**
 - Efor 1–3: sabit bağlam ağaçları, YCoCg, Gradient/Weighted predictor (hızlı)
 - Efor 4+ (varsayılan 4): **MA ağacı öğrenme** — örneklenmiş piksellerden
-  entropi kazancına göre açgözlü bölme; 16 özellik + önceki kanallara
-  referans veren özellikler (16–23), 5–14 aday predictor, yaprak başına
-  en iyi predictor
+  entropi kazancına göre açgözlü bölme (histogram çıkarma ile); akış/grup
+  kimliği dahil 16 özellik + önceki kanallara referans veren özellikler
+  (16–23), 5–14 aday predictor, yaprak başına en iyi predictor
 - RCT seçimi (42 varyant tahminle; efor 5+'ta adaylar için küçük ağaç
   öğrenerek), kanal paletleri (global ve **grup başına yerel**), otomatik
   bit derinliği indirimi (ör. 16-bit kapta 8-bit veri)
@@ -149,18 +149,24 @@ Kayıpsız sıkıştırma (bayt, düşük iyi; cjxl v0.12):
 
 | Görüntü | gojxl e3 | gojxl e4 | gojxl e5 | cjxl e3 | cjxl e7 |
 |---|---|---|---|---|---|
-| 4K foto (3840×2160) | 12 947 496 | 12 052 258 | **11 943 401** | — | 12 420 691 |
-| bike (2048×2560 foto) | 5 191 623 | 4 882 756 | **4 820 471** | 5 212 891 | 4 866 475 |
-| 640×480 foto kırpıntısı | 463 767 | 439 625 | **437 543** | 465 109 | 446 345 |
-| blendmodes (16-bit gradyan, RGBA) | 1 001 120 | 619 258 | **500 531** | 1 068 867 | 627 621 |
-| sunset_logo (16-bit, kanal paleti) | 2 171 492 | 845 792 | **761 110** | 3 210 948 | 888 081 |
-| delta_palette (sentetik) | 451 023 | 361 108 | **246 695** | 467 687 | 372 699 |
-| patches_lossless (ekran görüntüsü) | 144 197 | **69 036** | 69 725 | 213 670 | 107 500 |
-| lz77_flower | 280 871 | 268 559 | **263 445** | 281 699 | 270 951 |
+| 4K foto (3840×2160) | 13 020 959 | 12 199 796 | **12 100 313** | 13 090 634 | 12 580 188 |
+| bike (2048×2560 foto) | 5 191 607 | 4 861 168 | **4 798 091** | 5 212 891 | 4 866 475 |
+| 640×480 foto kırpıntısı | 463 711 | 438 506 | **436 616** | 465 109 | 446 345 |
+| blendmodes (16-bit gradyan, RGBA) | 1 001 071 | 513 533 | **441 742** | 1 068 867 | 627 621 |
+| sunset_logo (16-bit, kanal paleti) | 2 171 443 | 792 362 | **721 658** | 3 210 948 | 888 081 |
+| delta_palette (sentetik) | 450 762 | 357 819 | **245 463** | 467 687 | 372 699 |
+| patches_lossless (ekran görüntüsü) | 144 185 | **63 258** | 65 731 | 213 670 | 107 500 |
+| lz77_flower | 280 686 | 267 233 | **261 153** | 281 699 | 270 951 |
 
-Efor 4, tek iş parçacığında cjxl e7 ile benzer CPU süresi harcar (640×480
-fotoğrafta 0.75 s'ye karşı 0.93 s) ve çok çekirdekte belirgin şekilde
-daha hızlıdır; efor 5–6 daha yavaştır (RCT denemeleri, daha büyük ağaçlar).
+Kodlama süresi, efor 4 ve cjxl e7 (duvar süresi):
+
+| | gojxl 1T | cjxl 1T | gojxl 4T | cjxl 4T |
+|---|---|---|---|---|
+| 640×480 foto | **0.38 s** | 0.47 s | **0.15 s** | 0.42 s |
+| bike (5 MP) | **2.9 s** | 4.9 s | **1.0 s** | 1.3 s |
+
+Efor 5–6 daha yavaştır (RCT denemeleri, daha büyük ağaçlar). Bellek
+kullanımı cjxl'in yaklaşık iki katıdır (5 MP'de ~470 MB).
 
 ## Mimari
 
