@@ -1,6 +1,7 @@
 package enc
 
 import (
+	"math"
 	"math/rand"
 	"testing"
 )
@@ -18,6 +19,15 @@ func TestFastDCT(t *testing.T) {
 			if d := a[i] - b[i]; d > 1e-4 || d < -1e-4 {
 				t.Fatalf("n=%d i=%d %v vs %v", n, i, a[i], b[i])
 			}
+		}
+	}
+}
+
+func TestCbrtFast(t *testing.T) {
+	for i := 0; i < 1000000; i++ {
+		v := float64(float32(float64(i)*1.3e-6)) + opsinBias
+		if a, b := float32(math.Cbrt(v)), float32(cbrtFast(v)); a != b {
+			t.Fatalf("cbrt(%g): %g != %g", v, b, a)
 		}
 	}
 }

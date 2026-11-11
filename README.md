@@ -1,7 +1,7 @@
 # gojxl — saf Go JPEG XL kod çözücü ve kodlayıcı
 
 `gojxl`, JPEG XL (ISO/IEC 18181) için **cgo ve assembly kullanmayan, saf Go** bir
-kod çözücü (decoder) ve kayıpsız kodlayıcıdır (encoder). Hedef: web'deki WASM
+kod çözücü (decoder) ve kayıpsız/kayıplı kodlayıcıdır (encoder). Hedef: web'deki WASM
 tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir araç.
 
 ## Özellikler
@@ -32,11 +32,22 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - Bozuk girdilere karşı dayanıklı (panik → hata), devasa boyut koruması
 
 **Kayıplı kodlayıcı (VarDCT)**
-- sRGB → XYB, DCT8/DCT16/DCT32 varblokları (RD tabanlı seçim), LLF ile tutarlı DC
-- Karo başına chroma-from-luma (en küçük kareler), ters Gaborish ön işleme
-- Kümelenmiş bağlamlarla ANS, alpha kanalı kayıpsız modular ekstra kanal olarak
-- 4K fotoğrafta (d=1): gojxl 2.43 MB / 36.04 dB PSNR, cjxl 2.53 MB / 35.87 dB;
-  kodlama 1.7 s (cjxl ~2.5 s)
+- sRGB → XYB; DCT8, DCT16, DCT32, dikdörtgen DCT16x8/8x16/32x16/16x32 ve
+  bölünmüş DCT4x8/8x4 varblokları, hız-bozulma (RD) maliyetiyle seçilir
+- libjxl'in adaptif niceleme haritası, karo başına chroma-from-luma, ters
+  Gaborish; LF ve alfa öğrenilmiş MA ağaçlarıyla
+- Aynı SSIMULACRA 2 puanında cjxl -e7'den %1–11 küçük (6 test görüntüsü)
+- Efor seviyeleri (`-e`, varsayılan 7): 5–6 32x16/16x32'yi, 3–4 tüm
+  dikdörtgenleri atlar, 1–2 yalnız DCT8 kullanır (~%40 daha az CPU).
+  5 MP fotoğrafta, d=1, tek çekirdek:
+
+  | | boyut | SSIMULACRA 2 | CPU |
+  |---|---|---|---|
+  | gojxl -e7 | 589 KB | 84.06 | 1.8 s |
+  | gojxl -e3 | 686 KB | 83.65 | 1.6 s |
+  | gojxl -e1 | 765 KB | 82.32 | 1.1 s |
+  | cjxl -e7 | 679 KB | 83.94 | 1.5 s |
+  | cjxl -e3 | 854 KB | 82.83 | 0.8 s |
 
 **JPEG → JXL kayıpsız dönüştürme**
 - Saf Go JPEG ayrıştırıcı (baseline, progressive, restart işaretleri,
@@ -88,6 +99,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl encode foto.jpg foto.jxl            # JPEG → JXL kayıpsız yeniden sıkıştırma (~%15-30 küçük)
 ./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
 ./gojxl encode -d 1 girdi.png cikti.jxl     # kayıplı (d≈1 görsel olarak kayıpsız)
+./gojxl encode -e 3 -d 1 girdi.png cikti.jxl  # daha hızlı kayıplı
 ./gojxl info resim.jxl
 ```
 

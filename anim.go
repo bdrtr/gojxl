@@ -122,7 +122,7 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 				CropY0:        j.y0,
 			}
 			if lossy {
-				lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, LibAQ: true, Frame: fo}
+				lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, LibAQ: true, Effort: opt.Effort, Frame: fo}
 				outs[i], errs[i] = enc.EncodeVarDCT(j.im, lo)
 				return
 			}

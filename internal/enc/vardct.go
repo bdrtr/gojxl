@@ -22,10 +22,40 @@ type LossyOptions struct {
 	AQ         float64 // adaptive quantisation strength (0 = off)
 	NoCfL      bool    // disable per-tile chroma-from-luma
 	OnlyDCT8   bool    // disable larger transforms
-	RDMu       float64 // rate weight in AC strategy decisions
-	Frame      FrameOpts
-	LibAQ      bool // libjxl's adaptive quantisation map
-	forceType  int  // tests: use only vtypes[forceType] (> 0)
+	// Effort (1-7, 0 = 7) trades AC strategy search for speed.
+	Effort    int
+	RDMu      float64 // rate weight in AC strategy decisions
+	Frame     FrameOpts
+	LibAQ     bool // libjxl's adaptive quantisation map
+	forceType int  // tests: use only vtypes[forceType] (> 0)
+}
+
+// candidates are the transform families tried by AC strategy selection.
+type candidates struct{ split, rect, dct16, dct32, rect32 bool }
+
+// selectionFor maps the effort to the candidate set. Selection costs CPU
+// in proportion to the coefficients evaluated (about three per pixel for
+// each of the 8x8, 16x16 and 32x32 levels); measured against effort 7:
+//
+//	effort 5-6: no 32x16/16x32        ~11% less CPU, smooth images +7%
+//	effort 3-4: no rectangular types  ~17% less CPU, smooth images +16%
+//	effort 1-2: DCT8 only             ~40% less CPU, +2..40%
+//
+// (photos lose little below effort 7: the split 8x8 types matter most).
+func selectionFor(opt LossyOptions) candidates {
+	e := opt.Effort
+	if e <= 0 {
+		e = 7
+	}
+	switch {
+	case opt.OnlyDCT8 || e <= 2:
+		return candidates{}
+	case e <= 4:
+		return candidates{split: true, dct16: true, dct32: true}
+	case e <= 6:
+		return candidates{split: true, rect: true, dct16: true, dct32: true}
+	}
+	return candidates{true, true, true, true, true}
 }
 
 func abs32(v float32) float32 {
@@ -156,9 +186,9 @@ func toXYB(im *Image, pw, ph int) [3][]float32 {
 			m0 := 0.30*r + 0.622*g + 0.078*b + opsinBias
 			m1 := 0.23*r + 0.692*g + 0.078*b + opsinBias
 			m2 := 0.24342268924547819*r + 0.20476744424496821*g + 0.55180986650955360*b + opsinBias
-			m0 = float32(math.Cbrt(float64(max(m0, 0)))) - cb
-			m1 = float32(math.Cbrt(float64(max(m1, 0)))) - cb
-			m2 = float32(math.Cbrt(float64(max(m2, 0)))) - cb
+			m0 = float32(cbrtFast(float64(max(m0, 0)))) - cb
+			m1 = float32(cbrtFast(float64(max(m1, 0)))) - cb
+			m2 = float32(cbrtFast(float64(max(m2, 0)))) - cb
 			o := y*pw + x
 			out[0][o] = (m0 - m1) / 2
 			out[1][o] = (m0 + m1) / 2
@@ -166,6 +196,20 @@ func toXYB(im *Image, pw, ph int) [3][]float32 {
 		}
 	})
 	return out
+}
+
+// cbrtFast is math.Cbrt for v >= 0 (0 otherwise) via a bit-level
+// estimate and two Halley steps: ~1e-14 relative error, so the float32
+// results match math.Cbrt, at under half the cost.
+func cbrtFast(v float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	t := math.Float64frombits(math.Float64bits(v)/3 + 0x2a9f7893782da1ce)
+	t3 := t * t * t
+	t = t * (t3 + 2*v) / (2*t3 + v)
+	t3 = t * t * t
+	return t * (t3 + 2*v) / (2*t3 + v)
 }
 
 // dct8 basis: c[k] = 1/8 sum x[n] * (k==0 ? 1 : sqrt2 cos(pi(2n+1)k/16))
@@ -919,7 +963,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				}
 			}
 		}
-	} else if !opt.OnlyDCT8 {
+	} else if sel := selectionFor(opt); sel != (candidates{}) {
 		selCoef = make([][]float32, nb)
 		var selSt, selInv [len(vtypes)][3][]float32
 		for ti := range vtypes {
@@ -1005,6 +1049,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 						return plan{}
 					}
 					p := plan{cost: cost(0, x, y)}
+					if !sel.split {
+						return p
+					}
 					p = better(p, one(vtDCT4x8, x, y))
 					return better(p, one(vtDCT8x4, x, y))
 				}
@@ -1013,6 +1060,13 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 						return plan{}
 					}
 					a, b, c, e := c8(sx, sy), c8(sx+1, sy), c8(sx, sy+1), c8(sx+1, sy+1)
+					if !sel.rect {
+						p := join(join(a, b), join(c, e))
+						if sel.dct16 {
+							p = better(p, one(1, sx, sy))
+						}
+						return p
+					}
 					left := better(join(a, c), one(3, sx, sy))
 					right := better(join(b, e), one(3, sx+1, sy))
 					top := better(join(a, b), one(4, sx, sy))
@@ -1021,11 +1075,18 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					return better(p, one(1, sx, sy))
 				}
 				q := [4]plan{quad(bx0, by0), quad(bx0+2, by0), quad(bx0, by0+2), quad(bx0+2, by0+2)}
-				left := better(join(q[0], q[2]), one(5, bx0, by0))
-				right := better(join(q[1], q[3]), one(5, bx0+2, by0))
-				top := better(join(q[0], q[1]), one(6, bx0, by0))
-				bottom := better(join(q[2], q[3]), one(6, bx0, by0+2))
-				best := better(better(join(left, right), join(top, bottom)), one(2, bx0, by0))
+				all := join(join(q[0], q[1]), join(q[2], q[3]))
+				best := all
+				if sel.dct32 {
+					best = better(all, one(2, bx0, by0))
+				}
+				if sel.rect32 {
+					left := better(join(q[0], q[2]), one(5, bx0, by0))
+					right := better(join(q[1], q[3]), one(5, bx0+2, by0))
+					top := better(join(q[0], q[1]), one(6, bx0, by0))
+					bottom := better(join(q[2], q[3]), one(6, bx0, by0+2))
+					best = better(better(join(left, right), join(top, bottom)), best)
+				}
 				// keep the chosen coefficients for pass A
 				keep := func(ti, bx, by int) {
 					vt := vtypes[ti]

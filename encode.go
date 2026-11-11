@@ -13,10 +13,16 @@ import (
 
 // EncodeOptions controls lossless encoding.
 type EncodeOptions struct {
-	// Effort (1-6) for lossless encoding; 0 selects the default (4).
-	// 1-3 use fixed context models (fast); 4+ learn an MA tree from the
-	// image, choose colour transforms and per-group channel palettes, and
-	// tune the entropy coder (slower, typically 5-40% smaller).
+	// Effort trades speed for size; 0 selects the default.
+	//
+	// Lossless (1-6, default 4): 1-3 use fixed context models (fast); 4+
+	// learn an MA tree from the image, choose colour transforms and
+	// per-group channel palettes, and tune the entropy coder (slower,
+	// typically 5-40% smaller).
+	//
+	// Lossy (1-7, default 7): fewer transform shapes are searched at lower
+	// efforts: 5-6 skip 32x16/16x32, 3-4 all rectangular shapes, 1-2 use
+	// only 8x8 DCTs (about 40% less CPU, 2-40% larger at equal quality).
 	Effort int
 	// Distance > 0 selects lossy (VarDCT) encoding with the given
 	// perceptual distance (1.0 ~ visually lossless). 0 means lossless.
@@ -42,7 +48,7 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 	im := toPlanar(img)
 	if opt != nil && opt.Distance > 0 {
 		to8Bit(im)
-		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1}
+		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, Effort: opt.Effort}
 		if v := os.Getenv("GOJXL_EPF"); v != "" {
 			lo.EPFIters, _ = strconv.Atoi(v)
 		}
@@ -110,6 +116,24 @@ func toPlanar(img image.Image) *enc.Image {
 			im.Chans = append(im.Chans, a)
 		}
 		return im
+	case *image.RGBA:
+		// premultiplied: exact only when opaque (else the generic path)
+		if r, g, bl, ok := splitOpaque(src.Pix, src.Stride, w, h, 1); ok {
+			im.Chans = [][]int32{r, g, bl}
+			return im
+		}
+	case *image.RGBA64:
+		if r, g, bl, ok := splitOpaque(src.Pix, src.Stride, w, h, 2); ok {
+			im.BitDepth = 16
+			im.Chans = [][]int32{r, g, bl}
+			return im
+		}
+	case *image.NRGBA64:
+		if r, g, bl, ok := splitOpaque(src.Pix, src.Stride, w, h, 2); ok {
+			im.BitDepth = 16
+			im.Chans = [][]int32{r, g, bl}
+			return im
+		}
 	}
 	// generic path (16-bit precision when needed)
 	deep := false
@@ -138,6 +162,37 @@ func toPlanar(img image.Image) *enc.Image {
 		im.Chans = append(im.Chans, a)
 	}
 	return im
+}
+
+// splitOpaque splits interleaved RGBA samples of bs bytes (big-endian)
+// into planes; ok is false if any pixel is not fully opaque.
+func splitOpaque(pix []byte, stride, w, h, bs int) (r, g, b []int32, ok bool) {
+	n := w * h
+	r, g, b = make([]int32, n), make([]int32, n), make([]int32, n)
+	for y := 0; y < h; y++ {
+		row := pix[y*stride : y*stride+4*bs*w]
+		o := y * w
+		if bs == 1 {
+			for x := 0; x < w; x++ {
+				p := row[4*x : 4*x+4 : 4*x+4]
+				if p[3] != 0xff {
+					return nil, nil, nil, false
+				}
+				r[o+x], g[o+x], b[o+x] = int32(p[0]), int32(p[1]), int32(p[2])
+			}
+			continue
+		}
+		for x := 0; x < w; x++ {
+			p := row[8*x : 8*x+8 : 8*x+8]
+			if p[6] != 0xff || p[7] != 0xff {
+				return nil, nil, nil, false
+			}
+			r[o+x] = int32(p[0])<<8 | int32(p[1])
+			g[o+x] = int32(p[2])<<8 | int32(p[3])
+			b[o+x] = int32(p[4])<<8 | int32(p[5])
+		}
+	}
+	return r, g, b, true
 }
 
 // TranscodeJPEG losslessly recompresses a JPEG file into JPEG XL: the DCT
