@@ -131,7 +131,11 @@ type huffTable struct {
 	mincode [17]int32
 	values  []int
 	defined bool
+	// lut[next 9 bits] = length<<16 | value for codes of at most 9 bits
+	lut [1 << lutBits]uint32
 }
+
+const lutBits = 9
 
 func buildTable(h *HuffCode) huffTable {
 	t := huffTable{values: h.Values, defined: true}
@@ -150,6 +154,15 @@ func buildTable(h *HuffCode) huffTable {
 		code <<= 1
 	}
 	t.maxcode[17] = 0x7fffffff
+	for l := 1; l <= lutBits; l++ {
+		for c := t.mincode[l]; c <= t.maxcode[l]; c++ {
+			v := t.values[t.valptr[l]+c-t.mincode[l]]
+			sh := lutBits - l
+			for k := int32(0); k < 1<<sh; k++ {
+				t.lut[c<<sh|k] = uint32(l)<<16 | uint32(v)
+			}
+		}
+	}
 	return t
 }
 
@@ -216,8 +229,14 @@ func (b *bitReader) bits(n int) int {
 
 func (b *bitReader) symbol(t *huffTable) int {
 	b.fill()
-	code := int32(0)
-	for l := 1; l <= 16; l++ {
+	peek := int32(b.val>>(b.bitsLeft-lutBits)) & (1<<lutBits - 1)
+	if e := t.lut[peek]; e != 0 {
+		b.bitsLeft -= int(e >> 16)
+		return int(e & 0xffff)
+	}
+	code := peek
+	b.bitsLeft -= lutBits
+	for l := lutBits + 1; l <= 16; l++ {
 		code = code<<1 | int32(b.val>>(b.bitsLeft-1))&1
 		b.bitsLeft--
 		if code <= t.maxcode[l] {
