@@ -420,14 +420,14 @@ func fdctRect(src []float32, stride, rows, cols int, out []float32) {
 // unnormalised horizontal DCTs of every row over aligned segments of 8, 16
 // and 32 pixels, shared by all transform candidates of the cell.
 type rowDCTCache struct {
-	h [3][3][32 * 32]float32 // [channel][log2(len/8)][y*32 + x]
+	h [3][4][32 * 32]float32 // [channel][log2(len/8), or 3 for 4][y*32 + x]
 }
 
 func (r *rowDCTCache) compute(c int, plane []float32, pw, ph, bx0, by0 int) {
 	rows := min(32, ph-by0*8)
 	cols := min(32, pw-bx0*8)
 	var scr [64]float32
-	for li, L := range [3]int{8, 16, 32} {
+	for li, L := range [4]int{8, 16, 32, 4} {
 		h := &r.h[c][li]
 		for y := 0; y < rows; y++ {
 			src := plane[(by0*8+y)*pw+bx0*8:]
@@ -438,6 +438,44 @@ func (r *rowDCTCache) compute(c int, plane []float32, pw, ph, bx0, by0 int) {
 			}
 		}
 	}
+}
+
+// coefSplit is fdctSplit of the 8x8 block at pixel offset (ox, oy).
+func (r *rowDCTCache) coefSplit(c int, acs int, ox, oy int, out []float32) {
+	var col, scr [8]float32
+	const inv = 1.0 / 32
+	var dc [2]float32
+	if acs == 12 { // 4x8 halves: 8-point row DCTs, 4-point columns
+		h := &r.h[c][0]
+		for y := 0; y < 2; y++ {
+			for kx := 0; kx < 8; kx++ {
+				for i := 0; i < 4; i++ {
+					col[i] = h[(oy+4*y+i)*32+ox+kx]
+				}
+				fdct1d(col[:4], scr[:])
+				for ky := 0; ky < 4; ky++ {
+					out[(y+2*ky)*8+kx] = col[ky] * inv
+				}
+			}
+			dc[y] = out[y*8]
+		}
+	} else { // 8x4 halves: 4-point row DCTs, 8-point columns
+		h := &r.h[c][3]
+		for x := 0; x < 2; x++ {
+			for a := 0; a < 4; a++ {
+				for i := 0; i < 8; i++ {
+					col[i] = h[(oy+i)*32+ox+4*x+a]
+				}
+				fdct1d(col[:8], scr[:])
+				for ky := 0; ky < 8; ky++ {
+					out[(x+2*a)*8+ky] = col[ky] * inv
+				}
+			}
+			dc[x] = out[x*8]
+		}
+	}
+	out[0] = (dc[0] + dc[1]) / 2
+	out[8] = (dc[0] - dc[1]) / 2
 }
 
 // coef is fdctRect of the vt block at pixel offset (ox, oy) of the cell.
@@ -816,7 +854,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					var j float64
 					for c := 0; c < 3; c++ {
 						if vt.split {
-							fdctSplit(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, buf[:sz])
+							rc.coefSplit(c, vt.acs, (bx-bx0)*8, (by-by0)*8, buf[:sz])
 						} else {
 							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
 						}
