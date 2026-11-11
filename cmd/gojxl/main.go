@@ -3,12 +3,12 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
 	"errors"
 	"flag"
 	"fmt"
 	"image"
 	"image/jpeg"
-	"image/png"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -139,8 +139,7 @@ func cmdDecode(args []string) {
 			fatal(err)
 		}
 		var buf bytes.Buffer
-		enc := png.Encoder{CompressionLevel: png.BestSpeed}
-		if err := enc.Encode(&buf, img); err != nil {
+		if err := pngx.Encode(&buf, img, flate.BestSpeed); err != nil {
 			fatal(err)
 		}
 		out := buf.Bytes()
