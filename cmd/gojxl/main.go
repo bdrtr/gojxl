@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -26,6 +27,7 @@ Usage:
   gojxl decode [-bench N] input.jxl output.png
   gojxl encode [-e effort] [-d distance] input.png output.jxl  (d=0: lossless)
   gojxl info input.jxl
+  gojxl compare original distorted   (SSIMULACRA 2 and PSNR; PNG/JPEG/GIF/JXL)
 `)
 	os.Exit(2)
 }
@@ -39,6 +41,8 @@ func main() {
 		cmdDecode(os.Args[2:])
 	case "info", "i":
 		cmdInfo(os.Args[2:])
+	case "compare", "c":
+		cmdCompare(os.Args[2:])
 	case "encode", "e":
 		cmdEncode(os.Args[2:])
 	default:
@@ -262,4 +266,49 @@ func cmdEncode(args []string) {
 	b := img.Bounds()
 	mp := float64(b.Dx()*b.Dy()) / 1e6
 	fmt.Fprintf(os.Stderr, "%dx%d, %d bytes (%.3f bpp), %v, %.2f MP/s\n", b.Dx(), b.Dy(), len(data), float64(len(data)*8)/float64(b.Dx()*b.Dy()), el, mp/el.Seconds())
+}
+
+// loadImage decodes a JPEG XL file or any registered image format.
+func loadImage(path string) image.Image {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fatal(err)
+	}
+	if img, err := gojxl.DecodeBytes(data); err == nil {
+		return img
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		fatal(fmt.Errorf("%s: %w", path, err))
+	}
+	return img
+}
+
+func cmdCompare(args []string) {
+	if len(args) != 2 {
+		usage()
+	}
+	a, b := loadImage(args[0]), loadImage(args[1])
+	s, err := gojxl.SSIMULACRA2(a, b)
+	if err != nil {
+		fatal(err)
+	}
+	// PSNR over RGB (8-bit scale)
+	var se float64
+	r := a.Bounds()
+	for y := 0; y < r.Dy(); y++ {
+		for x := 0; x < r.Dx(); x++ {
+			r1, g1, b1, _ := a.At(r.Min.X+x, r.Min.Y+y).RGBA()
+			r2, g2, b2, _ := b.At(b.Bounds().Min.X+x, b.Bounds().Min.Y+y).RGBA()
+			for _, d := range [3]float64{float64(r1) - float64(r2), float64(g1) - float64(g2), float64(b1) - float64(b2)} {
+				d /= 257
+				se += d * d
+			}
+		}
+	}
+	psnr := math.Inf(1)
+	if mse := se / float64(3*r.Dx()*r.Dy()); mse > 0 {
+		psnr = 10 * math.Log10(255*255/mse)
+	}
+	fmt.Printf("SSIMULACRA2 %.4f  PSNR %.2f dB\n", s, psnr)
 }
