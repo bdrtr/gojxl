@@ -184,6 +184,7 @@ type ansCode struct {
 	cfgs   []uintCfg // per histogram
 	tables []*ansTable
 	cm     []uint8
+	lz     *lz77Params // set if add accepts lzLenFlag values
 }
 
 func writeANSCode(w *bitio.Writer, h *histograms) *ansCode {
@@ -271,6 +272,12 @@ type ansStream struct {
 func (s *ansStream) add(ctx int, v uint32) {
 	if s.c.cm != nil {
 		ctx = int(s.c.cm[ctx])
+	}
+	if v&lzLenFlag != 0 && s.c.lz != nil {
+		lz := s.c.lz
+		t, nb, bv := lz.lenCfg.encode(v &^ lzLenFlag)
+		s.toks = append(s.toks, ansToken{ctx: uint16(ctx), tok: uint16(lz.minSym + t), nb: uint8(nb), bits: bv, chunk: -1})
+		return
 	}
 	tok, nb, bv := s.c.cfgs[ctx].encode(v)
 	s.toks = append(s.toks, ansToken{ctx: uint16(ctx), tok: uint16(tok), nb: uint8(nb), bits: bv, chunk: -1})

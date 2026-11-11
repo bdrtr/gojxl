@@ -1,6 +1,11 @@
 package enc
 
-import "gojxl/internal/bitio"
+import (
+	"math"
+	"math/bits"
+
+	"gojxl/internal/bitio"
+)
 
 // LZ77 over hybrid-integer symbol streams. A copy is coded as a length
 // token (minSym + length token) in the context of its first symbol,
@@ -161,4 +166,281 @@ func writeLZ(ctxs []int, vals []uint32, nctx int, cfg uintCfg, maxClusters int) 
 	})
 	st.flush(w)
 	return w
+}
+
+// lzLenFlag marks a copy length in visited (ctx, value) streams.
+const lzLenFlag = 1 << 31
+
+// lzMinEffort is the lowest effort that tries LZ77 on modular streams.
+const lzMinEffort = 4
+
+// specialDistances are the decoder's 2-D distance codes (dx, dy).
+var specialDist = [120][2]int8{
+	{0, 1}, {1, 0}, {1, 1}, {-1, 1}, {0, 2}, {2, 0}, {1, 2}, {-1, 2}, {2, 1}, {-2, 1},
+	{2, 2}, {-2, 2}, {0, 3}, {3, 0}, {1, 3}, {-1, 3}, {3, 1}, {-3, 1}, {2, 3}, {-2, 3},
+	{3, 2}, {-3, 2}, {0, 4}, {4, 0}, {1, 4}, {-1, 4}, {4, 1}, {-4, 1}, {3, 3}, {-3, 3},
+	{2, 4}, {-2, 4}, {4, 2}, {-4, 2}, {0, 5}, {3, 4}, {-3, 4}, {4, 3}, {-4, 3}, {5, 0},
+	{1, 5}, {-1, 5}, {5, 1}, {-5, 1}, {2, 5}, {-2, 5}, {5, 2}, {-5, 2}, {4, 4}, {-4, 4},
+	{3, 5}, {-3, 5}, {5, 3}, {-5, 3}, {0, 6}, {6, 0}, {1, 6}, {-1, 6}, {6, 1}, {-6, 1},
+	{2, 6}, {-2, 6}, {6, 2}, {-6, 2}, {4, 5}, {-4, 5}, {5, 4}, {-5, 4}, {3, 6}, {-3, 6},
+	{6, 3}, {-6, 3}, {0, 7}, {7, 0}, {1, 7}, {-1, 7}, {5, 5}, {-5, 5}, {7, 1}, {-7, 1},
+	{4, 6}, {-4, 6}, {6, 4}, {-6, 4}, {2, 7}, {-2, 7}, {7, 2}, {-7, 2}, {3, 7}, {-3, 7},
+	{7, 3}, {-7, 3}, {5, 6}, {-5, 6}, {6, 5}, {-6, 5}, {8, 0}, {4, 7}, {-4, 7}, {7, 4},
+	{-7, 4}, {8, 1}, {8, 2}, {6, 6}, {-6, 6}, {8, 3}, {5, 7}, {-5, 7}, {7, 5}, {-7, 5},
+	{8, 4}, {6, 7}, {-6, 7}, {7, 6}, {-7, 6}, {8, 5}, {7, 7}, {-7, 7}, {8, 6}, {8, 7},
+}
+
+// lzDistCoder maps distances to distance symbols for a distance
+// multiplier (row width); mult == 0 means plain distances.
+type lzDistCoder struct {
+	mult    int
+	special map[int]uint32
+}
+
+func newLZDistCoder(mult int) *lzDistCoder {
+	d := &lzDistCoder{mult: mult, special: map[int]uint32{}}
+	if mult == 0 {
+		return d
+	}
+	for i, sd := range specialDist {
+		v := int(sd[0]) + mult*int(sd[1])
+		if v < 1 {
+			continue
+		}
+		if _, ok := d.special[v]; !ok {
+			d.special[v] = uint32(i)
+		}
+	}
+	return d
+}
+
+func (d *lzDistCoder) symbol(dist int) uint32 {
+	if d.mult == 0 {
+		return uint32(dist - 1)
+	}
+	if s, ok := d.special[dist]; ok {
+		return s
+	}
+	return uint32(dist + 119)
+}
+
+// lzMatchesCost finds copies in a symbol stream whose estimated cost is
+// below that of the literals they replace (litCost[i] is the cost in bits
+// of symbol i coded as a literal). Besides hash-chain candidates, it always
+// tries distance 1 (runs) and the row above (mult).
+func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int) []lzItem {
+	n := len(vals)
+	if n < 2*lzMinLen {
+		return nil
+	}
+	pre := make([]float64, n+1)
+	for i, c := range litCost {
+		pre[i+1] = pre[i] + float64(c)
+	}
+	head := make([]int32, 1<<lzHashLog)
+	for i := range head {
+		head[i] = -1
+	}
+	prev := make([]int32, n)
+	hash := func(i int) uint32 {
+		h := vals[i]*0x9E3779B1 ^ vals[i+1]*0x85EBCA77 ^ vals[i+2]*0xC2B2AE3D
+		return (h * 0x27D4EB2F) >> (32 - lzHashLog)
+	}
+	insert := func(i int) {
+		if i+2 < n {
+			h := hash(i)
+			prev[i] = head[h]
+			head[h] = int32(i)
+		}
+	}
+	matchLen := func(i, j, maxLen int) int {
+		l := 0
+		for l < maxLen && vals[j+l] == vals[i+l] {
+			l++
+		}
+		return l
+	}
+	copyCost := func(l, d int) float64 {
+		c := 4 + float64(bits.Len(uint(l-lzMinLen)))*2
+		ds := dc.symbol(d)
+		if ds < 120 && dc.mult != 0 {
+			c += 3 + float64(ds)/16
+		} else {
+			c += 5 + float64(bits.Len(uint(ds)))
+		}
+		return c
+	}
+	// run lengths of copies at distance 1 and at the row above, so these
+	// are found in O(1) per position (long runs are common in residuals)
+	runLen := func(d int) []int32 {
+		r := make([]int32, n+1)
+		if d < 1 || d >= n {
+			return r
+		}
+		for i := n - 1; i >= d; i-- {
+			if vals[i] == vals[i-d] {
+				r[i] = min(r[i+1]+1, lzMaxLen)
+			}
+		}
+		return r
+	}
+	run1 := runLen(1)
+	var runUp []int32
+	if dc.mult > 1 {
+		runUp = runLen(dc.mult)
+	}
+	const chainMaxLen = 512
+	var out []lzItem
+	for i := 0; i < n; {
+		best, bestL, bestD := 0.0, 0, 0
+		consider := func(l, d int) {
+			if l < lzMinLen {
+				return
+			}
+			if s := pre[i+l] - pre[i] - copyCost(l, d); s > best {
+				best, bestL, bestD = s, l, d
+			}
+		}
+		consider(int(run1[i]), 1)
+		if runUp != nil {
+			consider(int(runUp[i]), dc.mult)
+		}
+		// inside runs, chain candidates mostly repeat the run itself
+		if bestL < chainMaxLen && run1[i] < 8 && i+2 < n {
+			maxLen := min(n-i, chainMaxLen)
+			cand := head[hash(i)]
+			for c := 0; c < chain && cand >= 0; c++ {
+				d := i - int(cand)
+				if d > lzWindow {
+					break
+				}
+				consider(matchLen(i, int(cand), maxLen), d)
+				cand = prev[cand]
+			}
+		}
+		if bestL == 0 {
+			insert(i)
+			i++
+			continue
+		}
+		out = append(out, lzItem{pos: int32(i), length: int32(bestL), dist: int32(bestD)})
+		for k := 0; k < min(bestL, 32); k++ {
+			insert(i + k)
+		}
+		i += bestL
+	}
+	return out
+}
+
+// streamDistMult is the decoder's LZ77 distance multiplier of a modular
+// stream: the largest width among its non-empty channels.
+func streamDistMult(chs []channel, s stream) int {
+	if s.local != nil {
+		chs = s.local
+	}
+	m := 0
+	for _, ci := range s.chans {
+		c := chs[ci]
+		w := max(0, min(s.w, c.w-s.x0))
+		h := max(0, min(s.h, c.h-s.y0))
+		if w > 0 && h > 0 {
+			m = max(m, w)
+		}
+	}
+	return m
+}
+
+// modularLZ77 searches copies in the cached residual streams. If the
+// estimated size improves, it returns a visit function yielding the LZ77
+// symbol streams and their histograms (nleaves+1 contexts).
+func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]uint64, nleaves int) (func(i int, fn func(ctx int, v uint32)), [][]uint64) {
+	for i := range caches {
+		for _, v := range caches[i].v {
+			if v&lzLenFlag != 0 {
+				return nil, nil
+			}
+		}
+	}
+	// literal cost per (context, token)
+	costs := make([][]float32, len(counts))
+	for c, h := range counts {
+		var tot uint64
+		for _, n := range h {
+			tot += n
+		}
+		costs[c] = make([]float32, len(h))
+		for t, n := range h {
+			costs[c][t] = float32(math.Log2(float64(tot+1) / float64(n+1)))
+		}
+	}
+	items := make([][]lzItem, len(all))
+	dcs := make([]*lzDistCoder, len(all))
+	parallel(len(all), func(i int) {
+		c := &caches[i]
+		lc := make([]float32, len(c.v))
+		for k, v := range c.v {
+			t, nb, _ := defaultCfg.encode(v)
+			cc := costs[c.ctx[k]]
+			x := float32(nb)
+			if int(t) < len(cc) {
+				x += cc[t]
+			} else {
+				x += 16
+			}
+			lc[k] = x
+		}
+		dcs[i] = newLZDistCoder(streamDistMult(chs, all[i]))
+		items[i] = lzMatchesCost(c.v, lc, dcs[i], 16)
+	})
+	n := 0
+	for _, it := range items {
+		n += len(it)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	visit := func(i int, fn func(ctx int, v uint32)) {
+		c := &caches[i]
+		p := 0
+		for _, it := range items[i] {
+			for ; p < int(it.pos); p++ {
+				fn(int(c.ctx[p]), c.v[p])
+			}
+			fn(int(c.ctx[p]), lzLenFlag|uint32(it.length-lzMinLen))
+			fn(nleaves, dcs[i].symbol(int(it.dist)))
+			p += int(it.length)
+		}
+		for ; p < len(c.v); p++ {
+			fn(int(c.ctx[p]), c.v[p])
+		}
+	}
+	lzc := make([][]uint64, nleaves+1)
+	for i := range lzc {
+		lzc[i] = make([]uint64, 256)
+	}
+	for i := range all {
+		visit(i, func(ctx int, v uint32) {
+			var t uint32
+			if v&lzLenFlag != 0 {
+				t, _, _ = lzLenCfg.encode(v &^ lzLenFlag)
+				t += lzMinSym
+			} else {
+				t, _, _ = defaultCfg.encode(v)
+			}
+			lzc[ctx][t]++
+		})
+	}
+	// compare estimated sizes (entropy plus extra bits are mostly equal;
+	// copies remove literal extra bits too, which is ignored here)
+	old, nw := 0.0, 0.0
+	for _, h := range counts {
+		old += histCost(h)
+	}
+	for _, h := range lzc {
+		nw += histCost(h)
+	}
+	if nw >= old*0.995 {
+		return nil, nil
+	}
+	return visit, lzc
 }

@@ -769,79 +769,92 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		}
 		fmt.Fprintf(os.Stderr, "ideal token bytes %.0f (%.3f bits/sample)\n", bitsIdeal/8, bitsIdeal/float64(max(nsamp, 1)))
 	}
-	treeH := newHistograms(6, defaultCfg)
-	treeTokens(nodes, treeH.add)
+	emit := func(visit func(i int, fn func(ctx int, v uint32)), counts [][]uint64, lz *lz77Params) ([]byte, error) {
+		treeH := newHistograms(6, defaultCfg)
+		treeTokens(nodes, treeH.add)
 
-	// LfGlobal section
-	lfg := &bitio.Writer{}
-	lfg.WriteBool(true) // LF channel dequant all default
-	lfg.WriteBool(true) // global tree present
-	tc := writeCode(lfg, treeH)
-	treeTokens(nodes, func(ctx int, v uint32) { tc.write(lfg, ctx, v) })
-	var dc *ansCode
-	if opt.Effort >= 4 {
-		dc = writeANSCodeTuned(lfg, len(all), visit, data.counts)
-	} else {
-		dc = writeANSCodeClustered(lfg, defaultCfg, data.counts, 64)
-	}
-	lfg.WriteBool(true) // use global tree
-	lfg.WriteBool(true) // default WP header
-	transforms(lfg)
-	gs := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, global))}
-	visit(0, gs.add)
-	gs.flush(lfg)
+		// LfGlobal section
+		lfg := &bitio.Writer{}
+		lfg.WriteBool(true) // LF channel dequant all default
+		lfg.WriteBool(true) // global tree present
+		tc := writeCode(lfg, treeH)
+		treeTokens(nodes, func(ctx int, v uint32) { tc.write(lfg, ctx, v) })
+		var dc *ansCode
+		if opt.Effort >= 4 {
+			dc = writeANSCodeTunedLZ(lfg, len(all), visit, counts, lz)
+		} else {
+			dc = writeANSCodeClustered(lfg, defaultCfg, counts, 64)
+		}
+		lfg.WriteBool(true) // use global tree
+		lfg.WriteBool(true) // default WP header
+		transforms(lfg)
+		gs := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, global))}
+		visit(0, gs.add)
+		gs.flush(lfg)
 
-	out := &bitio.Writer{}
-	writeImageHeader(out, im)
-	writeFrameHeader(out, im)
-	if single {
-		sec := lfg.Bytes()
-		out.WriteBool(false) // no permutation
+		out := &bitio.Writer{}
+		writeImageHeader(out, im)
+		writeFrameHeader(out, im)
+		if single {
+			sec := lfg.Bytes()
+			out.WriteBool(false) // no permutation
+			out.ZeroPadToByte()
+			out.WriteU32(uint32(len(sec)), bitio.Bits(10), bitsOff(14, 1024), bitsOff(22, 17408), bitsOff(30, 4211712))
+			out.ZeroPadToByte()
+			out.AppendBytes(sec)
+			return out.Bytes(), nil
+		}
+		// pass 2: group sections
+		secs := make([][]byte, len(groups))
+		parallel(len(groups), func(i int) {
+			w := &bitio.Writer{}
+			if len(groups[i].chans) > 0 {
+				w.WriteBool(true) // use global tree
+				w.WriteBool(true) // default WP
+				tws := groups[i].tws
+				w.WriteU32(uint32(len(tws)), val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
+				for _, f := range tws {
+					f(w)
+				}
+				st := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, groups[i]))}
+				visit(1+i, st.add)
+				st.flush(w)
+			}
+			secs[i] = w.Bytes()
+		})
+		nlf := ((im.W + groupDim*8 - 1) / (groupDim * 8)) * ((im.H + groupDim*8 - 1) / (groupDim * 8))
+		lfSec := lfg.Bytes()
+		sizes := []int{len(lfSec)}
+		for i := 0; i < nlf; i++ {
+			sizes = append(sizes, 0)
+		}
+		sizes = append(sizes, 0) // HF global
+		for _, s := range secs {
+			sizes = append(sizes, len(s))
+		}
+		out.WriteBool(false)
 		out.ZeroPadToByte()
-		out.WriteU32(uint32(len(sec)), bitio.Bits(10), bitsOff(14, 1024), bitsOff(22, 17408), bitsOff(30, 4211712))
+		for _, s := range sizes {
+			out.WriteU32(uint32(s), bitio.Bits(10), bitsOff(14, 1024), bitsOff(22, 17408), bitsOff(30, 4211712))
+		}
 		out.ZeroPadToByte()
-		out.AppendBytes(sec)
+		out.AppendBytes(lfSec)
+		for _, s := range secs {
+			out.AppendBytes(s)
+		}
 		return out.Bytes(), nil
 	}
-	// pass 2: group sections
-	secs := make([][]byte, len(groups))
-	parallel(len(groups), func(i int) {
-		w := &bitio.Writer{}
-		if len(groups[i].chans) > 0 {
-			w.WriteBool(true) // use global tree
-			w.WriteBool(true) // default WP
-			tws := groups[i].tws
-			w.WriteU32(uint32(len(tws)), val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
-			for _, f := range tws {
-				f(w)
-			}
-			st := &ansStream{c: dc, toks: make([]ansToken, 0, streamSamples(chs, groups[i]))}
-			visit(1+i, st.add)
-			st.flush(w)
+	res, err := emit(visit, data.counts, nil)
+	if err != nil || caches == nil || opt.Effort < lzMinEffort || os.Getenv("GOJXL_NOLZ") != "" {
+		return res, err
+	}
+	// LZ77 copies of residual runs and repeats; kept only if smaller
+	if lzv, lzCounts := modularLZ77(chs, all, caches, data.counts, nleaves); lzv != nil {
+		if r2, err2 := emit(lzv, lzCounts, &lz77Params{lzMinSym, lzMinLen, lzLenCfg}); err2 == nil && len(r2) < len(res) {
+			return r2, nil
 		}
-		secs[i] = w.Bytes()
-	})
-	nlf := ((im.W + groupDim*8 - 1) / (groupDim * 8)) * ((im.H + groupDim*8 - 1) / (groupDim * 8))
-	lfSec := lfg.Bytes()
-	sizes := []int{len(lfSec)}
-	for i := 0; i < nlf; i++ {
-		sizes = append(sizes, 0)
 	}
-	sizes = append(sizes, 0) // HF global
-	for _, s := range secs {
-		sizes = append(sizes, len(s))
-	}
-	out.WriteBool(false)
-	out.ZeroPadToByte()
-	for _, s := range sizes {
-		out.WriteU32(uint32(s), bitio.Bits(10), bitsOff(14, 1024), bitsOff(22, 17408), bitsOff(30, 4211712))
-	}
-	out.ZeroPadToByte()
-	out.AppendBytes(lfSec)
-	for _, s := range secs {
-		out.AppendBytes(s)
-	}
-	return out.Bytes(), nil
+	return res, nil
 }
 
 // tokValue returns a representative value for a token (for statistics).
