@@ -811,6 +811,12 @@ func writeModularLocalEffort(w *bitio.Writer, chs []channel, effort int) {
 
 // writeModularLocalOpts can exclude the (slow) weighted predictor.
 func writeModularLocalOpts(w *bitio.Writer, chs []channel, effort int, noWP bool) {
+	writeModularLocalSamples(w, chs, effort, noWP, 1<<16)
+}
+
+// writeModularLocalSamples also sets the tree learning sample budget of
+// noWP streams (more samples barely help these streams).
+func writeModularLocalSamples(w *bitio.Writer, chs []channel, effort int, noWP bool, maxSamples int) {
 	w.WriteBool(false) // local tree
 	w.WriteBool(true)  // default WP
 	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
@@ -839,7 +845,7 @@ func writeModularLocalOpts(w *bitio.Writer, chs []channel, effort int, noWP bool
 		lp := learnParamsFor(effort)
 		if noWP {
 			lp.preds = slices.DeleteFunc(slices.Clone(lp.preds), func(p int) bool { return p == 6 })
-			lp.maxSamples = 1 << 16 // more samples barely help these streams
+			lp.maxSamples = maxSamples
 		}
 		root = learnTree(collectSamples(chs, []stream{s}, lp), lp)
 	} else {
@@ -1478,7 +1484,12 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		}()
 		// learned trees (without the weighted predictor) cost far less
 		// than the fixed tree's many contexts, notably for small images
-		writeModularLocalOpts(w, lf, 4, true)
+		// the fastest efforts learn the DC tree from fewer samples
+		lfSamples := 1 << 16
+		if opt.Effort > 0 && opt.Effort <= 2 {
+			lfSamples = 1 << 14
+		}
+		writeModularLocalSamples(w, lf, 4, true, lfSamples)
 		<-done
 		w.AppendWriter(&wm)
 	}

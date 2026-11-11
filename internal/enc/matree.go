@@ -373,6 +373,9 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 	for t := range ts.ebits {
 		ts.ebits[t] = float64(tokExtraBits(uint32(t)))
 	}
+	if ts.n == 0 {
+		return ts // nothing sampled: learnTreeCost gives a single leaf
+	}
 	// quantise properties into buckets
 	ts.bucket = make([][]uint8, np)
 	ts.th = make([][]int32, np)
@@ -471,6 +474,9 @@ func learnTree(ts *treeSamples, lp learnParams) *tnode {
 // learnTreeCost also returns the estimated coded size (bits) of the samples
 // scaled to the whole image.
 func learnTreeCost(ts *treeSamples, lp learnParams) (*tnode, float64) {
+	if ts.n == 0 {
+		return &tnode{leaf: true, pred: 0}, 0
+	}
 	l := &learner{ts: ts, lp: lp}
 	n, c := l.build(0, ts.n, lp.maxLeaves)
 	return n, c * ts.scale
