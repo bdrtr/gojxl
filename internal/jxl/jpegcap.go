@@ -16,7 +16,7 @@ type JPEGCoeffs struct {
 	RawDen float32
 	YCbCr  bool
 	UpCode [3]uint32 // jpeg_upsampling code per channel
-	OK     bool // frame is JPEG compatible (DCT8 only, RAW table)
+	OK     bool      // frame is JPEG compatible (DCT8 only, RAW table)
 }
 
 func (v *vardctState) captureDC(img *ModularImage, x0, y0 int) {
