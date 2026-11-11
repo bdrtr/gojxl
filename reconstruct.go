@@ -63,9 +63,9 @@ func ReconstructJPEG(data []byte) (out []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	var cp jxl.JPEGCoeffs
+	cp := jxl.JPEGCoeffs{CoeffsOnly: true}
 	d.CaptureJPEG(&cp)
-	if _, err := d.NextFrame(); err != nil {
+	if _, err := d.NextFrame(); err != nil && err != jxl.ErrCoeffsCaptured {
 		return nil, err
 	}
 	if !cp.OK || cp.DC[0] == nil {

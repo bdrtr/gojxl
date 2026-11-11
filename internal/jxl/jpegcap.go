@@ -1,5 +1,7 @@
 package jxl
 
+import "errors"
+
 // JPEGCoeffs holds the quantised DCT data of a VarDCT frame, as needed to
 // reconstruct a JPEG file (see Decoder.CaptureJPEG).
 type JPEGCoeffs struct {
@@ -17,7 +19,13 @@ type JPEGCoeffs struct {
 	YCbCr  bool
 	UpCode [3]uint32 // jpeg_upsampling code per channel
 	OK     bool      // frame is JPEG compatible (DCT8 only, RAW table)
+	// CoeffsOnly stops decoding once the coefficients are captured (no
+	// pixels); NextFrame then returns ErrCoeffsCaptured.
+	CoeffsOnly bool
 }
+
+// ErrCoeffsCaptured is returned by NextFrame after a CoeffsOnly capture.
+var ErrCoeffsCaptured = errors.New("jxl: JPEG coefficients captured")
 
 func (v *vardctState) captureDC(img *ModularImage, x0, y0 int) {
 	cp := v.fd.dec.capture
@@ -40,7 +48,7 @@ func (v *vardctState) initCapture() {
 	if cp == nil {
 		return
 	}
-	*cp = JPEGCoeffs{BW: v.bw, BH: v.bh, HS: v.hs, VS: v.vs, YCbCr: v.fh.DoYCbCr, UpCode: v.fh.JPEGUpsampling, OK: true}
+	*cp = JPEGCoeffs{BW: v.bw, BH: v.bh, HS: v.hs, VS: v.vs, YCbCr: v.fh.DoYCbCr, UpCode: v.fh.JPEGUpsampling, OK: true, CoeffsOnly: cp.CoeffsOnly}
 	for c := 0; c < 3; c++ {
 		n := (v.bw >> v.hs[c]) * (v.bh >> v.vs[c])
 		cp.DC[c] = make([]int32, n)

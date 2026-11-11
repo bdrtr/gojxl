@@ -466,6 +466,10 @@ func (fd *frameDecoder) finish() error {
 		return err
 	}
 	if fd.vd != nil {
+		if cp := fd.dec.capture; cp != nil && cp.CoeffsOnly {
+			fd.vd.captureAC()
+			return ErrCoeffsCaptured
+		}
 		if err := fd.vd.finish(); err != nil {
 			return err
 		}
