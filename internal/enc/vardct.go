@@ -1130,7 +1130,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 			lf = append(lf, ch)
 		}
-		writeModularLocal(w, lf)
+		// learned trees (without the weighted predictor) cost far less
+		// than the fixed tree's many contexts, notably for small images
+		writeModularLocalOpts(w, lf, 4, true)
 		// HF metadata: strategies, quant field, CfL, sharpness
 		var acsT, acsQ []int32
 		for y := y0; y < y0+chh; y++ {
@@ -1158,7 +1160,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		for i := range sh.pix {
 			sh.pix[i] = int32(sharp)
 		}
-		writeModularLocal(w, []channel{cx, cb, acs, sh})
+		writeModularLocalOpts(w, []channel{cx, cb, acs, sh}, 4, true)
 	}
 	writeHfGlobal := func(w *bitio.Writer) *ansCode {
 		w.WriteBool(true)                                           // default dequant matrices

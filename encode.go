@@ -40,7 +40,8 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 		o.Effort = opt.Effort
 	}
 	im := toPlanar(img)
-	if opt != nil && opt.Distance > 0 && im.BitDepth == 8 {
+	if opt != nil && opt.Distance > 0 {
+		to8Bit(im)
 		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1}
 		if v := os.Getenv("GOJXL_EPF"); v != "" {
 			lo.EPFIters, _ = strconv.Atoi(v)
@@ -159,4 +160,18 @@ func TranscodeJPEG(data []byte) (out []byte, err error) {
 		return cs, nil
 	}
 	return enc.WrapContainer(cs, jbrd, exif, xmp), nil
+}
+
+// to8Bit converts a deeper image to 8 bits per sample (VarDCT input).
+func to8Bit(im *enc.Image) {
+	if im.BitDepth == 8 {
+		return
+	}
+	maxv := int32(1)<<im.BitDepth - 1
+	for _, c := range im.Chans {
+		for i, v := range c {
+			c[i] = (v*255 + maxv/2) / maxv
+		}
+	}
+	im.BitDepth = 8
 }

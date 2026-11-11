@@ -211,30 +211,80 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 	for _, e := range es {
 		cm[e.i] = uint8(remap[cm[e.i]])
 	}
+	// contexts without samples may map anywhere: repeat the previous
+	// mapping so the context map compresses well
+	used := make([]bool, len(counts))
+	for _, e := range es {
+		used[e.i] = true
+	}
+	for i := 1; i < len(cm); i++ {
+		if !used[i] {
+			cm[i] = cm[i-1]
+		}
+	}
 	return cm, out
 }
 
 // writeContextMap writes an arbitrary context map.
 func writeContextMap(w *bitio.Writer, cm []uint8, nclusters int) {
-	if nclusters <= 8 {
-		w.WriteBool(true)
-		nb := ceilLog2(nclusters)
-		w.Write(2, uint64(nb))
-		for _, v := range cm {
-			w.Write(uint(nb), uint64(v))
+	var best *bitio.Writer
+	try := func(t *bitio.Writer) {
+		if best == nil || t.BitsWritten() < best.BitsWritten() {
+			best = t
 		}
-		return
 	}
-	w.WriteBool(false) // complex
-	w.WriteBool(false) // no MTF
-	h := newHistograms(1, uintCfg{8, 0, 0})
-	for _, v := range cm {
-		h.add(0, uint32(v))
+	if nclusters <= 8 {
+		t := &bitio.Writer{}
+		t.WriteBool(true)
+		nb := ceilLog2(nclusters)
+		t.Write(2, uint64(nb))
+		for _, v := range cm {
+			t.Write(uint(nb), uint64(v))
+		}
+		try(t)
 	}
-	c := writeCode(w, h)
-	for _, v := range cm {
-		c.write(w, 0, uint32(v))
+	// complex: entropy coded (LZ77 allowed for more than two contexts),
+	// with or without move-to-front
+	ctxs := make([]int, len(cm))
+	for _, mtf := range []bool{false, true} {
+		vals := make([]uint32, len(cm))
+		if mtf {
+			var order [256]uint8
+			for i := range order {
+				order[i] = uint8(i)
+			}
+			for i, v := range cm {
+				k := 0
+				for order[k] != v {
+					k++
+				}
+				vals[i] = uint32(k)
+				copy(order[1:k+1], order[:k])
+				order[0] = v
+			}
+		} else {
+			for i, v := range cm {
+				vals[i] = uint32(v)
+			}
+		}
+		t := &bitio.Writer{}
+		t.WriteBool(false) // complex
+		t.WriteBool(mtf)
+		if len(cm) > 2 {
+			writeStreamLZ(t, ctxs, vals, 1, defaultCfg, 1)
+		} else {
+			h := newHistograms(1, uintCfg{8, 0, 0})
+			for _, v := range vals {
+				h.add(0, v)
+			}
+			c := writeCode(t, h)
+			for _, v := range vals {
+				c.write(t, 0, v)
+			}
+		}
+		try(t)
 	}
+	w.AppendWriter(best)
 }
 
 // writeANSCodeClustered writes an ANS code for len(counts) contexts,
