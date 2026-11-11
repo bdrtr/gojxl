@@ -209,8 +209,13 @@ func dequantAC(q int32, step, bias, numer float32) float32 {
 	return (f - numer/f) * step
 }
 
-// vtype is a varblock transform: cx x cy blocks (8x8 pixels each).
-type vtype struct{ acs, cx, cy, table, order int }
+// vtype is a varblock transform: cx x cy blocks (8x8 pixels each). Types
+// with split set are 8x8 blocks made of two half-size DCTs (DCT4x8: top
+// and bottom halves, DCT8x4: left and right halves).
+type vtype struct {
+	acs, cx, cy, table, order int
+	split                     bool
+}
 
 func (t vtype) rows() int { return 8 * t.cy }
 func (t vtype) cols() int { return 8 * t.cx }
@@ -227,10 +232,17 @@ func (t vtype) isLLF(idx int) bool {
 
 // vtypes are the supported varblock types: DCT8, DCT16, DCT32, then the
 // rectangular DCT16x8 (tall), DCT8x16 (wide), DCT32x16 (tall), DCT16x32.
-var vtypes = [7]vtype{
-	{0, 1, 1, 0, 0}, {4, 2, 2, 4, 2}, {5, 4, 4, 5, 3},
-	{6, 1, 2, 6, 4}, {7, 2, 1, 6, 4}, {10, 2, 4, 8, 6}, {11, 4, 2, 8, 6},
+var vtypes = [9]vtype{
+	{0, 1, 1, 0, 0, false}, {4, 2, 2, 4, 2, false}, {5, 4, 4, 5, 3, false},
+	{6, 1, 2, 6, 4, false}, {7, 2, 1, 6, 4, false}, {10, 2, 4, 8, 6, false}, {11, 4, 2, 8, 6, false},
+	{12, 1, 1, 9, 1, true}, {13, 1, 1, 9, 1, true},
 }
+
+// Indices of the split 8x8 types in vtypes.
+const (
+	vtDCT4x8 = 7 // acs 12: two 4x8 (rows x cols) halves, top and bottom
+	vtDCT8x4 = 8 // acs 13: two 8x4 halves, left and right
+)
 
 var chanScale = [3]float32{0.8, 1, 1} // x_qm_scale 3, b_qm_scale 2
 
@@ -449,6 +461,34 @@ func (r *rowDCTCache) coef(c int, vt vtype, ox, oy int, out []float32) {
 			}
 		}
 	}
+}
+
+// fdctSplit computes the coefficients of a split 8x8 type in the decoder's
+// storage layout: each half's scaled DCT is interleaved into the 8x8 block,
+// with the mean of the half DCs at 0 and half their difference at 8.
+func fdctSplit(acs int, src []float32, stride int, out []float32) {
+	var h [2][32]float32
+	if acs == 12 { // halves of 4 rows x 8 cols (natural layout [ky][kx])
+		for y := 0; y < 2; y++ {
+			fdctRect(src[y*4*stride:], stride, 4, 8, h[y][:])
+			for ky := 0; ky < 4; ky++ {
+				for kx := 0; kx < 8; kx++ {
+					out[(y+2*ky)*8+kx] = h[y][ky*8+kx]
+				}
+			}
+		}
+	} else { // halves of 8 rows x 4 cols (transposed layout [kx][ky])
+		for x := 0; x < 2; x++ {
+			fdctRect(src[x*4:], stride, 8, 4, h[x][:])
+			for a := 0; a < 4; a++ {
+				for ky := 0; ky < 8; ky++ {
+					out[(x+2*a)*8+ky] = h[x][a*8+ky]
+				}
+			}
+		}
+	}
+	out[0] = (h[0][0] + h[1][0]) / 2
+	out[8] = (h[0][0] - h[1][0]) / 2
 }
 
 // fdctNRef is the direct O(N^3) reference.
@@ -775,7 +815,11 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					}
 					var j float64
 					for c := 0; c < 3; c++ {
-						rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
+						if vt.split {
+							fdctSplit(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, buf[:sz])
+						} else {
+							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
+						}
 						dd, rr := rdCostPre(buf[:sz], selSt[ti][c], selInv[ti][c], torder[ti], vt, baseStep, chanDistW[c])
 						j += dd/64 + mu*rr
 					}
@@ -814,7 +858,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					if x >= bw || y >= bh {
 						return plan{}
 					}
-					return plan{cost(0, x, y), nil}
+					p := plan{cost(0, x, y), nil}
+					p = better(p, one(vtDCT4x8, x, y))
+					return better(p, one(vtDCT8x4, x, y))
 				}
 				quad := func(sx, sy int) plan {
 					if sx >= bw || sy >= bh {
@@ -857,7 +903,11 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			if len(out[c]) < sz {
 				out[c] = make([]float32, sz)
 			}
-			fdctRect(xyb[c][(by*8)*pw+bx*8:], pw, vt.rows(), vt.cols(), out[c][:sz])
+			if vt.split {
+				fdctSplit(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, out[c][:sz])
+			} else {
+				fdctRect(xyb[c][(by*8)*pw+bx*8:], pw, vt.rows(), vt.cols(), out[c][:sz])
+			}
 		}
 	}
 	isLLF := func(ti, idx int) bool { return vtypes[ti].isLLF(idx) }
