@@ -1307,10 +1307,6 @@ type alphaPlan struct {
 
 func planAlpha(a []int32, W, H, xg, yg int) *alphaPlan {
 	p := &alphaPlan{chs: []channel{{w: W, h: H, pix: a}}}
-	root := buildTree(1, W*H, 2)
-	var nl int
-	p.nodes, nl = bfs(root)
-	p.root = root
 	p.global = stream{w: 1 << 30, h: 1 << 30}
 	if W <= groupDim && H <= groupDim {
 		p.global.chans, p.global.ctxIdx = []int{0}, []int{0}
@@ -1322,6 +1318,17 @@ func planAlpha(a []int32, W, H, xg, yg int) *alphaPlan {
 			}
 		}
 	}
+	// learned MA tree (as lossless effort 4, without WP)
+	all := p.groups
+	if len(all) == 0 {
+		all = []stream{p.global}
+	}
+	lp := learnParamsFor(4)
+	lp.preds = slices.DeleteFunc(slices.Clone(lp.preds), func(q int) bool { return q == 6 })
+	root := learnTree(collectSamples(p.chs, all, lp), lp)
+	var nl int
+	p.nodes, nl = bfs(root)
+	p.root = root
 	p.data = newHistograms(nl, defaultCfg)
 	walkStream(p.chs, p.global, p.root, p.data.add)
 	for _, s := range p.groups {
@@ -1336,7 +1343,7 @@ func (p *alphaPlan) writeGlobal(w *bitio.Writer) {
 	treeTokens(p.nodes, th.add)
 	tc := writeCode(w, th)
 	treeTokens(p.nodes, func(ctx int, v uint32) { tc.write(w, ctx, v) })
-	p.code = writeANSCode(w, p.data)
+	p.code = writeANSCodeClustered(w, defaultCfg, p.data.counts, 64)
 	w.WriteBool(true) // use global tree
 	w.WriteBool(true) // default WP
 	w.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(8, 18))
