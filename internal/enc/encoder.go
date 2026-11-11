@@ -417,6 +417,58 @@ func rctPixel(id int, p [3]int32) (int32, int32, int32) {
 	return a, bb, c
 }
 
+// rctComponent is component c of rctPixel(id, p).
+func rctComponent(id, c int, p [3]int32) int32 {
+	a, b, d := rctPixel(id, p)
+	switch c {
+	case 0:
+		return a
+	case 1:
+		return b
+	}
+	return d
+}
+
+// rctSignalSet maps each RCT's output channels to the distinct functions
+// of the input pixel that they compute.
+type rctSignalSet struct {
+	of  [42][3]int // signal index of (id, channel)
+	rep [][2]int   // a representative (id, channel) per signal
+}
+
+var rctSignalsOnce = sync.OnceValue(func() *rctSignalSet {
+	// channels computing the same function agree on every probe pixel;
+	// functions this simple that differ disagree on random probes
+	var probes [64][3]int32
+	r := uint32(12345)
+	for i := range probes {
+		for c := range probes[i] {
+			r = r*1664525 + 1013904223
+			probes[i][c] = int32(r>>8)%200001 - 100000
+		}
+	}
+	set := &rctSignalSet{}
+	seen := map[[64]int32]int{}
+	for id := 0; id < 42; id++ {
+		for c := 0; c < 3; c++ {
+			var fp [64]int32
+			for i, p := range probes {
+				fp[i] = rctComponent(id, c, p)
+			}
+			k, ok := seen[fp]
+			if !ok {
+				k = len(set.rep)
+				seen[fp] = k
+				set.rep = append(set.rep, [2]int{id, c})
+			}
+			set.of[id][c] = k
+		}
+	}
+	return set
+})
+
+func rctSignals() *rctSignalSet { return rctSignalsOnce() }
+
 // chooseRCT estimates, on a subsample of rows, the cost of coding the
 // colour channels under each RCT (gradient residuals in a few activity
 // contexts per channel) and returns the cheapest.
@@ -429,73 +481,77 @@ func chooseRCT(src [][]int32, w, h, effort int) int {
 		ids = append(ids, id)
 	}
 	step := max(2, h/64)
-	costs := make([]float64, len(ids))
-	parallel(len(ids), func(k int) {
-		id := ids[k]
+	// The estimate is a sum over the three output channels, and the 36
+	// candidates produce only 15 distinct channel functions (identities,
+	// differences, differences with an average, YCoCg luma): each one's
+	// cost is computed once.
+	sig := rctSignals()
+	sigCost := make([]float64, len(sig.rep))
+	parallel(len(sig.rep), func(s int) {
+		id, ch := sig.rep[s][0], sig.rep[s][1]
 		const nctx, npr = 4, 4
-		var hist [npr][3][nctx][]uint64
+		var hist [npr][nctx][]uint64
 		for p := range hist {
-			for c := range hist[p] {
-				for q := range hist[p][c] {
-					hist[p][c][q] = make([]uint64, 64)
-				}
+			for q := range hist[p] {
+				hist[p][q] = make([]uint64, 64)
 			}
 		}
-		var extra [npr][3]float64
-		prev := make([][3]int32, w)
-		cur := make([][3]int32, w)
+		var extra [npr]float64
+		prev := make([]int32, w)
+		cur := make([]int32, w)
 		for y0 := 1; y0 < h; y0 += step {
 			for dy := -1; dy <= 0; dy++ {
 				y := y0 + dy
 				for x := 0; x < w; x++ {
 					i := y*w + x
-					a, b, c := rctPixel(id, [3]int32{src[0][i], src[1][i], src[2][i]})
-					cur[x] = [3]int32{a, b, c}
+					cur[x] = rctComponent(id, ch, [3]int32{src[0][i], src[1][i], src[2][i]})
 				}
 				if dy == 0 {
 					for x := 1; x+1 < w; x++ {
-						for c := 0; c < 3; c++ {
-							N, W, NW, NE := prev[x][c], cur[x-1][c], prev[x-1][c], prev[x+1][c]
-							act := iabs32(W-NW) + iabs32(N-NW) + iabs32(N-NE)
-							q := 0
-							switch {
-							case act > 96:
-								q = 3
-							case act > 18:
-								q = 2
-							case act > 3:
-								q = 1
+						N, W, NW, NE := prev[x], cur[x-1], prev[x-1], prev[x+1]
+						act := iabs32(W-NW) + iabs32(N-NW) + iabs32(N-NE)
+						q := 0
+						switch {
+						case act > 96:
+							q = 3
+						case act > 18:
+							q = 2
+						case act > 3:
+							q = 1
+						}
+						preds := [npr]int32{clampedGradient(N, W, NW), N, W, (N + NE) >> 1}
+						for p, pr := range preds {
+							t, nb, _ := defaultCfg.encode(bitio.PackSigned(cur[x] - pr))
+							h := hist[p][q]
+							if int(t) >= len(h) {
+								t = uint32(len(h) - 1)
 							}
-							preds := [npr]int32{clampedGradient(N, W, NW), N, W, (N + NE) >> 1}
-							for p, pr := range preds {
-								t, nb, _ := defaultCfg.encode(bitio.PackSigned(cur[x][c] - pr))
-								h := hist[p][c][q]
-								if int(t) >= len(h) {
-									t = uint32(len(h) - 1)
-								}
-								h[t]++
-								extra[p][c] += float64(nb)
-							}
+							h[t]++
+							extra[p] += float64(nb)
 						}
 					}
 				}
 				prev, cur = cur, prev
 			}
 		}
+		best := math.Inf(1)
+		for p := 0; p < npr; p++ {
+			pc := extra[p]
+			for q := range hist[p] {
+				pc += histCost(hist[p][q])
+			}
+			best = min(best, pc)
+		}
+		sigCost[s] = best
+	})
+	costs := make([]float64, len(ids))
+	for k, id := range ids {
 		var cost float64
 		for c := 0; c < 3; c++ {
-			best := math.Inf(1)
-			for p := 0; p < npr; p++ {
-				pc := extra[p][c]
-				for q := range hist[p][c] {
-					pc += histCost(hist[p][c][q])
-				}
-				best = min(best, pc)
-			}
-			cost += best
+			cost += sigCost[sig.of[id][c]]
 		}
 		costs[k] = cost
-	})
+	}
 	best := 0
 	for k := range ids {
 		if costs[k] < costs[best] || (costs[k] == costs[best] && ids[k] == 6) {

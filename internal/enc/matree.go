@@ -60,7 +60,26 @@ func predictOne(p int, nb *nbhd) int64 {
 // iterStream visits every sample of a stream in decoding order, providing
 // the decoder's 16 properties (property 1, the stream id, is left 0) and
 // neighbourhood. WP state is maintained when useWP is set.
+// sampler selects a pseudo-random subset of the samples of a stream: one
+// xorshift step per sample, kept when the low 32 bits are below thr.
+type sampler struct {
+	rng, thr uint64
+}
+
+func (s *sampler) keep() bool {
+	s.rng ^= s.rng << 13
+	s.rng ^= s.rng >> 7
+	s.rng ^= s.rng << 17
+	return s.rng&0xffffffff < s.thr
+}
+
 func iterStream(chs []channel, s stream, useWP bool, nrefs int, full bool, fn func(k, x, y int, props *[maxProps]int32, nb *nbhd, cur int32)) {
+	iterStreamSampled(chs, s, useWP, nrefs, full, nil, fn)
+}
+
+// iterStreamSampled calls fn only for the samples smp keeps (all if nil);
+// the others only update the state that later samples depend on.
+func iterStreamSampled(chs []channel, s stream, useWP bool, nrefs int, full bool, smp *sampler, fn func(k, x, y int, props *[maxProps]int32, nb *nbhd, cur int32)) {
 	var props [maxProps]int32
 	var nb nbhd
 	if s.local != nil {
@@ -144,6 +163,13 @@ func iterStream(chs []channel, s stream, useWP bool, nrefs int, full bool, fn fu
 					var mx int64
 					nb.wp, mx = wp.predict(x, y, N, Wv, NE, NW, NN)
 					props[15] = int32(mx)
+				}
+				if smp != nil && !smp.keep() {
+					props[9] = int32(Wv + N - NW) // property 8 of the next sample
+					if wp != nil {
+						wp.update(int64(row[x]), x, y)
+					}
+					continue
 				}
 				if full {
 					props[3] = int32(x)
@@ -334,14 +360,11 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 	useWP := slices.Contains(lp.preds, 6)
 	parallel(len(streams), func(i int) {
 		pt := part{props: make([][]int32, np), tok: make([][]uint8, npred)}
-		rng := uint64(i)*0x9E3779B97F4A7C15 + 1
-		iterStream(chs, streams[i], useWP, lp.nrefs, true, func(_, _, _ int, props *[maxProps]int32, nb *nbhd, cur int32) {
-			rng ^= rng << 13
-			rng ^= rng >> 7
-			rng ^= rng << 17
-			if keep < 1 && rng&0xffffffff >= thr {
-				return
-			}
+		var smp *sampler
+		if keep < 1 {
+			smp = &sampler{rng: uint64(i)*0x9E3779B97F4A7C15 + 1, thr: thr}
+		}
+		iterStreamSampled(chs, streams[i], useWP, lp.nrefs, true, smp, func(_, _, _ int, props *[maxProps]int32, nb *nbhd, cur int32) {
 			for j, p := range lpProps {
 				pt.props[j] = append(pt.props[j], props[p])
 			}
@@ -387,7 +410,7 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		for i := 0; i < len(vals); i += step {
 			sorted = append(sorted, vals[i])
 		}
-		slices.Sort(sorted)
+		sortInt32(sorted)
 		var th []int32
 		nb := lp.maxBuckets
 		for b := 1; b < nb; b++ {
@@ -409,20 +432,7 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		if len(uniq) <= nb {
 			th = uniq[:len(uniq)-1]
 		}
-		bk := make([]uint8, len(vals))
-		for i, v := range vals {
-			lo, hi := 0, len(th) // first k with th[k] >= v
-			for lo < hi {
-				m := int(uint(lo+hi) >> 1)
-				if th[m] < v {
-					lo = m + 1
-				} else {
-					hi = m
-				}
-			}
-			bk[i] = uint8(lo)
-		}
-		ts.bucket[j] = bk
+		ts.bucket[j] = bucketize(vals, th)
 		ts.th[j] = th
 	})
 	// column-major sample matrix: buckets then tokens
@@ -433,6 +443,82 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		ts.nlog[i] = float64(i) * math.Log2(float64(i))
 	}
 	return ts
+}
+
+// sortInt32 sorts v, by counting when its value range is small.
+func sortInt32(v []int32) {
+	if len(v) < 256 {
+		slices.Sort(v)
+		return
+	}
+	lo, hi := v[0], v[0]
+	for _, x := range v {
+		lo, hi = min(lo, x), max(hi, x)
+	}
+	if int64(hi)-int64(lo) >= 1<<16 {
+		slices.Sort(v)
+		return
+	}
+	cnt := make([]int32, int(hi-lo)+1)
+	for _, x := range v {
+		cnt[x-lo]++
+	}
+	o := 0
+	for k, c := range cnt {
+		for ; c > 0; c-- {
+			v[o] = lo + int32(k)
+			o++
+		}
+	}
+}
+
+// bucketize maps each value to the index of the first threshold >= it
+// (len(th) if none), with a lookup table when the thresholds span a
+// small range.
+func bucketize(vals, th []int32) []uint8 {
+	bk := make([]uint8, len(vals))
+	if len(th) == 0 {
+		return bk
+	}
+	t0, t1 := th[0], th[len(th)-1]
+	if int64(t1)-int64(t0) < 1<<16 {
+		lut := make([]uint8, int(t1-t0)+1)
+		k := 0
+		for v := t0; ; v++ {
+			for th[k] < v {
+				k++
+			}
+			lut[v-t0] = uint8(k)
+			if v == t1 {
+				break
+			}
+		}
+		last := uint8(len(th))
+		for i, v := range vals {
+			switch {
+			case v <= t0:
+				bk[i] = 0
+			case v > t1:
+				bk[i] = last
+			default:
+				bk[i] = lut[v-t0]
+			}
+		}
+		return bk
+	}
+	for i, v := range vals {
+		lo, hi := 0, len(th) // first k with th[k] >= v
+		for lo < hi {
+			m := int(uint(lo+hi) >> 1)
+			if th[m] < v {
+				lo = m + 1
+			} else {
+				hi = m
+			}
+		}
+		bk[i] = uint8(lo)
+	}
+	return bk
 }
 
 // tokExtraBits returns the number of raw bits following a token.
@@ -534,64 +620,100 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 			T++
 		}
 	}
-	res := make([]splitChoice, np)
-	eval := func(j int) {
-		// buckets present in this node
-		var bmap [256]int32
-		bc := ts.cols[j][lo:hi]
-		for _, b := range bc {
-			bmap[b] = 1
+	// the candidates' token columns in the compact alphabet
+	tcc := make([][]uint8, nc)
+	for ci, pi := range cands {
+		d := make([]uint8, n)
+		for i, t := range ts.cols[np+pi][lo:hi] {
+			d[i] = uint8(tmap[t])
 		}
+		tcc[ci] = d
+	}
+	res := make([]splitChoice, np)
+	eval := func(j int, buf *[]uint32) {
+		// hist layout: [cand][bucket][token] over all buckets of the
+		// property; buckets absent from this node are skipped below, so
+		// the candidate splits are the same as over the present ones
+		nbj := len(ts.th[j]) + 1
+		size := nc * nbj * T
+		if cap(*buf) < size {
+			*buf = make([]uint32, size)
+		}
+		hist := (*buf)[:size]
+		clear(hist)
+		bc := ts.cols[j][lo:hi]
+		if nc == 2 {
+			h0, h1 := hist[:nbj*T], hist[nbj*T:]
+			t0, t1 := tcc[0][:len(bc)], tcc[1][:len(bc)]
+			for i, b := range bc {
+				o := int(b) * T
+				h0[o+int(t0[i])]++
+				h1[o+int(t1[i])]++
+			}
+		} else {
+			for ci := range cands {
+				hp := hist[ci*nbj*T : (ci+1)*nbj*T]
+				tc := tcc[ci][:len(bc)]
+				for i, b := range bc {
+					hp[int(b)*T+int(tc[i])]++
+				}
+			}
+		}
+		// buckets present in this node, in order
 		var borig [256]int
 		B := 0
-		for b := range bmap {
-			if bmap[b] != 0 {
-				bmap[b] = int32(B)
-				borig[B] = b
-				B++
+		if len(bc) < nbj*T {
+			var seen [256]bool
+			for _, b := range bc {
+				seen[b] = true
+			}
+			for b := 0; b < nbj; b++ {
+				if seen[b] {
+					borig[B] = b
+					B++
+				}
+			}
+		} else {
+			for b := 0; b < nbj; b++ {
+				for _, v := range hist[b*T : b*T+T] {
+					if v != 0 {
+						borig[B] = b
+						B++
+						break
+					}
+				}
 			}
 		}
 		if B < 2 {
 			return
 		}
-		// hist layout: [cand][bucket][token]
-		hist := make([]uint32, nc*B*T)
-		for ci, pi := range cands {
-			hp := hist[ci*B*T : (ci+1)*B*T]
-			tc := ts.cols[np+pi][lo:hi]
-			tc = tc[:len(bc)]
-			for i, b := range bc {
-				hp[int(bmap[b])*T+int(tmap[tc[i]])]++
-			}
-		}
-		costR := make([]float64, B)
-		costL := make([]float64, B)
-		for b := range costR {
+		var costR, costL [256]float64
+		for b := 0; b < B; b++ {
 			costR[b], costL[b] = math.Inf(1), math.Inf(1)
 		}
-		r := make([]uint32, T)
-		lft := make([]uint32, T)
+		var r, lft [256]uint32
 		for ci := 0; ci < nc; ci++ {
-			hc := hist[ci*B*T : (ci+1)*B*T]
-			clear(lft)
+			hc := hist[ci*nbj*T : (ci+1)*nbj*T]
+			clear(lft[:T])
 			var sL, eL float64
 			var nL uint32
-			for b := 0; b < B; b++ {
+			for _, b := range borig[:B] {
 				for k, v := range hc[b*T : b*T+T] {
 					lft[k] += v
 				}
 			}
-			for k, v := range lft {
+			for k, v := range lft[:T] {
 				if v != 0 {
 					sL += ts.nlog[v]
 					eL += float64(v) * ebits[k]
 					nL += v
 				}
 			}
-			clear(r)
+			clear(r[:T])
 			var sR, eR float64
 			var nR uint32
-			for b := 0; b < B-1; b++ {
+			for bi := 0; bi < B-1; bi++ {
+				b := borig[bi]
 				for k, h := range hc[b*T : b*T+T] {
 					if h == 0 {
 						continue
@@ -606,8 +728,8 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 					nR += h
 					nL -= h
 				}
-				costR[b] = min(costR[b], ts.nlog[nR]-sR+eR)
-				costL[b] = min(costL[b], ts.nlog[nL]-sL+eL)
+				costR[bi] = min(costR[bi], ts.nlog[nR]-sR+eR)
+				costL[bi] = min(costL[bi], ts.nlog[nL]-sL+eL)
 			}
 		}
 		bestGain, bestB := 0.0, -1
@@ -624,13 +746,19 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 		var wg sync.WaitGroup
 		for j := 0; j < np; j++ {
 			wg.Add(1)
-			go func(j int) { defer wg.Done(); eval(j) }(j)
+			go func(j int) {
+				defer wg.Done()
+				var buf []uint32
+				eval(j, &buf)
+			}(j)
 		}
 		wg.Wait()
 	} else {
+		bp := histPool.Get().(*[]uint32)
 		for j := 0; j < np; j++ {
-			eval(j)
+			eval(j, bp)
 		}
+		histPool.Put(bp)
 	}
 	best := splitChoice{prop: -1}
 	for _, r := range res {
@@ -640,6 +768,9 @@ func (l *learner) bestSplit(lo, hi int, parentCost float64, cands []int) splitCh
 	}
 	return best
 }
+
+// histPool recycles bestSplit's histogram buffers between nodes.
+var histPool = sync.Pool{New: func() any { return new([]uint32) }}
 
 // build grows the subtree for samples idx with at most budget leaves (the
 // budget is shared between children in proportion to their sample counts,
@@ -659,28 +790,31 @@ func (l *learner) build(lo, hi, budget int) (*tnode, float64) {
 	b := uint8(sc.bucket)
 	p := sc.prop
 	key := l.ts.cols[p][lo:hi]
-	mask := make([]bool, n)
-	i := 0
+	mask := make([]uint8, n) // 1: left (> bucket)
+	nl := 0
 	for k, v := range key {
-		mask[k] = v > b
-		if !mask[k] {
-			i++
+		var m uint8
+		if v > b {
+			m = 1
 		}
+		mask[k] = m
+		nl += int(m)
 	}
-	tmp := make([]byte, n-i)
+	i := n - nl
+	// branch-free: every sample is written to both sides and only the
+	// matching side's position advances (tmp has room for the last write)
+	tmp := make([]byte, nl+1)
 	for _, col := range l.ts.cols {
 		c := col[lo:hi]
 		w, t := 0, 0
 		for k, v := range c {
-			if mask[k] {
-				tmp[t] = v
-				t++
-			} else {
-				c[w] = v
-				w++
-			}
+			m := int(mask[k])
+			c[w] = v
+			tmp[t] = v
+			w += 1 - m
+			t += m
 		}
-		copy(c[w:], tmp)
+		copy(c[w:], tmp[:nl])
 	}
 	nd := &tnode{prop: l.ts.props[p], split: l.ts.th[p][sc.bucket]}
 	mid := lo + i
