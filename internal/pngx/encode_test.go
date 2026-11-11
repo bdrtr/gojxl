@@ -3,9 +3,11 @@ package pngx
 import (
 	"bytes"
 	"compress/flate"
+	"encoding/binary"
 	"image"
 	"image/png"
 	"math/rand"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +63,56 @@ func TestEncode(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestEncodeAPNG(t *testing.T) {
+	rect := image.Rect(0, 0, 300, 2000) // several parallel strips
+	var frames []image.Image
+	for i := 0; i < 3; i++ {
+		m := image.NewNRGBA(rect)
+		for k := range m.Pix {
+			m.Pix[k] = byte(k*7 + i)
+		}
+		frames = append(frames, m)
+	}
+	var buf bytes.Buffer
+	if err := EncodeAPNG(&buf, frames, []float64{0.05, 0.1, 100}, 2, flate.BestSpeed); err != nil {
+		t.Fatal(err)
+	}
+	data := buf.Bytes()
+	// chunk walk: types in order and fcTL/fdAT sequence numbers
+	var types []string
+	seq := uint32(0)
+	for p := 8; p < len(data); {
+		n := int(binary.BigEndian.Uint32(data[p:]))
+		typ := string(data[p+4 : p+8])
+		body := data[p+8 : p+8+n]
+		if typ == "fcTL" || typ == "fdAT" {
+			if s := binary.BigEndian.Uint32(body); s != seq {
+				t.Fatalf("%s sequence %d, want %d", typ, s, seq)
+			}
+			seq++
+		}
+		if typ == "fcTL" {
+			num, den := binary.BigEndian.Uint16(body[20:]), binary.BigEndian.Uint16(body[22:])
+			t.Logf("delay %d/%d", num, den)
+		}
+		if len(types) == 0 || types[len(types)-1] != typ {
+			types = append(types, typ)
+		}
+		p += 12 + n
+	}
+	want := "IHDR acTL fcTL IDAT fcTL fdAT fcTL fdAT IEND"
+	if got := strings.Join(types, " "); got != want {
+		t.Fatalf("chunks %q, want %q", got, want)
+	}
+	// the default image is the first frame
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(img.(*image.NRGBA).Pix, frames[0].(*image.NRGBA).Pix) {
+		t.Fatal("default image differs from frame 0")
 	}
 }

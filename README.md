@@ -19,6 +19,7 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - LF frame'ler, referans frame'ler, tüm blend modları, animasyon, crop'lu katmanlar
 - Ekstra kanallar (alpha, premultiplied alpha, spot renkler), 1–32 bit tamsayı/float örnekler
 - ICC profil çözme (`UnpredictICC`), PNG çıktısına iCCP olarak gömme, yönlendirme (orientation)
+- Paralel PNG yazıcı; animasyonlu dosyalar APNG olarak yazılır (tüm kareler, süreler, döngü sayısı)
 - **Renk yönetimi** (saf Go CMS): XYB görüntüler orijinal uzaylarında çıkar —
   enum uzaylar (Display P3, Rec.2020/2100, DCI, gamma, doğrusal, PQ, HLG + OOTF)
   için ICC v4 profili sentezlenir; matris/TRC ICC profilleri (RGB ve gri)
@@ -74,7 +75,7 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 go build -o gojxl ./cmd/gojxl                       # taşınabilir, skaler
 GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekleri (amd64)
 
-./gojxl decode resim.jxl cikti.png          # JXL → PNG
+./gojxl decode resim.jxl cikti.png          # JXL → PNG (animasyon → APNG)
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
 ./gojxl decode foto.jxl foto.jpg            # yeniden sıkıştırılmış JPEG'i aynen geri ver
@@ -175,6 +176,6 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 ## Yol haritası
 
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
-- LZ77, grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+)
+- Grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+), daha hızlı JPEG dönüştürme
 - HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
-- APNG/animasyon çıktısı, akış (streaming) kod çözme
+- Akış (streaming) kod çözme, animasyon kodlama

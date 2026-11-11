@@ -139,11 +139,29 @@ func cmdDecode(args []string) {
 			fatal(err)
 		}
 		var buf bytes.Buffer
-		if err := pngx.Encode(&buf, img, flate.BestSpeed); err != nil {
+		info, ierr := gojxl.Stat(data)
+		var anim *gojxl.Animation
+		if ierr == nil && info.Animated {
+			if anim, err = gojxl.DecodeAll(data); err != nil {
+				fatal(err)
+			}
+		}
+		if anim != nil && len(anim.Frames) > 1 {
+			// animation: APNG with all displayed frames
+			frames := make([]image.Image, len(anim.Frames))
+			delays := make([]float64, len(anim.Frames))
+			for i, fr := range anim.Frames {
+				frames[i], delays[i] = fr.Image, fr.Duration
+			}
+			if err := pngx.EncodeAPNG(&buf, frames, delays, anim.NumLoops, flate.BestSpeed); err != nil {
+				fatal(err)
+			}
+			fmt.Fprintf(os.Stderr, "APNG: %d frames\n", len(frames))
+		} else if err := pngx.Encode(&buf, img, flate.BestSpeed); err != nil {
 			fatal(err)
 		}
 		out := buf.Bytes()
-		if info, err := gojxl.Stat(data); err == nil {
+		if ierr == nil {
 			if info.OutputICC != nil {
 				out = pngx.InsertICC(out, info.OutputICC)
 			}

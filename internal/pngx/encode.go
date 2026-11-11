@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"image"
 	"io"
+	"math"
 	"runtime"
 	"sync"
 )
@@ -19,53 +20,187 @@ import (
 // concatenate into one zlib stream (the Adler-32 sums are combined).
 // Supported: *image.Gray, *image.Gray16, *image.NRGBA, *image.NRGBA64.
 func Encode(w io.Writer, img image.Image, level int) error {
+	l, err := pixelLayout(img, !isOpaque(img))
+	if err != nil {
+		return err
+	}
+	z, err := compress(l, level)
+	if err != nil {
+		return err
+	}
+	out := &bytes.Buffer{}
+	writeHeader(out, l)
+	writeData(out, "IDAT", -1, z)
+	writeChunk(out, "IEND", nil)
+	_, err = w.Write(out.Bytes())
+	return err
+}
+
+// EncodeAPNG writes an animated PNG: frames (all of the same size and
+// type) shown for delays[i] seconds each, looping loops times (0 =
+// forever). The first frame is also the default image.
+func EncodeAPNG(w io.Writer, frames []image.Image, delays []float64, loops int, level int) error {
+	if len(frames) == 0 || len(delays) != len(frames) {
+		return errors.New("pngx: no frames")
+	}
+	alpha := false
+	for _, f := range frames {
+		if f.Bounds() != frames[0].Bounds() {
+			return errors.New("pngx: frames differ in size")
+		}
+		alpha = alpha || !isOpaque(f)
+	}
+	ls := make([]layout, len(frames))
+	for i, f := range frames {
+		l, err := pixelLayout(f, alpha)
+		if err != nil {
+			return err
+		}
+		if l.ctype != ls[0].ctype && i > 0 || i > 0 && l.depth != ls[0].depth {
+			return errors.New("pngx: frames differ in type")
+		}
+		ls[i] = l
+	}
+	out := &bytes.Buffer{}
+	writeHeader(out, ls[0])
+	var actl [8]byte
+	binary.BigEndian.PutUint32(actl[0:], uint32(len(frames)))
+	binary.BigEndian.PutUint32(actl[4:], uint32(loops))
+	writeChunk(out, "acTL", actl[:])
+	seq := uint32(0)
+	for i, l := range ls {
+		num, den := apngDelay(delays[i])
+		var fc [26]byte
+		binary.BigEndian.PutUint32(fc[0:], seq)
+		binary.BigEndian.PutUint32(fc[4:], uint32(l.w))
+		binary.BigEndian.PutUint32(fc[8:], uint32(l.h))
+		binary.BigEndian.PutUint16(fc[20:], num)
+		binary.BigEndian.PutUint16(fc[22:], den)
+		// dispose_op NONE, blend_op SOURCE (frames are full canvases)
+		writeChunk(out, "fcTL", fc[:])
+		seq++
+		z, err := compress(l, level)
+		if err != nil {
+			return err
+		}
+		if i == 0 {
+			writeData(out, "IDAT", -1, z)
+		} else {
+			seq = writeData(out, "fdAT", int64(seq), z)
+		}
+	}
+	writeChunk(out, "IEND", nil)
+	_, err := w.Write(out.Bytes())
+	return err
+}
+
+// apngDelay converts seconds to an APNG delay fraction.
+func apngDelay(sec float64) (uint16, uint16) {
+	for _, den := range []float64{1000, 100, 10, 1} {
+		if n := math.Round(sec * den); n <= 65535 {
+			return uint16(max(n, 0)), uint16(den)
+		}
+	}
+	return 65535, 1
+}
+
+type layout struct {
+	w, h, ctype, depth, bpp int
+	row                     func(y int, dst []byte)
+}
+
+func isOpaque(img image.Image) bool {
+	switch m := img.(type) {
+	case *image.NRGBA:
+		return opaque8(m)
+	case *image.NRGBA64:
+		return opaque16(m)
+	}
+	return true
+}
+
+// pixelLayout returns the PNG pixel format of img and a row converter;
+// alpha selects RGBA output for NRGBA images.
+func pixelLayout(img image.Image, alpha bool) (layout, error) {
 	b := img.Bounds()
 	W, H := b.Dx(), b.Dy()
+	l := layout{w: W, h: H}
 	if W <= 0 || H <= 0 {
-		return errors.New("png: empty image")
+		return l, errors.New("png: empty image")
 	}
-	var (
-		ctype, depth, bpp int
-		row               func(y int, dst []byte)
-	)
 	switch m := img.(type) {
 	case *image.Gray:
-		ctype, depth, bpp = 0, 8, 1
-		row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
+		l.ctype, l.depth, l.bpp = 0, 8, 1
+		l.row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
 	case *image.Gray16:
-		ctype, depth, bpp = 0, 16, 2
-		row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
+		l.ctype, l.depth, l.bpp = 0, 16, 2
+		l.row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
 	case *image.NRGBA:
-		depth = 8
-		if opaque8(m) {
-			ctype, bpp = 2, 3
-			row = func(y int, dst []byte) {
+		l.depth = 8
+		if !alpha {
+			l.ctype, l.bpp = 2, 3
+			l.row = func(y int, dst []byte) {
 				src := m.Pix[y*m.Stride : y*m.Stride+4*W]
 				for x := 0; x < W; x++ {
 					dst[3*x], dst[3*x+1], dst[3*x+2] = src[4*x], src[4*x+1], src[4*x+2]
 				}
 			}
 		} else {
-			ctype, bpp = 6, 4
-			row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
+			l.ctype, l.bpp = 6, 4
+			l.row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
 		}
 	case *image.NRGBA64:
-		depth = 16
-		if opaque16(m) {
-			ctype, bpp = 2, 6
-			row = func(y int, dst []byte) {
+		l.depth = 16
+		if !alpha {
+			l.ctype, l.bpp = 2, 6
+			l.row = func(y int, dst []byte) {
 				src := m.Pix[y*m.Stride : y*m.Stride+8*W]
 				for x := 0; x < W; x++ {
 					copy(dst[6*x:6*x+6], src[8*x:8*x+6])
 				}
 			}
 		} else {
-			ctype, bpp = 6, 8
-			row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
+			l.ctype, l.bpp = 6, 8
+			l.row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
 		}
 	default:
-		return errors.New("pngx: unsupported image type")
+		return l, errors.New("pngx: unsupported image type")
 	}
+	return l, nil
+}
+
+func writeHeader(out *bytes.Buffer, l layout) {
+	out.WriteString("\x89PNG\r\n\x1a\n")
+	var ihdr [13]byte
+	binary.BigEndian.PutUint32(ihdr[0:], uint32(l.w))
+	binary.BigEndian.PutUint32(ihdr[4:], uint32(l.h))
+	ihdr[8], ihdr[9] = byte(l.depth), byte(l.ctype)
+	writeChunk(out, "IHDR", ihdr[:])
+}
+
+// writeData writes zlib data as chunks of at most 1 MiB; for fdAT
+// (seq >= 0) each chunk starts with a sequence number. It returns the next
+// sequence number.
+func writeData(out *bytes.Buffer, typ string, seq int64, z []byte) uint32 {
+	const maxChunk = 1 << 20
+	for len(z) > 0 {
+		n := min(len(z), maxChunk)
+		if seq >= 0 {
+			d := binary.BigEndian.AppendUint32(make([]byte, 0, n+4), uint32(seq))
+			writeChunk(out, typ, append(d, z[:n]...))
+			seq++
+		} else {
+			writeChunk(out, typ, z[:n])
+		}
+		z = z[n:]
+	}
+	return uint32(seq)
+}
+
+// compress filters and deflates the image into a zlib stream, strips of
+// rows in parallel.
+func compress(l layout, level int) ([]byte, error) {
+	W, H, bpp, row := l.w, l.h, l.bpp, l.row
 	rowLen := W * bpp
 	stripRows := max(16, (1<<18)/(rowLen+1))
 	nstrips := (H + stripRows - 1) / stripRows
@@ -132,30 +267,20 @@ func Encode(w io.Writer, img image.Image, level int) error {
 	}
 	wg.Wait()
 	if werr != nil {
-		return werr
+		return nil, werr
 	}
-	out := &bytes.Buffer{}
-	out.WriteString("\x89PNG\r\n\x1a\n")
-	var ihdr [13]byte
-	binary.BigEndian.PutUint32(ihdr[0:], uint32(W))
-	binary.BigEndian.PutUint32(ihdr[4:], uint32(H))
-	ihdr[8], ihdr[9] = byte(depth), byte(ctype)
-	writeChunk(out, "IHDR", ihdr[:])
+	n := 2 + 4
+	for _, s := range strips {
+		n += len(s.data)
+	}
+	z := make([]byte, 0, n)
+	z = append(z, 0x78, 0x01)
 	ad := uint32(1)
-	for i, s := range strips {
-		d := s.data
-		if i == 0 {
-			d = append([]byte{0x78, 0x01}, d...)
-		}
+	for _, s := range strips {
+		z = append(z, s.data...)
 		ad = adler32Combine(ad, s.adler, s.rawLen)
-		if i == nstrips-1 {
-			d = binary.BigEndian.AppendUint32(d, ad)
-		}
-		writeChunk(out, "IDAT", d)
 	}
-	writeChunk(out, "IEND", nil)
-	_, err := w.Write(out.Bytes())
-	return err
+	return binary.BigEndian.AppendUint32(z, ad), nil
 }
 
 func writeChunk(out *bytes.Buffer, typ string, data []byte) {
