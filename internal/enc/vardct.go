@@ -24,6 +24,7 @@ type LossyOptions struct {
 	RDMu       float64 // rate weight in AC strategy decisions
 	Frame      FrameOpts
 	LibAQ      bool // libjxl's adaptive quantisation map
+	forceType  int  // tests: use only vtypes[forceType] (> 0)
 }
 
 func abs32(v float32) float32 {
@@ -208,10 +209,28 @@ func dequantAC(q int32, step, bias, numer float32) float32 {
 	return (f - numer/f) * step
 }
 
-type vtype struct{ acs, n, table, order int }
+// vtype is a varblock transform: cx x cy blocks (8x8 pixels each).
+type vtype struct{ acs, cx, cy, table, order int }
 
-// vtypes are the supported varblock types: DCT8, DCT16, DCT32.
-var vtypes = [3]vtype{{0, 1, 0, 0}, {4, 2, 4, 2}, {5, 4, 5, 3}}
+func (t vtype) rows() int { return 8 * t.cy }
+func (t vtype) cols() int { return 8 * t.cx }
+func (t vtype) size() int { return 64 * t.cx * t.cy }
+
+// isLLF reports whether coefficient idx (decoder storage layout) is one of
+// the cx x cy lowest frequencies, which are derived from the DC image.
+func (t vtype) isLLF(idx int) bool {
+	if t.cy < t.cx { // natural layout [ky][kx]
+		return idx/t.cols() < t.cy && idx%t.cols() < t.cx
+	}
+	return idx/t.rows() < t.cx && idx%t.rows() < t.cy // transposed [kx][ky]
+}
+
+// vtypes are the supported varblock types: DCT8, DCT16, DCT32, then the
+// rectangular DCT16x8 (tall), DCT8x16 (wide), DCT32x16 (tall), DCT16x32.
+var vtypes = [7]vtype{
+	{0, 1, 1, 0, 0}, {4, 2, 2, 4, 2}, {5, 4, 4, 5, 3},
+	{6, 1, 2, 6, 4}, {7, 2, 1, 6, 4}, {10, 2, 4, 8, 6}, {11, 4, 2, 8, 6},
+}
 
 var chanScale = [3]float32{0.8, 1, 1} // x_qm_scale 3, b_qm_scale 2
 
@@ -353,6 +372,85 @@ func fdctN(src []float32, stride, n int, out []float32) {
 	}
 }
 
+// fdctRect is fdctN for a rows x cols block; the output uses the decoder's
+// layout: natural [ky][kx] when rows < cols, else transposed [kx][ky].
+func fdctRect(src []float32, stride, rows, cols int, out []float32) {
+	if rows == cols {
+		fdctN(src, stride, rows, out)
+		return
+	}
+	var tmpA [32 * 32]float32
+	var col, scr [64]float32
+	tmp := tmpA[:rows*cols]
+	inv := 1 / float32(rows*cols)
+	for y := 0; y < rows; y++ {
+		r := tmp[y*cols : y*cols+cols]
+		copy(r, src[y*stride:y*stride+cols])
+		fdct1d(r, scr[:])
+	}
+	for kx := 0; kx < cols; kx++ {
+		c := col[:rows]
+		for y := 0; y < rows; y++ {
+			c[y] = tmp[y*cols+kx]
+		}
+		fdct1d(c, scr[:])
+		for ky, v := range c {
+			if rows < cols {
+				out[ky*cols+kx] = v * inv
+			} else {
+				out[kx*rows+ky] = v * inv
+			}
+		}
+	}
+}
+
+// rowDCTCache holds, for a 32x32 pixel cell and each channel, the
+// unnormalised horizontal DCTs of every row over aligned segments of 8, 16
+// and 32 pixels, shared by all transform candidates of the cell.
+type rowDCTCache struct {
+	h [3][3][32 * 32]float32 // [channel][log2(len/8)][y*32 + x]
+}
+
+func (r *rowDCTCache) compute(c int, plane []float32, pw, ph, bx0, by0 int) {
+	rows := min(32, ph-by0*8)
+	cols := min(32, pw-bx0*8)
+	var scr [64]float32
+	for li, L := range [3]int{8, 16, 32} {
+		h := &r.h[c][li]
+		for y := 0; y < rows; y++ {
+			src := plane[(by0*8+y)*pw+bx0*8:]
+			for s := 0; (s+1)*L <= cols; s++ {
+				seg := h[y*32+s*L : y*32+s*L+L]
+				copy(seg, src[s*L:s*L+L])
+				fdct1d(seg, scr[:])
+			}
+		}
+	}
+}
+
+// coef is fdctRect of the vt block at pixel offset (ox, oy) of the cell.
+func (r *rowDCTCache) coef(c int, vt vtype, ox, oy int, out []float32) {
+	rows, cols := vt.rows(), vt.cols()
+	li := bits.TrailingZeros(uint(cols / 8))
+	h := &r.h[c][li]
+	inv := 1 / float32(rows*cols)
+	var col, scr [64]float32
+	for kx := 0; kx < cols; kx++ {
+		cl := col[:rows]
+		for y := 0; y < rows; y++ {
+			cl[y] = h[(oy+y)*32+ox+kx]
+		}
+		fdct1d(cl, scr[:])
+		for ky, v := range cl {
+			if rows < cols {
+				out[ky*cols+kx] = v * inv
+			} else {
+				out[kx*rows+ky] = v * inv
+			}
+		}
+	}
+}
+
 // fdctNRef is the direct O(N^3) reference.
 func fdctNRef(src []float32, stride, n int, out []float32) {
 	bas := dctBasisN(n)
@@ -380,23 +478,30 @@ func fdctNRef(src []float32, stride, n int, out []float32) {
 	}
 }
 
-// llfToDC derives the k x k block DC values (row-major) that reproduce the
-// lowest frequencies of an n=8k transform in the decoder.
-func llfToDC(coef []float32, k int, dc []float32) {
-	n := 8 * k
-	if k == 1 {
+// llfToDC derives the cy x cx block DC values (row-major) that reproduce
+// the lowest frequencies of a varblock transform in the decoder.
+func llfToDC(coef []float32, t vtype, dc []float32) {
+	cx, cy := t.cx, t.cy
+	if cx == 1 && cy == 1 {
 		dc[0] = coef[0]
 		return
 	}
-	// natural LLF L[ky][kx] = coef[kx*n+ky], unscaled
+	// natural LLF L[ky][kx], unscaled
 	var L [16]float32
-	for ky := 0; ky < k; ky++ {
-		for kx := 0; kx < k; kx++ {
-			L[ky*k+kx] = coef[kx*n+ky] / (jxl.ResampleScale(k, ky) * jxl.ResampleScale(k, kx))
+	for ky := 0; ky < cy; ky++ {
+		for kx := 0; kx < cx; kx++ {
+			var v float32
+			if cy < cx {
+				v = coef[ky*t.cols()+kx]
+			} else {
+				v = coef[kx*t.rows()+ky]
+			}
+			L[ky*cx+kx] = v / (jxl.ResampleScale(cy, ky) * jxl.ResampleScale(cx, kx))
 		}
 	}
-	// k x k scaled IDCT: x[i] = c0 + sqrt2 sum c_j cos(pi(2i+1)j/2k)
+	// k-point scaled IDCT: x[i] = c0 + sqrt2 sum c_j cos(pi(2i+1)j/2k)
 	idct := func(c []float32, out []float32) {
+		k := len(c)
 		for i := 0; i < k; i++ {
 			v := float64(c[0])
 			for j := 1; j < k; j++ {
@@ -406,46 +511,72 @@ func llfToDC(coef []float32, k int, dc []float32) {
 		}
 	}
 	var tmp [16]float32
-	var row, col [4]float32
-	for ky := 0; ky < k; ky++ {
-		idct(L[ky*k:ky*k+k], row[:k])
-		copy(tmp[ky*k:], row[:k])
+	var row, col, o [4]float32
+	for ky := 0; ky < cy; ky++ {
+		idct(L[ky*cx:ky*cx+cx], row[:cx])
+		copy(tmp[ky*cx:], row[:cx])
 	}
-	for x := 0; x < k; x++ {
-		for ky := 0; ky < k; ky++ {
-			col[ky] = tmp[ky*k+x]
+	for x := 0; x < cx; x++ {
+		for ky := 0; ky < cy; ky++ {
+			col[ky] = tmp[ky*cx+x]
 		}
-		var o [4]float32
-		idct(col[:k], o[:k])
-		for y := 0; y < k; y++ {
-			dc[y*k+x] = o[y]
+		idct(col[:cy], o[:cy])
+		for y := 0; y < cy; y++ {
+			dc[y*cx+x] = o[y]
 		}
 	}
 }
 
 // rdCost estimates distortion (in units of step^2, pixel domain via
 // Parseval) and rate for a block's AC coefficients.
-func rdCost(coef, mult []float32, order []int32, k int, step float32, cw float64) (float64, float64) {
-	n := 8 * k
-	var r, d float64
-	last := k * k
-	for i := k * k; i < n*n; i++ {
-		p := order[i]
-		st := mult[p] * step
-		q := quantAC(coef[p], st)
-		e := float64(coef[p] - dequantAC(q, st, 0.95, 0.145))
-		d += e * e
-		if q != 0 {
-			if q < 0 {
-				q = -q
-			}
-			r += 3.5 + 2*math.Log2(float64(q))
-			last = i + 1
-		}
+func rdCost(coef, mult []float32, order []int32, t vtype, step float32, cw float64) (float64, float64) {
+	st := make([]float32, len(mult))
+	inv := make([]float32, len(mult))
+	for i, m := range mult {
+		st[i] = m * step
+		inv[i] = 1 / st[i]
 	}
-	r += 0.35*float64(last-k*k) + 5
+	return rdCostPre(coef, st, inv, order, t, step, cw)
+}
+
+// log2Tab[q] = 3.5 + 2*log2(q), the rate estimate of a non-zero |q|.
+var log2Tab = func() (t [256]float64) {
+	for q := 1; q < 256; q++ {
+		t[q] = 3.5 + 2*math.Log2(float64(q))
+	}
+	return
+}()
+
+// rdCostPre is rdCost with precomputed quantisation steps (st) and their
+// inverses (inv) per coefficient.
+func rdCostPre(coef, st, inv []float32, order []int32, t vtype, step float32, cw float64) (float64, float64) {
+	nllf, sz := t.cx*t.cy, t.size()
+	var r, d float64
+	last := nllf
+	for i := nllf; i < sz; i++ {
+		p := order[i]
+		v := coef[p]
+		x := v * inv[p]
+		if x < 0.6 && x > -0.6 {
+			d += float64(v * v)
+			continue
+		}
+		q := int32(math.Round(float64(x)))
+		e := float64(v - dequantAC(q, st[p], 0.95, 0.145))
+		d += e * e
+		if q < 0 {
+			q = -q
+		}
+		if q < 256 {
+			r += log2Tab[q]
+		} else {
+			r += 3.5 + 2*math.Log2(float64(q))
+		}
+		last = i + 1
+	}
+	r += 0.35*float64(last-nllf) + 5
 	ref := float64(step) * refMult
-	return d * float64(n*n) * cw / (ref * ref), r
+	return d * float64(sz) * cw / (ref * ref), r
 }
 
 // writeModularLocal writes a self-contained modular stream (own tree).
@@ -575,8 +706,8 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	}
 	op := jxl.OpsinInverseDefault()
 	biases, numer := op.QuantBias, op.QuantBiasNumerator
-	var tmul [3][3][]float32
-	var torder [3][]int32
+	var tmul [len(vtypes)][3][]float32
+	var torder [len(vtypes)][]int32
 	for i, t := range vtypes {
 		tmul[i] = jxl.QuantMultipliers(t.table)
 		torder[i] = jxl.NaturalOrder(t.order)
@@ -594,70 +725,117 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	if mu <= 0 {
 		mu = 0.5
 	}
-	if !opt.OnlyDCT8 {
+	if opt.forceType > 0 { // tests: tile with one transform type
+		ft := opt.forceType
+		vt := vtypes[ft]
+		for by := 0; by+vt.cy <= bh; by += vt.cy {
+			for bx := 0; bx+vt.cx <= bw; bx += vt.cx {
+				if (bx%32)+vt.cx > 32 || (by%32)+vt.cy > 32 {
+					continue
+				}
+				for y := 0; y < vt.cy; y++ {
+					for x := 0; x < vt.cx; x++ {
+						i := (by+y)*bw + bx + x
+						vtyp[i] = int8(ft)
+						first[i] = x == 0 && y == 0
+					}
+				}
+			}
+		}
+	} else if !opt.OnlyDCT8 {
+		var selSt, selInv [len(vtypes)][3][]float32
+		for ti := range vtypes {
+			for c := 0; c < 3; c++ {
+				m := tmul[ti][c]
+				selSt[ti][c] = make([]float32, len(m))
+				selInv[ti][c] = make([]float32, len(m))
+				for i, v := range m {
+					selSt[ti][c][i] = v * baseStep
+					selInv[ti][c][i] = 1 / (v * baseStep)
+				}
+			}
+		}
 		cw4, ch4 := (bw+3)/4, (bh+3)/4
 		parallel(ch4, func(cy int) {
 			var buf []float32
+			var rc rowDCTCache
 			for cx := 0; cx < cw4; cx++ {
 				bx0, by0 := cx*4, cy*4
+				for c := 0; c < 3; c++ {
+					rc.compute(c, xyb[c], pw, ph, bx0, by0)
+				}
 				cost := func(ti, bx, by int) float64 {
-					n := vtypes[ti].n * 8
-					if bx*8+n > pw || by*8+n > ph {
+					vt := vtypes[ti]
+					if bx*8+vt.cols() > pw || by*8+vt.rows() > ph || bx+vt.cx > bw || by+vt.cy > bh {
 						return math.Inf(1)
 					}
-					if len(buf) < n*n {
-						buf = make([]float32, n*n)
+					sz := vt.size()
+					if len(buf) < sz {
+						buf = make([]float32, sz)
 					}
 					var j float64
 					for c := 0; c < 3; c++ {
-						fdctN(xyb[c][(by*8)*pw+bx*8:], pw, n, buf[:n*n])
-						dd, rr := rdCost(buf[:n*n], tmul[ti][c], torder[ti], vtypes[ti].n, baseStep, chanDistW[c])
+						rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
+						dd, rr := rdCostPre(buf[:sz], selSt[ti][c], selInv[ti][c], torder[ti], vt, baseStep, chanDistW[c])
 						j += dd/64 + mu*rr
 					}
 					return j
 				}
 				set := func(ti, bx, by int) {
-					n := vtypes[ti].n
-					for y := 0; y < n; y++ {
-						for x := 0; x < n; x++ {
+					vt := vtypes[ti]
+					for y := 0; y < vt.cy; y++ {
+						for x := 0; x < vt.cx; x++ {
 							i := (by+y)*bw + bx + x
 							vtyp[i] = int8(ti)
 							first[i] = x == 0 && y == 0
 						}
 					}
 				}
-				var sub [4]float64
-				var subT [4]int
-				for k := 0; k < 4; k++ {
-					sx, sy := bx0+2*(k%2), by0+2*(k/2)
+				// candidates per 2x2 quad: DCT16, or two tall (DCT16x8 /
+				// 2 DCT8) or two wide (DCT8x16 / 2 DCT8) halves; per 4x4
+				// cell: DCT32, or two tall (DCT32x16 / quads) or two wide
+				// (DCT16x32 / quads) halves. DCT8 is the default.
+				type place struct{ ti, bx, by int }
+				type plan struct {
+					cost float64
+					ps   []place
+				}
+				join := func(a, b plan) plan {
+					return plan{a.cost + b.cost, append(append([]place(nil), a.ps...), b.ps...)}
+				}
+				better := func(a, b plan) plan {
+					if b.cost < a.cost {
+						return b
+					}
+					return a
+				}
+				one := func(ti, x, y int) plan { return plan{cost(ti, x, y), []place{{ti, x, y}}} }
+				c8 := func(x, y int) plan {
+					if x >= bw || y >= bh {
+						return plan{}
+					}
+					return plan{cost(0, x, y), nil}
+				}
+				quad := func(sx, sy int) plan {
 					if sx >= bw || sy >= bh {
-						continue
+						return plan{}
 					}
-					c8 := 0.0
-					for j := 0; j < 4; j++ {
-						x, y := sx+j%2, sy+j/2
-						if x < bw && y < bh {
-							c8 += cost(0, x, y)
-						}
-					}
-					c16 := math.Inf(1)
-					if sx+2 <= bw && sy+2 <= bh {
-						c16 = cost(1, sx, sy)
-					}
-					if c16 < c8 {
-						sub[k], subT[k] = c16, 1
-					} else {
-						sub[k], subT[k] = c8, 0
-					}
+					a, b, c, e := c8(sx, sy), c8(sx+1, sy), c8(sx, sy+1), c8(sx+1, sy+1)
+					left := better(join(a, c), one(3, sx, sy))
+					right := better(join(b, e), one(3, sx+1, sy))
+					top := better(join(a, b), one(4, sx, sy))
+					bottom := better(join(c, e), one(4, sx, sy+1))
+					p := better(join(left, right), join(top, bottom))
+					return better(p, one(1, sx, sy))
 				}
-				if bx0+4 <= bw && by0+4 <= bh && cost(2, bx0, by0) < sub[0]+sub[1]+sub[2]+sub[3] {
-					set(2, bx0, by0)
-					continue
-				}
-				for k := 0; k < 4; k++ {
-					if subT[k] == 1 {
-						set(1, bx0+2*(k%2), by0+2*(k/2))
-					}
+				q := [4]plan{quad(bx0, by0), quad(bx0+2, by0), quad(bx0, by0+2), quad(bx0+2, by0+2)}
+				left := better(join(q[0], q[2]), one(5, bx0, by0))
+				right := better(join(q[1], q[3]), one(5, bx0+2, by0))
+				top := better(join(q[0], q[1]), one(6, bx0, by0))
+				bottom := better(join(q[2], q[3]), one(6, bx0, by0+2))
+				best := better(better(join(left, right), join(top, bottom)), one(2, bx0, by0))
+				for _, pl := range best.ps {
+					set(pl.ti, pl.bx, pl.by)
 				}
 			}
 		})
@@ -673,19 +851,16 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	thh := (bh + 7) / 8
 	rowSums := make([][]float64, bh)
 	coefOf := func(ti, bx, by int, out *[3][]float32) {
-		n := vtypes[ti].n * 8
+		vt := vtypes[ti]
+		sz := vt.size()
 		for c := 0; c < 3; c++ {
-			if len(out[c]) < n*n {
-				out[c] = make([]float32, n*n)
+			if len(out[c]) < sz {
+				out[c] = make([]float32, sz)
 			}
-			fdctN(xyb[c][(by*8)*pw+bx*8:], pw, n, out[c][:n*n])
+			fdctRect(xyb[c][(by*8)*pw+bx*8:], pw, vt.rows(), vt.cols(), out[c][:sz])
 		}
 	}
-	isLLF := func(ti, idx int) bool {
-		k := vtypes[ti].n
-		n := k * 8
-		return idx/n < k && idx%n < k
-	}
+	isLLF := func(ti, idx int) bool { return vtypes[ti].isLLF(idx) }
 	stepsOf := func(b int) [3]float32 {
 		bs := float32(65536.0) / float32(gs) / float32(bqf[b])
 		return [3]float32{bs * chanScale[0], bs * chanScale[1], bs * chanScale[2]}
@@ -699,23 +874,23 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				continue
 			}
 			ti := int(vtyp[b])
-			k := vtypes[ti].n
-			n := k * 8
+			vt := vtypes[ti]
+			cxb, cyb, nn := vt.cx, vt.cy, vt.size()
 			coefOf(ti, bx, by, &coef)
 			bq := qf
 			if aqMap != nil {
 				// AdjustQuantField: max over the covered blocks, mixed
 				// with the mean for large transforms at high distances
 				mx, mean := float32(0), float32(0)
-				for iy := 0; iy < k; iy++ {
-					for ix := 0; ix < k; ix++ {
+				for iy := 0; iy < cyb; iy++ {
+					for ix := 0; ix < cxb; ix++ {
 						v := aqMap[(by+iy)*bw+bx+ix]
 						mx = max(mx, v)
 						mean += v
 					}
 				}
-				mean /= float32(k * k)
-				if k*k >= 4 {
+				mean /= float32(cxb * cyb)
+				if cxb*cyb >= 4 {
 					mix := float32(1)
 					if d > 1.54138 {
 						mix = max(1-(d-1.54138)*0.56391, 0)
@@ -726,12 +901,12 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				bq = min(max(bq, 1), 256)
 			} else if aqStrength > 0 {
 				var act float32
-				for i := 0; i < n*n; i++ {
+				for i := 0; i < nn; i++ {
 					if !isLLF(ti, i) {
 						act += abs32(coef[1][i])
 					}
 				}
-				act /= float32(k * k)
+				act /= float32(cxb * cyb)
 				m := float32(math.Pow(float64(0.02/(act+0.02)), float64(aqStrength)))
 				bq = int32(math.Round(float64(float32(qf) * min(max(m*1.6, 0.5), 2.5))))
 				bq = min(max(bq, 1), 256)
@@ -741,36 +916,36 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			// DC values per covered block from the LLF coefficients
 			var dcv [3][16]float32
 			for c := 0; c < 3; c++ {
-				llfToDC(coef[c], k, dcv[c][:k*k])
+				llfToDC(coef[c], vt, dcv[c][:cxb*cyb])
 			}
-			for iy := 0; iy < k; iy++ {
-				for ix := 0; ix < k; ix++ {
+			for iy := 0; iy < cyb; iy++ {
+				for ix := 0; ix < cxb; ix++ {
 					i := (by+iy)*bw + bx + ix
-					j := iy*k + ix
+					j := iy*cxb + ix
 					qy := int32(math.Round(float64(dcv[1][j] / mulDC[1])))
 					qdc[1][i] = qy
 					qdc[0][i] = int32(math.Round(float64(dcv[0][j] / mulDC[0])))
 					qdc[2][i] = int32(math.Round(float64((dcv[2][j] - float32(qy)*mulDC[1]) / mulDC[2])))
 				}
 			}
-			q := make([]int32, 3*n*n)
+			q := make([]int32, 3*nn)
 			mY := tmul[ti][1]
 			t := bx / 8
-			for i := 0; i < n*n; i++ {
+			for i := 0; i < nn; i++ {
 				if isLLF(ti, i) {
 					continue
 				}
 				st := mY[i] * steps[1]
-				q[n*n+i] = quantAC(coef[1][i], st)
-				yd := float64(dequantAC(q[n*n+i], st, biases[1], numer))
+				q[nn+i] = quantAC(coef[1][i], st)
+				yd := float64(dequantAC(q[nn+i], st, biases[1], numer))
 				sums[3*t] += float64(coef[0][i]) * yd
 				sums[3*t+1] += float64(coef[2][i]) * yd
 				sums[3*t+2] += yd * yd
 			}
 			vq[b] = q
-			cc := make([]float32, 2*n*n)
-			copy(cc, coef[0][:n*n])
-			copy(cc[n*n:], coef[2][:n*n])
+			cc := make([]float32, 2*nn)
+			copy(cc, coef[0][:nn])
+			copy(cc[nn:], coef[2][:nn])
 			vc[b] = cc
 		}
 		rowSums[by] = sums
@@ -803,21 +978,21 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				continue
 			}
 			ti := int(vtyp[b])
-			n := vtypes[ti].n * 8
-			coef[0], coef[2] = vc[b][:n*n], vc[b][n*n:]
+			nn := vtypes[ti].size()
+			coef[0], coef[2] = vc[b][:nn], vc[b][nn:]
 			steps := stepsOf(b)
 			tix := (by/8)*tw + bx/8
 			kx := float32(ytox[tix]) / 84
 			kb := 1 + float32(ytob[tix])/84
 			q := vq[b]
 			mm := tmul[ti]
-			for i := 0; i < n*n; i++ {
+			for i := 0; i < nn; i++ {
 				if isLLF(ti, i) {
 					continue
 				}
-				yd := dequantAC(q[n*n+i], mm[1][i]*steps[1], biases[1], numer)
+				yd := dequantAC(q[nn+i], mm[1][i]*steps[1], biases[1], numer)
 				q[i] = quantAC(coef[0][i]-kx*yd, mm[0][i]*steps[0])
-				q[2*n*n+i] = quantAC(coef[2][i]-kb*yd, mm[2][i]*steps[2])
+				q[2*nn+i] = quantAC(coef[2][i]-kb*yd, mm[2][i]*steps[2])
 			}
 			vc[b] = nil
 		}
@@ -852,12 +1027,12 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				}
 				ti := int(vtyp[b])
 				vt := vtypes[ti]
-				nbk := int32(vt.n * vt.n)
+				nbk := int32(vt.cx * vt.cy)
 				lg := uint(bits.TrailingZeros32(uint32(nbk)))
-				n := vt.n * 8
+				nn := vt.size()
 				ord := torder[ti]
 				for i, c := range chanOrder {
-					q := vq[b][c*n*n : (c+1)*n*n]
+					q := vq[b][c*nn : (c+1)*nn]
 					bctx := int(bctxMap[i*13+vt.order])
 					sx, sy := bx-bx0, by-by0
 					var pred int32
@@ -876,14 +1051,14 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 						pidx = 4 + pred/2
 					}
 					nz := int32(0)
-					for k := int(nbk); k < n*n; k++ {
+					for k := int(nbk); k < nn; k++ {
 						if q[ord[k]] != 0 {
 							nz++
 						}
 					}
 					emit(bctx+int(pidx)*numBlockCtx, uint32(nz))
 					nzv := (nz + nbk - 1) >> lg
-					for dx := 0; dx < vt.n; dx++ {
+					for dx := 0; dx < vt.cx; dx++ {
 						nzRow[c][sx+dx] = nzv
 					}
 					if nz == 0 {
@@ -894,7 +1069,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					if nz <= 4*nbk {
 						prev = 1
 					}
-					for k := int(nbk); k < n*n && nz > 0; k++ {
+					for k := int(nbk); k < nn && nz > 0; k++ {
 						v := q[ord[k]]
 						ctx := base + (int(nzCtx[(nz-1)>>lg])+int(freqCtx[(k-int(nbk))>>lg]))*2 + prev
 						emit(ctx, bitio.PackSigned(v))
