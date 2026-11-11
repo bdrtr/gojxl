@@ -230,6 +230,22 @@ func cmdEncode(args []string) {
 		}
 		fmt.Fprintf(os.Stderr, "JPEG recompression not possible (%v); encoding pixels\n", err)
 	}
+	// animated GIF/APNG input: one JPEG XL animation
+	if anim, err := gojxl.DecodeAnimatedInput(raw); err != nil {
+		fatal(err)
+	} else if anim != nil {
+		t0 := time.Now()
+		data, err := gojxl.EncodeAnimation(anim, &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist)})
+		if err != nil {
+			fatal(err)
+		}
+		if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
+			fatal(err)
+		}
+		b := anim.Frames[0].Image.Bounds()
+		fmt.Fprintf(os.Stderr, "%dx%d, %d frames, %d bytes, %v\n", b.Dx(), b.Dy(), len(anim.Frames), len(data), time.Since(t0))
+		return
+	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		fatal(err)

@@ -27,6 +27,21 @@ type Image struct {
 type Options struct {
 	// Effort selects the context model (1 = fastest; 4+ = learned MA tree).
 	Effort int
+	// Animation: set Anim on every frame; the first frame carries the image
+	// header, later ones set NoImageHeader. All but the last set NotLast.
+	Anim          *Anim
+	Duration      uint32 // ticks
+	NotLast       bool
+	NoImageHeader bool
+	// Crop places the (smaller) image at CropX0, CropY0 over the previous
+	// animation frame.
+	Crop           bool
+	CropX0, CropY0 int
+}
+
+// Anim is the animation header: ticks per second TpsNum/TpsDen.
+type Anim struct {
+	TpsNum, TpsDen, Loops uint32
 }
 
 const groupDim = 256
@@ -49,11 +64,21 @@ func writeBitDepth(w *bitio.Writer, bd int) {
 	w.WriteU32(uint32(bd), val(8), val(10), val(12), bitsOff(6, 1))
 }
 
-func writeImageHeader(w *bitio.Writer, im *Image) {
+func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	w.Write(16, 0x0aff)
 	writeSize(w, im.W, im.H)
 	w.WriteBool(false) // metadata not all default
-	w.WriteBool(false) // no extra fields
+	w.WriteBool(anim != nil)
+	if anim != nil {
+		w.Write(3, 0)      // orientation
+		w.WriteBool(false) // no intrinsic size
+		w.WriteBool(false) // no preview
+		w.WriteBool(true)  // animation
+		w.WriteU32(anim.TpsNum, val(100), val(1000), bitsOff(10, 1), bitsOff(30, 1))
+		w.WriteU32(anim.TpsDen, val(1), val(1001), bitsOff(8, 1), bitsOff(10, 1))
+		w.WriteU32(anim.Loops, val(0), bitio.Bits(3), bitio.Bits(16), bitio.Bits(32))
+		w.WriteBool(false) // no timecodes
+	}
 	writeBitDepth(w, im.BitDepth)
 	w.WriteBool(im.BitDepth <= 12) // modular_16bit_buffers
 	nec := 0
@@ -86,12 +111,15 @@ func writeImageHeader(w *bitio.Writer, im *Image) {
 		w.WriteEnum(13)    // sRGB transfer
 		w.WriteEnum(1)     // relative intent
 	}
+	if anim != nil {
+		w.WriteBool(true) // default tone mapping
+	}
 	w.WriteU64(0)     // extensions
 	w.WriteBool(true) // default transform data
 	w.ZeroPadToByte()
 }
 
-func writeFrameHeader(w *bitio.Writer, im *Image) {
+func writeFrameHeader(w *bitio.Writer, im *Image, opt Options) {
 	w.WriteBool(false) // not all default
 	w.Write(2, 0)      // regular frame
 	w.Write(1, 1)      // modular
@@ -103,12 +131,40 @@ func writeFrameHeader(w *bitio.Writer, im *Image) {
 	}
 	w.Write(2, 1)                                        // group_size_shift: 256
 	w.WriteU32(1, val(1), val(2), val(3), bitsOff(3, 4)) // one pass
-	w.WriteBool(false)                                   // no crop
-	w.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3)) // blend replace
+	w.WriteBool(opt.Crop)
+	if opt.Crop {
+		cd := [4]bitio.U32Dist{bitio.Bits(8), bitsOff(11, 256), bitsOff(14, 2304), bitsOff(30, 18688)}
+		w.WriteU32(bitio.PackSigned(int32(opt.CropX0)), cd[0], cd[1], cd[2], cd[3])
+		w.WriteU32(bitio.PackSigned(int32(opt.CropY0)), cd[0], cd[1], cd[2], cd[3])
+		w.WriteU32(uint32(im.W), cd[0], cd[1], cd[2], cd[3])
+		w.WriteU32(uint32(im.H), cd[0], cd[1], cd[2], cd[3])
+	}
+	// blend replace; a cropped frame replaces part of reference 1
+	w.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
+	if opt.Crop {
+		w.Write(2, 1)
+	}
 	if im.Alpha {
 		w.WriteU32(0, val(0), val(1), val(2), bitsOff(2, 3))
+		if opt.Crop {
+			w.Write(2, 1)
+		}
 	}
-	w.WriteBool(true)                                                     // is_last
+	if opt.Anim != nil {
+		w.WriteU32(opt.Duration, val(0), val(1), bitio.Bits(8), bitio.Bits(32))
+	}
+	w.WriteBool(!opt.NotLast) // is_last
+	if opt.NotLast {
+		// animation frames are kept as reference 1 for cropped successors
+		sar := uint64(0)
+		if opt.Anim != nil {
+			sar = 1
+		}
+		w.Write(2, sar)
+		if !opt.Crop && (opt.Duration == 0 || sar != 0) {
+			w.WriteBool(false) // save_before_ct
+		}
+	}
 	w.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48)) // name
 	// restoration filter: no gaborish, no EPF
 	w.WriteBool(false)
@@ -803,8 +859,10 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		writeStream(lfg, dc, 0, streamSamples(chs, global))
 
 		out := &bitio.Writer{}
-		writeImageHeader(out, im)
-		writeFrameHeader(out, im)
+		if !opt.NoImageHeader {
+			writeImageHeader(out, im, opt.Anim)
+		}
+		writeFrameHeader(out, im, opt)
 		if single {
 			sec := lfg.Bytes()
 			out.WriteBool(false) // no permutation
