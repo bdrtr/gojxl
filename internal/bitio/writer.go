@@ -116,3 +116,11 @@ func (w *Writer) WriteEnum(v uint32) {
 func PackSigned(v int32) uint32 {
 	return uint32(v<<1) ^ uint32(v>>31)
 }
+
+// AppendWriter appends all bits written to o.
+func (w *Writer) AppendWriter(o *Writer) {
+	for _, c := range o.buf {
+		w.Write(8, uint64(c))
+	}
+	w.Write(o.n, o.acc)
+}

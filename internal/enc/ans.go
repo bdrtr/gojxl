@@ -193,8 +193,26 @@ func writeANSCode(w *bitio.Writer, h *histograms) *ansCode {
 // writeANSCodeCM writes an ANS code; cm maps contexts to the histograms in
 // h (nil = identity).
 func writeANSCodeCM(w *bitio.Writer, h *histograms, cm []uint8) *ansCode {
+	return writeANSCodeLZ(w, h, cm, nil)
+}
+
+// lz77Params are the LZ77 stream parameters of an entropy code.
+type lz77Params struct {
+	minSym, minLen uint32
+	lenCfg         uintCfg
+}
+
+// writeANSCodeLZ is writeANSCodeCM with optional LZ77 (cm then has one
+// extra, final entry for the distance context).
+func writeANSCodeLZ(w *bitio.Writer, h *histograms, cm []uint8, lz *lz77Params) *ansCode {
 	n := len(h.counts)
-	w.WriteBool(false) // lz77
+	w.WriteBool(lz != nil)
+	if lz != nil {
+		val, bo := bitio.Val, bitio.BitsOff
+		w.WriteU32(lz.minSym, val(224), val(512), val(4096), bo(15, 8))
+		w.WriteU32(lz.minLen, val(3), val(4), bo(2, 5), bo(8, 9))
+		lz.lenCfg.write(w, 8)
+	}
 	if cm != nil {
 		if len(cm) > 1 {
 			writeContextMap(w, cm, n)
@@ -255,6 +273,14 @@ func (s *ansStream) add(ctx int, v uint32) {
 		ctx = int(s.c.cm[ctx])
 	}
 	tok, nb, bv := s.c.cfgs[ctx].encode(v)
+	s.toks = append(s.toks, ansToken{ctx: uint16(ctx), tok: uint16(tok), nb: uint8(nb), bits: bv, chunk: -1})
+}
+
+// addTok adds a raw token with its extra bits.
+func (s *ansStream) addTok(ctx int, tok uint32, nb uint, bv uint32) {
+	if s.c.cm != nil {
+		ctx = int(s.c.cm[ctx])
+	}
 	s.toks = append(s.toks, ansToken{ctx: uint16(ctx), tok: uint16(tok), nb: uint8(nb), bits: bv, chunk: -1})
 }
 

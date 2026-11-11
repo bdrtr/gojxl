@@ -477,3 +477,9 @@ func (d *decoder) metaBlock(mlen, maxBackward int, dist *[4]int) error {
 	}
 	return nil
 }
+
+// ContextID returns the literal context for mode (0 LSB6, 1 MSB6, 2 UTF8,
+// 3 signed) given the two previous bytes.
+func ContextID(mode int, p1, p2 byte) uint8 {
+	return contextLUT[mode<<9+int(p1)] | contextLUT[mode<<9+256+int(p2)]
+}

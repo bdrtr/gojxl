@@ -153,9 +153,9 @@ func TranscodeJPEG(data []byte) (out []byte, err error) {
 		return nil, err
 	}
 	// reconstruction data so the original file can be restored exactly
-	jbrd, err := enc.EncodeJBRD(j)
+	jbrd, exif, xmp, err := enc.EncodeJBRD(j)
 	if err != nil {
 		return cs, nil
 	}
-	return enc.WrapContainer(cs, jbrd), nil
+	return enc.WrapContainer(cs, jbrd, exif, xmp), nil
 }

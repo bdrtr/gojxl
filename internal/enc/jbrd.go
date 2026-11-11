@@ -36,11 +36,13 @@ func brotliStored(data []byte) []byte {
 	return w.Bytes()
 }
 
-// EncodeJBRD serialises the reconstruction data of a parsed JPEG.
-func EncodeJBRD(j *jpeg.Image) (out []byte, err error) {
+// EncodeJBRD serialises the reconstruction data of a parsed JPEG. The
+// first Exif and XMP APP1 payloads are returned separately for the
+// container's Exif and xml boxes, which the jbrd box refers to.
+func EncodeJBRD(j *jpeg.Image) (out, exif, xmp []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			out, err = nil, fmt.Errorf("%w (%v)", errJBRD, r)
+			out, exif, xmp, err = nil, nil, nil, fmt.Errorf("%w (%v)", errJBRD, r)
 		}
 	}()
 	w := &bitio.Writer{}
@@ -71,9 +73,23 @@ func EncodeJBRD(j *jpeg.Image) (out []byte, err error) {
 		}
 	}
 	if len(j.MarkerOrder) == 0 || j.MarkerOrder[len(j.MarkerOrder)-1] != 0xd9 || scans != len(j.Scans) {
-		return nil, errJBRD
+		return nil, nil, nil, errJBRD
 	}
 	types := iccMarkerTypes(j)
+	const exifTag, xmpTag = "Exif\x00\x00", "http://ns.adobe.com/xap/1.0/\x00"
+	for i, a := range j.AppData {
+		if a[0] != 0xe1 || types[i] != 0 || len(a) < 3 || int(a[1])<<8|int(a[2]) != len(a)-1 {
+			continue
+		}
+		p := a[3:]
+		if exif == nil && len(p) > len(exifTag) && string(p[:len(exifTag)]) == exifTag {
+			types[i] = 2
+			exif = p[len(exifTag):]
+		} else if xmp == nil && len(p) >= len(xmpTag) && string(p[:len(xmpTag)]) == xmpTag {
+			types[i] = 3
+			xmp = p[len(xmpTag):]
+		}
+	}
 	for i, a := range j.AppData {
 		// 0: stored as is; 1: ICC chunk rebuilt from the codestream profile
 		u32(types[i], val(0), val(1), bo(1, 2), bo(2, 4))
@@ -84,7 +100,7 @@ func EncodeJBRD(j *jpeg.Image) (out []byte, err error) {
 	}
 	nq := len(j.Quants)
 	if nq < 1 || nq > 3 {
-		return nil, errJBRD
+		return nil, nil, nil, errJBRD
 	}
 	u32(nq, val(1), val(2), val(3), val(4))
 	for _, q := range j.Quants {
@@ -117,7 +133,7 @@ func EncodeJBRD(j *jpeg.Image) (out []byte, err error) {
 	}
 	for i := range j.Quants {
 		if used&(1<<i) == 0 && (i == 0 || j.Quants[i].Values != j.Quants[i-1].Values) {
-			return nil, errJBRD // unused, non-trivial quant table
+			return nil, nil, nil, errJBRD // unused, non-trivial quant table
 		}
 	}
 	u32(len(j.Huff), val(4), bo(3, 2), bo(4, 10), bo(6, 26))
@@ -134,7 +150,7 @@ func EncodeJBRD(j *jpeg.Image) (out []byte, err error) {
 			continue
 		}
 		if n != len(h.Values) {
-			return nil, errJBRD
+			return nil, nil, nil, errJBRD
 		}
 		for _, v := range h.Values {
 			u32(v, bt(2), bo(2, 4), bo(4, 8), bo(8, 1))
@@ -196,8 +212,8 @@ func EncodeJBRD(j *jpeg.Image) (out []byte, err error) {
 		blob = append(blob, d...)
 	}
 	blob = append(blob, j.Tail...)
-	w.AppendBytes(brotliStored(blob))
-	return w.Bytes(), nil
+	w.AppendBytes(BrotliCompress(blob))
+	return w.Bytes(), exif, xmp, nil
 }
 
 // box appends an ISO BMFF box.
@@ -207,13 +223,27 @@ func box(out []byte, typ string, payload []byte) []byte {
 	return append(out, payload...)
 }
 
-// WrapContainer puts a codestream into a JPEG XL container, with an
-// optional jbrd box.
-func WrapContainer(codestream, jbrd []byte) []byte {
+// WrapContainer puts a codestream into a JPEG XL container, with optional
+// jbrd, Exif (TIFF data, without the box's offset prefix) and XMP boxes.
+// Metadata boxes are Brotli-compressed (brob) when that is smaller.
+func WrapContainer(codestream, jbrd, exif, xmp []byte) []byte {
 	out := []byte{0, 0, 0, 0xc, 'J', 'X', 'L', ' ', 0xd, 0xa, 0x87, 0xa}
 	out = box(out, "ftyp", []byte("jxl \x00\x00\x00\x00jxl "))
 	if jbrd != nil {
 		out = box(out, "jbrd", jbrd)
+	}
+	meta := func(typ string, payload []byte) {
+		if c := BrotliCompress(payload); len(c)+4 < len(payload) {
+			out = box(out, "brob", append([]byte(typ), c...))
+		} else {
+			out = box(out, typ, payload)
+		}
+	}
+	if exif != nil {
+		meta("Exif", append([]byte{0, 0, 0, 0}, exif...))
+	}
+	if xmp != nil {
+		meta("xml ", xmp)
 	}
 	return box(out, "jxlc", codestream)
 }

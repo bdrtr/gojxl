@@ -194,10 +194,12 @@ func writePrefixCode(w *bitio.Writer, freq []uint64, alpha int) *prefixCode {
 	lens := huffmanLengths(freq[:alpha], 15)
 	copy(pc.lens, lens)
 	pc.codes = canonicalCodes(pc.lens)
-	// code length code over symbols 0..15 (no RLE)
+	// code length symbols with run-length codes 16 (repeat previous
+	// non-zero length) and 17 (repeat zero), as libbrotli's WriteHuffmanTree
+	toks, extra := codeLengthTokens(lens[:last+1])
 	var clf [18]uint64
-	for s := 0; s <= last; s++ {
-		clf[lens[s]]++
+	for _, t := range toks {
+		clf[t]++
 	}
 	cll := huffmanLengths(clf[:], 5)
 	nz := 0
@@ -207,6 +209,7 @@ func writePrefixCode(w *bitio.Writer, freq []uint64, alpha int) *prefixCode {
 		}
 	}
 	w.Write(2, 0) // hskip 0 (complex)
+	clcodes := canonicalCodes(cll)
 	if nz == 1 {
 		// single code length symbol: written with any nonzero length, all
 		// other entries zero; it then costs zero bits per symbol length.
@@ -217,24 +220,103 @@ func writePrefixCode(w *bitio.Writer, freq []uint64, alpha int) *prefixCode {
 				writeCLCL(w, 0)
 			}
 		}
-		return pc
-	}
-	clcodes := canonicalCodes(cll)
-	acc := 0
-	for _, idx := range codeLengthOrder {
-		writeCLCL(w, cll[idx])
-		if cll[idx] > 0 {
-			acc += 32 >> cll[idx]
-			if acc == 32 {
-				break
+		cll = make([]uint8, 18)
+	} else {
+		acc := 0
+		for _, idx := range codeLengthOrder {
+			writeCLCL(w, cll[idx])
+			if cll[idx] > 0 {
+				acc += 32 >> cll[idx]
+				if acc == 32 {
+					break
+				}
 			}
 		}
 	}
-	for s := 0; s <= last; s++ {
-		l := lens[s]
-		w.Write(uint(cll[l]), uint64(clcodes[l]))
+	for i, t := range toks {
+		w.Write(uint(cll[t]), uint64(clcodes[t]))
+		switch t {
+		case 16:
+			w.Write(2, uint64(extra[i]))
+		case 17:
+			w.Write(3, uint64(extra[i]))
+		}
 	}
 	return pc
+}
+
+// codeLengthTokens run-length codes a code length sequence.
+func codeLengthTokens(lens []uint8) (toks, extra []uint8) {
+	emit := func(t, e uint8) {
+		toks = append(toks, t)
+		extra = append(extra, e)
+	}
+	reverse := func(from int) {
+		for a, b := from, len(toks)-1; a < b; a, b = a+1, b-1 {
+			toks[a], toks[b] = toks[b], toks[a]
+			extra[a], extra[b] = extra[b], extra[a]
+		}
+	}
+	prev := uint8(8)
+	for i := 0; i < len(lens); {
+		v := lens[i]
+		reps := 1
+		for i+reps < len(lens) && lens[i+reps] == v {
+			reps++
+		}
+		i += reps
+		if v == 0 {
+			if reps == 11 {
+				emit(0, 0)
+				reps--
+			}
+			if reps < 3 {
+				for ; reps > 0; reps-- {
+					emit(0, 0)
+				}
+				continue
+			}
+			reps -= 3
+			start := len(toks)
+			for {
+				emit(17, uint8(reps&7))
+				reps >>= 3
+				if reps == 0 {
+					break
+				}
+				reps--
+			}
+			reverse(start)
+			continue
+		}
+		if prev != v {
+			emit(v, 0)
+			reps--
+		}
+		prev = v
+		if reps == 7 {
+			emit(v, 0)
+			reps--
+		}
+		if reps < 3 {
+			for ; reps > 0; reps-- {
+				emit(v, 0)
+			}
+			continue
+		}
+		reps -= 3
+		start := len(toks)
+		for {
+			emit(16, uint8(reps&3))
+			reps >>= 2
+			if reps == 0 {
+				break
+			}
+			reps--
+		}
+		reverse(start)
+	}
+	return
 }
 
 // sortedKeys is a helper for deterministic iteration.

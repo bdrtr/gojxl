@@ -137,3 +137,40 @@ func TestReconstructJPEG(t *testing.T) {
 		}
 	}
 }
+
+func app1(payload []byte) []byte {
+	n := len(payload) + 2
+	return append([]byte{0xff, 0xe1, byte(n >> 8), byte(n)}, payload...)
+}
+
+func TestReconstructJPEGMetadata(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, testPhoto(80, 60, r), &jpeg.Options{Quality: 90})
+	src := buf.Bytes()
+	exif := append([]byte("Exif\x00\x00MM\x00\x2a\x00\x00\x00\x08"), bytes.Repeat([]byte("camera "), 200)...)
+	xmp := append([]byte("http://ns.adobe.com/xap/1.0/\x00"), bytes.Repeat([]byte("<x:xmpmeta/>"), 100)...)
+	var in []byte
+	in = append(in, src[:2]...)
+	in = append(in, app1(exif)...)
+	in = append(in, app1(xmp)...)
+	in = append(in, app1(exif)...) // a second Exif marker stays in jbrd
+	in = append(in, src[2:]...)
+	out, err := TranscodeJPEG(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte("brobExif")) || !bytes.Contains(out, []byte("brobxml ")) {
+		t.Errorf("metadata boxes missing")
+	}
+	if len(out) > len(in) {
+		t.Errorf("transcoded file larger than input: %d > %d", len(out), len(in))
+	}
+	rec, err := ReconstructJPEG(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rec, in) {
+		t.Fatalf("reconstruction differs (%d vs %d bytes)", len(rec), len(in))
+	}
+}

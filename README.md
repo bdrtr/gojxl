@@ -41,7 +41,11 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   haritası, istatistiğe göre katsayı sırası, öğrenilmiş ağaçla DC, ICC korunur
 - Tam sayı-tam JPEG CfL (4:4:4 ve RGB JPEG'lerde büyük kazanç)
 - **`jbrd` kutusu**: orijinal JPEG dosyası bayt-birebir geri üretilebilir;
-  ICC parçaları codestream'deki profilden kurulur
+  ICC parçaları codestream'deki profilden kurulur, EXIF/XMP ayrı `Exif`/`xml `
+  kutularına (Brotli ile sıkıştırılmış `brob`) taşınır, kalan veri Brotli ile
+  sıkıştırılır
+- ICC profilleri libjxl tarzı tahminle (etiket tablosu, eğri/CLUT/mluc
+  öngörüsü) ve LZ77'li entropi kodlamasıyla saklanır
 - **JXL → JPEG geri üretim** gojxl'in kendisinde: `gojxl decode foto.jxl foto.jpg`
   hem gojxl'in hem cjxl'in dosyalarından orijinal JPEG'i bayt-birebir verir
   (saf Go Brotli çözücü, progressive/restart/CfL/Exif/XMP/ICC dahil)
@@ -148,7 +152,7 @@ internal/entropy   ANS/prefix/LZ77/bağlam haritası kod çözücü
 internal/jxl       header'lar, Modular, VarDCT, filtreler, render, blending
 internal/enc       kodlayıcılar: Modular (ağaç öğrenme, ANS), VarDCT, JPEG yeniden sıkıştırma
 internal/jpeg      JPEG ayrıştırıcı/yazıcı (baseline + progressive, bayt-birebir), jbrd
-internal/brotli    Brotli (RFC 7932) çözücü
+internal/brotli    Brotli (RFC 7932) çözücü (kodlayıcı: internal/enc/brotli.go)
 cmd/gojxl          CLI
 ```
 
@@ -173,5 +177,4 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - LZ77, grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+)
 - HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
-- ICC profilleri için libjxl tarzı tahmin (büyük ICC'lerde daha küçük dosya)
 - APNG/animasyon çıktısı, akış (streaming) kod çözme

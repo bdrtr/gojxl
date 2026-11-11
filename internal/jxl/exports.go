@@ -1,5 +1,7 @@
 package jxl
 
+import "gojxl/internal/bitio"
+
 // Exports for the encoder (same module).
 
 // DCT8Multipliers returns the default DCT8 dequantisation multipliers
@@ -36,3 +38,15 @@ func NaturalOrder(id int) []int32 { return naturalOrder(id) }
 
 // ResampleScale is the LLF<->DC scale for an N-point LF DCT.
 func ResampleScale(n, k int) float32 { return resampleScale(n, k) }
+
+// UnpredictICC decodes the predicted ICC form (for encoder tests).
+func UnpredictICC(enc []byte) ([]byte, error) { return unpredictICC(enc) }
+
+// ReadICC reads an entropy-coded ICC stream and unpredicts it.
+func ReadICC(br *bitio.Reader) ([]byte, error) {
+	enc, err := readEncodedICC(br)
+	if err != nil {
+		return nil, err
+	}
+	return unpredictICC(enc)
+}

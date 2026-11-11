@@ -26,8 +26,9 @@ var iccInitialHeader = [128]byte{
 	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 }
 
-// predictICC returns the encoded (predicted) form of an ICC profile.
-func predictICC(icc []byte) []byte {
+// predictICCSimple returns the simplest valid encoded form: the header
+// as differences to the predicted header, the rest as one literal insert.
+func predictICCSimple(icc []byte) []byte {
 	n := len(icc)
 	var cmds []byte
 	if n > 128 {
@@ -38,8 +39,19 @@ func predictICC(icc []byte) []byte {
 	enc := iccVarint(nil, uint64(n))
 	enc = iccVarint(enc, uint64(len(cmds)))
 	enc = append(enc, cmds...)
+	enc = append(enc, iccHeaderDiff(icc)...)
+	if n > 128 {
+		enc = append(enc, icc[128:]...)
+	}
+	return enc
+}
+
+// iccHeaderDiff returns the header bytes minus the decoder's prediction.
+func iccHeaderDiff(icc []byte) []byte {
+	n := len(icc)
 	header := iccInitialHeader
 	header[0], header[1], header[2], header[3] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+	var out []byte
 	for i := 0; i < min(n, 128); i++ {
 		// the decoder adapts its prediction to bytes already seen
 		if i == 8 {
@@ -61,12 +73,9 @@ func predictICC(icc []byte) []byte {
 				header[42], header[43] = 'N', 'W'
 			}
 		}
-		enc = append(enc, icc[i]-header[i])
+		out = append(out, icc[i]-header[i])
 	}
-	if n > 128 {
-		enc = append(enc, icc[128:]...)
-	}
-	return enc
+	return out
 }
 
 func iccKind1(b byte) int {
@@ -106,27 +115,29 @@ func iccKind2(b byte) int {
 // writeICC writes the ICC stream that follows the image header when
 // want_icc is set.
 func writeICC(w *bitio.Writer, icc []byte) {
-	enc := predictICC(icc)
+	a, b := &bitio.Writer{}, &bitio.Writer{}
+	writeICCEnc(a, predictICC(icc))
+	writeICCEnc(b, predictICCSimple(icc))
+	if b.BitsWritten() < a.BitsWritten() {
+		a = b
+	}
+	w.AppendWriter(a)
+}
+
+func writeICCEnc(w *bitio.Writer, enc []byte) {
 	w.WriteU64(uint64(len(enc)))
-	ctxOf := func(i int) int {
+	ctxs := make([]int, len(enc))
+	vals := make([]uint32, len(enc))
+	for i, b := range enc {
+		vals[i] = uint32(b)
 		if i <= 128 {
-			return 0
+			continue
 		}
-		var b1, b2 byte
-		b1 = enc[i-1]
+		var b2 byte
 		if i > 1 {
 			b2 = enc[i-2]
 		}
-		return 1 + iccKind1(b1) + iccKind2(b2)*8
+		ctxs[i] = 1 + iccKind1(enc[i-1]) + iccKind2(b2)*8
 	}
-	h := newHistograms(41, defaultCfg)
-	for i, b := range enc {
-		h.add(ctxOf(i), uint32(b))
-	}
-	c := writeANSCodeClustered(w, defaultCfg, h.counts, 41)
-	st := &ansStream{c: c}
-	for i, b := range enc {
-		st.add(ctxOf(i), uint32(b))
-	}
-	st.flush(w)
+	writeStreamLZ(w, ctxs, vals, 41, defaultCfg, 41)
 }
