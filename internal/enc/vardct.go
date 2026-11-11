@@ -23,6 +23,7 @@ type LossyOptions struct {
 	OnlyDCT8   bool    // disable larger transforms
 	RDMu       float64 // rate weight in AC strategy decisions
 	Frame      FrameOpts
+	LibAQ      bool // libjxl's adaptive quantisation map
 }
 
 func abs32(v float32) float32 {
@@ -536,6 +537,14 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	bw, bh := (im.W+7)/8, (im.H+7)/8
 	pw, ph := bw*8, bh*8
 	xyb := toXYB(im, pw, ph)
+	var aqMap []float32 // per-block quantisation multipliers (libjxl AQ)
+	var aqMed float32
+	if opt.LibAQ {
+		aqMap = adaptiveQuantMap(xyb, pw, ph, d)
+		tmp := append([]float32(nil), aqMap...)
+		slices.Sort(tmp)
+		aqMed = tmp[len(tmp)/2]
+	}
 	gab := !opt.NoGaborish
 	if gab {
 		for c := 0; c < 3; c++ {
@@ -694,7 +703,28 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			n := k * 8
 			coefOf(ti, bx, by, &coef)
 			bq := qf
-			if aqStrength > 0 {
+			if aqMap != nil {
+				// AdjustQuantField: max over the covered blocks, mixed
+				// with the mean for large transforms at high distances
+				mx, mean := float32(0), float32(0)
+				for iy := 0; iy < k; iy++ {
+					for ix := 0; ix < k; ix++ {
+						v := aqMap[(by+iy)*bw+bx+ix]
+						mx = max(mx, v)
+						mean += v
+					}
+				}
+				mean /= float32(k * k)
+				if k*k >= 4 {
+					mix := float32(1)
+					if d > 1.54138 {
+						mix = max(1-(d-1.54138)*0.56391, 0)
+					}
+					mx = mx*mix + (1-mix)*mean
+				}
+				bq = int32(math.Round(float64(float32(qf) * mx / aqMed)))
+				bq = min(max(bq, 1), 256)
+			} else if aqStrength > 0 {
 				var act float32
 				for i := 0; i < n*n; i++ {
 					if !isLLF(ti, i) {

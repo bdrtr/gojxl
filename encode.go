@@ -50,6 +50,7 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 		}
 		lo.NoGaborish = os.Getenv("GOJXL_NOGAB") != ""
 		lo.NoCfL = os.Getenv("GOJXL_NOCFL") != ""
+		lo.LibAQ = os.Getenv("GOJXL_NOLAQ") == ""
 		lo.OnlyDCT8 = os.Getenv("GOJXL_DCT8") != ""
 		if v := os.Getenv("GOJXL_MU"); v != "" {
 			lo.RDMu, _ = strconv.ParseFloat(v, 64)
