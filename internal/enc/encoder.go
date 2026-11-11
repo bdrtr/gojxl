@@ -850,7 +850,8 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	}
 	// LZ77 copies of residual runs and repeats; kept only if smaller
 	if lzv, lzCounts := modularLZ77(chs, all, caches, data.counts, nleaves); lzv != nil {
-		if r2, err2 := emit(lzv, lzCounts, &lz77Params{lzMinSym, lzMinLen, lzLenCfg}); err2 == nil && len(r2) < len(res) {
+		r2, err2 := emit(lzv, lzCounts, &lz77Params{lzMinSym, lzMinLen, lzLenCfg})
+		if err2 == nil && len(r2) < len(res) {
 			return r2, nil
 		}
 	}

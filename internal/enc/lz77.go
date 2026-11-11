@@ -194,21 +194,19 @@ var specialDist = [120][2]int8{
 // multiplier (row width); mult == 0 means plain distances.
 type lzDistCoder struct {
 	mult    int
-	special map[int]uint32
+	special []uint8 // special[dist] = code+1, 0 if none
 }
 
 func newLZDistCoder(mult int) *lzDistCoder {
-	d := &lzDistCoder{mult: mult, special: map[int]uint32{}}
+	d := &lzDistCoder{mult: mult}
 	if mult == 0 {
 		return d
 	}
+	d.special = make([]uint8, 8*mult+9)
 	for i, sd := range specialDist {
 		v := int(sd[0]) + mult*int(sd[1])
-		if v < 1 {
-			continue
-		}
-		if _, ok := d.special[v]; !ok {
-			d.special[v] = uint32(i)
+		if v >= 1 && d.special[v] == 0 {
+			d.special[v] = uint8(i + 1)
 		}
 	}
 	return d
@@ -218,8 +216,8 @@ func (d *lzDistCoder) symbol(dist int) uint32 {
 	if d.mult == 0 {
 		return uint32(dist - 1)
 	}
-	if s, ok := d.special[dist]; ok {
-		return s
+	if dist < len(d.special) && d.special[dist] != 0 {
+		return uint32(d.special[dist] - 1)
 	}
 	return uint32(dist + 119)
 }
@@ -228,10 +226,10 @@ func (d *lzDistCoder) symbol(dist int) uint32 {
 // below that of the literals they replace (litCost[i] is the cost in bits
 // of symbol i coded as a literal). Besides hash-chain candidates, it always
 // tries distance 1 (runs) and the row above (mult).
-func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int) []lzItem {
+func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int) ([]lzItem, float64) {
 	n := len(vals)
 	if n < 2*lzMinLen {
-		return nil
+		return nil, 0
 	}
 	pre := make([]float64, n+1)
 	for i, c := range litCost {
@@ -291,13 +289,18 @@ func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int)
 	}
 	const chainMaxLen = 512
 	var out []lzItem
+	gain := 0.0
 	for i := 0; i < n; {
 		best, bestL, bestD := 0.0, 0, 0
 		consider := func(l, d int) {
 			if l < lzMinLen {
 				return
 			}
-			if s := pre[i+l] - pre[i] - copyCost(l, d); s > best {
+			g := pre[i+l] - pre[i]
+			if g-7-float64(2*bits.Len(uint(l-lzMinLen))) <= best {
+				return // cannot beat best even with the cheapest distance
+			}
+			if s := g - copyCost(l, d); s > best {
 				best, bestL, bestD = s, l, d
 			}
 		}
@@ -309,12 +312,19 @@ func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int)
 		if bestL < chainMaxLen && run1[i] < 8 && i+2 < n {
 			maxLen := min(n-i, chainMaxLen)
 			cand := head[hash(i)]
+			seenL := max(bestL, lzMinLen-1)
 			for c := 0; c < chain && cand >= 0; c++ {
 				d := i - int(cand)
 				if d > lzWindow {
 					break
 				}
-				consider(matchLen(i, int(cand), maxLen), d)
+				// candidates come nearest first, so a farther one only
+				// helps if it is longer than any seen so far
+				if seenL <= maxLen && vals[int(cand)+seenL-1] == vals[i+seenL-1] {
+					l := matchLen(i, int(cand), maxLen)
+					seenL = max(seenL, l)
+					consider(l, d)
+				}
 				cand = prev[cand]
 			}
 		}
@@ -323,13 +333,14 @@ func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int)
 			i++
 			continue
 		}
+		gain += best
 		out = append(out, lzItem{pos: int32(i), length: int32(bestL), dist: int32(bestD)})
 		for k := 0; k < min(bestL, 32); k++ {
 			insert(i + k)
 		}
 		i += bestL
 	}
-	return out
+	return out, gain
 }
 
 // streamDistMult is the decoder's LZ77 distance multiplier of a modular
@@ -373,8 +384,10 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 			costs[c][t] = float32(math.Log2(float64(tot+1) / float64(n+1)))
 		}
 	}
-	items := make([][]lzItem, len(all))
+	lcs := make([][]float32, len(all))
 	dcs := make([]*lzDistCoder, len(all))
+	sgain := make([]float64, len(all))
+	stot := make([]float64, len(all))
 	parallel(len(all), func(i int) {
 		c := &caches[i]
 		lc := make([]float32, len(c.v))
@@ -389,8 +402,36 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 			}
 			lc[k] = x
 		}
+		lcs[i] = lc
 		dcs[i] = newLZDistCoder(streamDistMult(chs, all[i]))
-		items[i] = lzMatchesCost(c.v, lc, dcs[i], 16)
+		// cheap check on 8 evenly spaced chunks (about 1/8 of the stream)
+		n := len(c.v)
+		cl := max(n/64, 4*dcs[i].mult, 4096)
+		for k := 0; k < 8; k++ {
+			a := k * n / 8
+			b := min(a+cl, n)
+			if a >= b {
+				continue
+			}
+			_, g := lzMatchesCost(c.v[a:b], lc[a:b], dcs[i], 16)
+			sgain[i] += g
+			for _, x := range lc[a:b] {
+				stot[i] += float64(x)
+			}
+		}
+	})
+	var sg, st float64
+	for i := range sgain {
+		sg += sgain[i]
+		st += stot[i]
+	}
+	if sg < 0.015*st {
+		return nil, nil // photographic content: copies barely help
+	}
+	items := make([][]lzItem, len(all))
+	parallel(len(all), func(i int) {
+		items[i], _ = lzMatchesCost(caches[i].v, lcs[i], dcs[i], 16)
+		lcs[i] = nil
 	})
 	n := 0
 	for _, it := range items {
@@ -418,28 +459,45 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 	for i := range lzc {
 		lzc[i] = make([]uint64, 256)
 	}
+	var oldExtra, newExtra uint64
 	for i := range all {
+		for _, v := range caches[i].v {
+			_, nb, _ := defaultCfg.encode(v)
+			oldExtra += uint64(nb)
+		}
 		visit(i, func(ctx int, v uint32) {
 			var t uint32
+			var nb uint
 			if v&lzLenFlag != 0 {
-				t, _, _ = lzLenCfg.encode(v &^ lzLenFlag)
+				t, nb, _ = lzLenCfg.encode(v &^ lzLenFlag)
 				t += lzMinSym
 			} else {
-				t, _, _ = defaultCfg.encode(v)
+				t, nb, _ = defaultCfg.encode(v)
 			}
+			newExtra += uint64(nb)
 			lzc[ctx][t]++
 		})
 	}
-	// compare estimated sizes (entropy plus extra bits are mostly equal;
-	// copies remove literal extra bits too, which is ignored here)
-	old, nw := 0.0, 0.0
-	for _, h := range counts {
-		old += histCost(h)
+	// compare estimated sizes after clustering, as the writer does
+	est := func(h [][]uint64) float64 {
+		_, cl := clusterHistograms(h, 128)
+		s := 0.0
+		for _, c := range cl {
+			s += histCost(c) + sigBits(c)
+		}
+		return s
 	}
-	for _, h := range lzc {
-		nw += histCost(h)
-	}
-	if nw >= old*0.995 {
+	var old, nw float64
+	parallel(2, func(k int) {
+		if k == 0 {
+			old = est(counts) + float64(oldExtra)
+		} else {
+			nw = est(lzc) + float64(newExtra)
+		}
+	})
+	// the tuned writer gains less from LZ77 than this estimate suggests,
+	// so small estimated gains rarely survive
+	if nw >= old*0.97 {
 		return nil, nil
 	}
 	return visit, lzc
