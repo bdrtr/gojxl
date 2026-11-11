@@ -103,7 +103,13 @@ func adaptiveQuantMap(xyb [3][]float32, pw, ph int, d float32) []float32 {
 		kMul[i] *= 0.29959705784054957 / norm
 	}
 	aq := make([]float32, bw*bh)
-	for fy := 0; fy < qh; fy++ {
+	parallel(bh, func(by int) { erodeRows(pre, aq, qw, qh, bw, by, &kMul) })
+	return aqModulate(xyb, aq, pw, ph, d)
+}
+
+// erodeRows sums the fuzzy erosion of the two cell rows of block row by.
+func erodeRows(pre, aq []float32, qw, qh, bw, by int, kMul *[4]float32) {
+	for fy := 2 * by; fy < 2*by+2; fy++ {
 		ym1, yp1 := max(fy-1, 0), min(fy+1, qh-1)
 		rowt, row, rowb := pre[ym1*qw:], pre[fy*qw:], pre[yp1*qw:]
 		for fx := 0; fx < qw; fx++ {
@@ -139,7 +145,12 @@ func adaptiveQuantMap(xyb [3][]float32, pw, ph int, d float32) []float32 {
 			}
 		}
 	}
-	// per-block modulations
+}
+
+// aqModulate turns the eroded masking values into quantisation multipliers.
+func aqModulate(xyb [3][]float32, aq []float32, pw, ph int, d float32) []float32 {
+	bw, bh := pw/8, ph/8
+	Y := xyb[1]
 	scale := float32(aqAcQuant) / d
 	dampen := float32(1)
 	if d >= 2 {

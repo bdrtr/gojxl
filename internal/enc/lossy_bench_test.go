@@ -30,7 +30,7 @@ func BenchmarkLossy(b *testing.B) {
 	b.SetBytes(int64(im.W * im.H))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := EncodeVarDCT(im, LossyOptions{Distance: 1, EPFIters: -1, Sharpness: -1, RDMu: 0}); err != nil {
+		if _, err := EncodeVarDCT(im, LossyOptions{Distance: 1, EPFIters: -1, Sharpness: -1, LibAQ: true}); err != nil {
 			b.Fatal(err)
 		}
 	}

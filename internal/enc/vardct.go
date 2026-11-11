@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"math/bits"
+	"runtime"
 	"slices"
 
 	"gojxl/internal/bitio"
@@ -65,16 +66,35 @@ func gaborishInverse(p []float32, w, h int) {
 			yy := mirror(y+k, h)
 			rows[k+2] = src[yy*w : yy*w+w]
 		}
-		for x := 0; x < w; x++ {
-			xm1, xp1 := mirror(x-1, w), mirror(x+1, w)
-			xm2, xp2 := mirror(x-2, w), mirror(x+2, w)
+		out := p[y*w : y*w+w]
+		at := func(x, xm1, xp1, xm2, xp2 int) {
 			var sum float32
 			for k := -2; k <= 2; k++ {
 				row := rows[k+2]
 				kw := wt[max(k, -k)]
 				sum += kw[0]*row[x] + kw[1]*(row[xm1]+row[xp1]) + kw[2]*(row[xm2]+row[xp2])
 			}
-			p[y*w+x] = sum
+			out[x] = sum
+		}
+		for x := 0; x < w; x++ {
+			if x == 2 && w > 4 {
+				// interior: no mirroring (same arithmetic as at)
+				r0, r1, r2, r3, r4 := rows[0][:w], rows[1][:w], rows[2][:w], rows[3][:w], rows[4][:w]
+				w0, w1, w2 := wt[0], wt[1], wt[2]
+				for ; x < w-2; x++ {
+					var sum float32
+					sum += w2[0]*r0[x] + w2[1]*(r0[x-1]+r0[x+1]) + w2[2]*(r0[x-2]+r0[x+2])
+					sum += w1[0]*r1[x] + w1[1]*(r1[x-1]+r1[x+1]) + w1[2]*(r1[x-2]+r1[x+2])
+					sum += w0[0]*r2[x] + w0[1]*(r2[x-1]+r2[x+1]) + w0[2]*(r2[x-2]+r2[x+2])
+					sum += w1[0]*r3[x] + w1[1]*(r3[x-1]+r3[x+1]) + w1[2]*(r3[x-2]+r3[x+2])
+					sum += w2[0]*r4[x] + w2[1]*(r4[x-1]+r4[x+1]) + w2[2]*(r4[x-2]+r4[x+2])
+					out[x] = sum
+				}
+				if x >= w {
+					break
+				}
+			}
+			at(x, mirror(x-1, w), mirror(x+1, w), mirror(x-2, w), mirror(x+2, w))
 		}
 	})
 }
@@ -195,6 +215,17 @@ func quantAC(v, step float32) int32 {
 	return int32(math.Round(float64(r)))
 }
 
+// dqTab[q] is dequantAC(q, 1, 0.95, 0.145) / step for q > 0: the
+// multiplier of step (bit-identical, as dequantAC multiplies last).
+var dqTab = func() (t [256]float32) {
+	t[1] = 0.95
+	for q := 2; q < 256; q++ {
+		f := float32(q)
+		t[q] = f - 0.145/f
+	}
+	return
+}()
+
 // dequantAC mirrors the decoder (AdjustQuantBias).
 func dequantAC(q int32, step, bias, numer float32) float32 {
 	switch {
@@ -300,8 +331,17 @@ func fdct1d(x, tmp []float32) {
 		a, b := x[0], x[1]
 		x[0], x[1] = a+b, a-b
 		return
+	case 4:
+		fdct4(x)
+		return
 	case 8:
 		fdct8(x)
+		return
+	case 16:
+		fdct16(x)
+		return
+	case 32:
+		fdct32(x)
 		return
 	}
 	h := n / 2
@@ -357,6 +397,59 @@ func fdct8(x []float32) {
 	x[0], x[4] = e0+e1, e0-e1
 	x[2], x[6] = eo0*r2+eo1, eo1
 	x[1], x[3], x[5], x[7] = o0*r2+o1, o1+o2, o2+o3, o3
+}
+
+// fdct4 is fdct1d for n = 4.
+func fdct4(x []float32) {
+	_ = x[3]
+	u0, u1 := x[0]+x[3], x[1]+x[2]
+	v0, v1 := (x[0]-x[3])*f4a, (x[1]-x[2])*f4b
+	a, b := v0+v1, v0-v1
+	x[0], x[2] = u0+u1, u0-u1
+	x[1], x[3] = a*math.Sqrt2+b, b
+}
+
+// fdct16 and fdct32 are fdct1d for n = 16 and 32 without recursion.
+func fdct16(x []float32) {
+	_ = x[15]
+	var u, v [8]float32
+	sh := secTab[16][:8]
+	for i := 0; i < 8; i++ {
+		a, b := x[i], x[15-i]
+		u[i] = a + b
+		v[i] = (a - b) * sh[i]
+	}
+	fdct8(u[:])
+	fdct8(v[:])
+	for i := 0; i < 8; i++ {
+		x[2*i] = u[i]
+	}
+	x[1] = v[0]*math.Sqrt2 + v[1]
+	for i := 1; i < 7; i++ {
+		x[2*i+1] = v[i] + v[i+1]
+	}
+	x[15] = v[7]
+}
+
+func fdct32(x []float32) {
+	_ = x[31]
+	var u, v [16]float32
+	sh := secTab[32][:16]
+	for i := 0; i < 16; i++ {
+		a, b := x[i], x[31-i]
+		u[i] = a + b
+		v[i] = (a - b) * sh[i]
+	}
+	fdct16(u[:])
+	fdct16(v[:])
+	for i := 0; i < 16; i++ {
+		x[2*i] = u[i]
+	}
+	x[1] = v[0]*math.Sqrt2 + v[1]
+	for i := 1; i < 15; i++ {
+		x[2*i+1] = v[i] + v[i+1]
+	}
+	x[31] = v[15]
 }
 
 // fdctN computes the scaled NxN DCT of the block at src (row stride) and
@@ -639,15 +732,19 @@ func rdCostPre(coef, st, inv []float32, order []int32, t vtype, step float32, cw
 			d += float64(v * v)
 			continue
 		}
-		q := int32(math.Round(float64(x)))
-		e := float64(v - dequantAC(q, st[p], 0.95, 0.145))
-		d += e * e
-		if q < 0 {
-			q = -q
+		// sign-symmetric: work on magnitudes (same result as
+		// math.Round and dequantAC on the signed values)
+		if x < 0 {
+			x, v = -x, -v
 		}
+		q := int32(float64(x) + 0.5)
 		if q < 256 {
+			e := float64(v - dqTab[q]*st[p])
+			d += e * e
 			r += log2Tab[q]
 		} else {
+			e := float64(v - dequantAC(q, st[p], 0.95, 0.145))
+			d += e * e
 			r += 3.5 + 2*math.Log2(float64(q))
 		}
 		last = i + 1
@@ -698,6 +795,7 @@ func writeModularLocalOpts(w *bitio.Writer, chs []channel, effort int, noWP bool
 		lp := learnParamsFor(effort)
 		if noWP {
 			lp.preds = slices.DeleteFunc(slices.Clone(lp.preds), func(p int) bool { return p == 6 })
+			lp.maxSamples = 1 << 16 // more samples barely help these streams
 		}
 		root = learnTree(collectSamples(chs, []stream{s}, lp), lp)
 	} else {
@@ -803,7 +901,8 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	if mu <= 0 {
 		mu = 0.5
 	}
-	if opt.forceType > 0 { // tests: tile with one transform type
+	var selCoef [][]float32 // coefficients of the chosen varblocks
+	if opt.forceType > 0 {  // tests: tile with one transform type
 		ft := opt.forceType
 		vt := vtypes[ft]
 		for by := 0; by+vt.cy <= bh; by += vt.cy {
@@ -821,6 +920,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 		}
 	} else if !opt.OnlyDCT8 {
+		selCoef = make([][]float32, nb)
 		var selSt, selInv [len(vtypes)][3][]float32
 		for ti := range vtypes {
 			for c := 0; c < 3; c++ {
@@ -877,13 +977,17 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				// 2 DCT8) or two wide (DCT8x16 / 2 DCT8) halves; per 4x4
 				// cell: DCT32, or two tall (DCT32x16 / quads) or two wide
 				// (DCT16x32 / quads) halves. DCT8 is the default.
-				type place struct{ ti, bx, by int }
+				// a placement packs ti<<4 | (y-by0)<<2 | (x-bx0)
 				type plan struct {
 					cost float64
-					ps   []place
+					n    int
+					ps   [16]uint8
 				}
 				join := func(a, b plan) plan {
-					return plan{a.cost + b.cost, append(append([]place(nil), a.ps...), b.ps...)}
+					a.cost += b.cost
+					copy(a.ps[a.n:], b.ps[:b.n])
+					a.n += b.n
+					return a
 				}
 				better := func(a, b plan) plan {
 					if b.cost < a.cost {
@@ -891,12 +995,16 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					}
 					return a
 				}
-				one := func(ti, x, y int) plan { return plan{cost(ti, x, y), []place{{ti, x, y}}} }
+				one := func(ti, x, y int) plan {
+					p := plan{cost: cost(ti, x, y), n: 1}
+					p.ps[0] = uint8(ti<<4 | (y-by0)<<2 | (x - bx0))
+					return p
+				}
 				c8 := func(x, y int) plan {
 					if x >= bw || y >= bh {
 						return plan{}
 					}
-					p := plan{cost(0, x, y), nil}
+					p := plan{cost: cost(0, x, y)}
 					p = better(p, one(vtDCT4x8, x, y))
 					return better(p, one(vtDCT8x4, x, y))
 				}
@@ -918,8 +1026,39 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				top := better(join(q[0], q[1]), one(6, bx0, by0))
 				bottom := better(join(q[2], q[3]), one(6, bx0, by0+2))
 				best := better(better(join(left, right), join(top, bottom)), one(2, bx0, by0))
-				for _, pl := range best.ps {
-					set(pl.ti, pl.bx, pl.by)
+				// keep the chosen coefficients for pass A
+				keep := func(ti, bx, by int) {
+					vt := vtypes[ti]
+					sz := vt.size()
+					cc := make([]float32, 3*sz)
+					for c := 0; c < 3; c++ {
+						o := cc[c*sz : (c+1)*sz]
+						if vt.split {
+							rc.coefSplit(c, vt.acs, (bx-bx0)*8, (by-by0)*8, o)
+						} else {
+							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, o)
+						}
+					}
+					selCoef[by*bw+bx] = cc
+				}
+				var covered [16]bool
+				for _, pk := range best.ps[:best.n] {
+					ti, px, py := int(pk>>4), bx0+int(pk&3), by0+int(pk>>2&3)
+					set(ti, px, py)
+					keep(ti, px, py)
+					vt := vtypes[ti]
+					for y := 0; y < vt.cy; y++ {
+						for x := 0; x < vt.cx; x++ {
+							covered[(py-by0+y)*4+px-bx0+x] = true
+						}
+					}
+				}
+				for y := 0; y < 4 && by0+y < bh; y++ {
+					for x := 0; x < 4 && bx0+x < bw; x++ {
+						if !covered[y*4+x] {
+							keep(0, bx0+x, by0+y)
+						}
+					}
 				}
 			}
 		})
@@ -937,6 +1076,14 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	coefOf := func(ti, bx, by int, out *[3][]float32) {
 		vt := vtypes[ti]
 		sz := vt.size()
+		if selCoef != nil && selCoef[by*bw+bx] != nil {
+			cc := selCoef[by*bw+bx]
+			selCoef[by*bw+bx] = nil
+			for c := 0; c < 3; c++ {
+				out[c] = cc[c*sz : (c+1)*sz : (c+1)*sz]
+			}
+			return
+		}
 		for c := 0; c < 3; c++ {
 			if len(out[c]) < sz {
 				out[c] = make([]float32, sz)
@@ -1175,15 +1322,19 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 
 	// HF histograms over all groups
 	nctx := 495 * numBlockCtx
-	hs := make([]*histograms, ngroups)
-	parallel(ngroups, func(g int) {
-		h := newHistograms(nctx, defaultCfg)
-		emitGroup(g, h.add)
-		hs[g] = h
+	nw := min(runtime.GOMAXPROCS(0), ngroups)
+	hs := make([]*histograms, nw) // per worker: counts are order-free
+	parallelWorkers(ngroups, nw, func(k, g int) {
+		if hs[k] == nil {
+			hs[k] = newHistograms(nctx, defaultCfg)
+		}
+		emitGroup(g, hs[k].add)
 	})
-	hf := newHistograms(nctx, defaultCfg)
-	for _, h := range hs {
-		hf.merge(h)
+	hf := hs[0]
+	for _, h := range hs[1:] {
+		if h != nil {
+			hf.merge(h)
+		}
 	}
 
 	// --- alpha as a lossless modular extra channel
@@ -1218,9 +1369,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 			lf = append(lf, ch)
 		}
-		// learned trees (without the weighted predictor) cost far less
-		// than the fixed tree's many contexts, notably for small images
-		writeModularLocalOpts(w, lf, 4, true)
 		// HF metadata: strategies, quant field, CfL, sharpness
 		var acsT, acsQ []int32
 		for y := y0; y < y0+chh; y++ {
@@ -1232,7 +1380,8 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 		}
 		count := len(acsT)
-		w.Write(uint(ceilLog2(cw*chh)), uint64(count-1))
+		var wm bitio.Writer // the metadata stream, written concurrently
+		wm.Write(uint(ceilLog2(cw*chh)), uint64(count-1))
 		acs := channel{w: count, h: 2, pix: append(acsT, acsQ...)}
 		ltw, lth := (cw+7)/8, (chh+7)/8
 		cx := channel{w: ltw, h: lth, pix: make([]int32, ltw*lth)}
@@ -1248,7 +1397,16 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		for i := range sh.pix {
 			sh.pix[i] = int32(sharp)
 		}
-		writeModularLocalOpts(w, []channel{cx, cb, acs, sh}, 4, true)
+		done := make(chan struct{})
+		go func() {
+			writeModularLocalOpts(&wm, []channel{cx, cb, acs, sh}, 4, true)
+			close(done)
+		}()
+		// learned trees (without the weighted predictor) cost far less
+		// than the fixed tree's many contexts, notably for small images
+		writeModularLocalOpts(w, lf, 4, true)
+		<-done
+		w.AppendWriter(&wm)
 	}
 	writeHfGlobal := func(w *bitio.Writer) *ansCode {
 		w.WriteBool(true)                                           // default dequant matrices
