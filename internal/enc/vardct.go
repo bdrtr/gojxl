@@ -888,6 +888,16 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	bw, bh := (im.W+7)/8, (im.H+7)/8
 	pw, ph := bw*8, bh*8
 	xyb := toXYB(im, pw, ph)
+	// keep only the alpha plane of the input, so the colour planes can be
+	// freed while encoding (when the caller drops its reference)
+	{
+		rest := *im
+		rest.Chans = nil
+		if im.Alpha {
+			rest.Chans = [][]int32{im.Chans[len(im.Chans)-1]}
+		}
+		im = &rest
+	}
 	var aqMap []float32 // per-block quantisation multipliers (libjxl AQ)
 	var aqMed float32
 	if opt.LibAQ {
@@ -1129,12 +1139,14 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	qdc := [3][]int32{make([]int32, nb), make([]int32, nb), make([]int32, nb)}
 	bqf := make([]int32, nb)
 	vq := make([][]int32, nb)
-	vc := make([][]float32, nb) // cached X and B coefficients per varblock
+	vc := make([][2][]float32, nb) // cached X and B coefficients per varblock
 	aqStrength := float32(opt.AQ)
 	tw := (bw + 7) / 8
 	thh := (bh + 7) / 8
 	rowSums := make([][]float64, bh)
-	coefOf := func(ti, bx, by int, out *[3][]float32) {
+	// coefOf returns the block's coefficients: the cached ones from AC
+	// strategy selection, or computed into scratch
+	coefOf := func(ti, bx, by int, out, scratch *[3][]float32) {
 		vt := vtypes[ti]
 		sz := vt.size()
 		if selCoef != nil && selCoef[by*bw+bx] != nil {
@@ -1146,13 +1158,14 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			return
 		}
 		for c := 0; c < 3; c++ {
-			if len(out[c]) < sz {
-				out[c] = make([]float32, sz)
+			if len(scratch[c]) < sz {
+				scratch[c] = make([]float32, sz)
 			}
+			out[c] = scratch[c][:sz]
 			if vt.split {
-				fdctSplit(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, out[c][:sz])
+				fdctSplit(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, out[c])
 			} else {
-				fdctRect(xyb[c][(by*8)*pw+bx*8:], pw, vt.rows(), vt.cols(), out[c][:sz])
+				fdctRect(xyb[c][(by*8)*pw+bx*8:], pw, vt.rows(), vt.cols(), out[c])
 			}
 		}
 	}
@@ -1162,7 +1175,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		return [3]float32{bs * chanScale[0], bs * chanScale[1], bs * chanScale[2]}
 	}
 	parallel(bh, func(by int) {
-		var coef [3][]float32
+		var coef, scratch [3][]float32
 		sums := make([]float64, 3*tw)
 		for bx := 0; bx < bw; bx++ {
 			b := by*bw + bx
@@ -1172,7 +1185,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			ti := int(vtyp[b])
 			vt := vtypes[ti]
 			cxb, cyb, nn := vt.cx, vt.cy, vt.size()
-			coefOf(ti, bx, by, &coef)
+			coefOf(ti, bx, by, &coef, &scratch)
 			bq := qf
 			if aqMap != nil {
 				// AdjustQuantField: max over the covered blocks, mixed
@@ -1239,13 +1252,13 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				sums[3*t+2] += yd * yd
 			}
 			vq[b] = q
-			cc := make([]float32, 2*nn)
-			copy(cc, coef[0][:nn])
-			copy(cc[nn:], coef[2][:nn])
-			vc[b] = cc
+			// copies, so the (larger) cached block can be freed
+			vc[b] = [2][]float32{slices.Clone(coef[0]), slices.Clone(coef[2])}
 		}
 		rowSums[by] = sums
 	})
+	// the XYB planes and selection results are no longer needed
+	xyb, selCoef = [3][]float32{}, nil
 	// CfL factors per tile
 	ytox := make([]int32, tw*thh)
 	ytob := make([]int32, tw*thh)
@@ -1275,7 +1288,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 			ti := int(vtyp[b])
 			nn := vtypes[ti].size()
-			coef[0], coef[2] = vc[b][:nn], vc[b][nn:]
+			coef[0], coef[2] = vc[b][0], vc[b][1]
 			steps := stepsOf(b)
 			tix := (by/8)*tw + bx/8
 			kx := float32(ytox[tix]) / 84
@@ -1290,7 +1303,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				q[i] = quantAC(coef[0][i]-kx*yd, mm[0][i]*steps[0])
 				q[2*nn+i] = quantAC(coef[2][i]-kb*yd, mm[2][i]*steps[2])
 			}
-			vc[b] = nil
+			vc[b] = [2][]float32{}
 		}
 	})
 

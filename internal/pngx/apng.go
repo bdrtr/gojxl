@@ -6,7 +6,6 @@ import (
 	"errors"
 	"image"
 	"image/draw"
-	"image/png"
 )
 
 // DecodeAPNG decodes the frames of an animated PNG, composited onto full
@@ -96,7 +95,7 @@ func DecodeAPNG(data []byte) (frames []image.Image, delays []float64, loops int,
 			writeChunk(&buf, "IDAT", d)
 		}
 		writeChunk(&buf, "IEND", nil)
-		img, err := png.Decode(&buf)
+		img, err := Decode(buf.Bytes())
 		if err != nil {
 			return err
 		}

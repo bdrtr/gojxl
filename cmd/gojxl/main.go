@@ -250,10 +250,11 @@ func cmdEncode(args []string) {
 		fmt.Fprintf(os.Stderr, "%dx%d, %d frames, %d bytes, %v\n", b.Dx(), b.Dy(), len(anim.Frames), len(data), time.Since(t0))
 		return
 	}
-	img, _, err := image.Decode(bytes.NewReader(raw))
+	img, err := decodeInput(raw)
 	if err != nil {
 		fatal(err)
 	}
+	b := img.Bounds()
 	t0 := time.Now()
 	data, err := gojxl.EncodeBytes(img, &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist)})
 	if err != nil {
@@ -263,7 +264,6 @@ func cmdEncode(args []string) {
 	if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
 		fatal(err)
 	}
-	b := img.Bounds()
 	mp := float64(b.Dx()*b.Dy()) / 1e6
 	fmt.Fprintf(os.Stderr, "%dx%d, %d bytes (%.3f bpp), %v, %.2f MP/s\n", b.Dx(), b.Dy(), len(data), float64(len(data)*8)/float64(b.Dx()*b.Dy()), el, mp/el.Seconds())
 }
@@ -277,11 +277,21 @@ func loadImage(path string) image.Image {
 	if img, err := gojxl.DecodeBytes(data); err == nil {
 		return img
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+	img, err := decodeInput(data)
 	if err != nil {
 		fatal(fmt.Errorf("%s: %w", path, err))
 	}
 	return img
+}
+
+// decodeInput decodes PNG (with the fast pngx decoder) or any other
+// registered image format.
+func decodeInput(data []byte) (image.Image, error) {
+	if bytes.HasPrefix(data, []byte("\x89PNG")) {
+		return pngx.Decode(data)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	return img, err
 }
 
 func cmdCompare(args []string) {

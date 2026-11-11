@@ -19,7 +19,7 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - LF frame'ler, referans frame'ler, tüm blend modları, animasyon, crop'lu katmanlar
 - Ekstra kanallar (alpha, premultiplied alpha, spot renkler), 1–32 bit tamsayı/float örnekler
 - ICC profil çözme (`UnpredictICC`), PNG çıktısına iCCP olarak gömme, yönlendirme (orientation)
-- Paralel PNG yazıcı; animasyonlu dosyalar APNG olarak yazılır (tüm kareler, süreler, döngü sayısı)
+- Hızlı PNG okuyucu (tablo tabanlı inflate, filtre çözme ile boru hattı; büyük dosyalarda image/png'den ~3× hızlı) ve paralel PNG yazıcı; animasyonlu dosyalar APNG olarak yazılır (tüm kareler, süreler, döngü sayısı)
 - SSIMULACRA 2 algısal kalite ölçütü (libjxl `tools/ssimulacra2.cc` portu; `gojxl.SSIMULACRA2`)
 - Animasyon kodlama: animasyonlu GIF/APNG → kayıpsız ya da kayıplı (`-d`) JXL animasyonu (yalnız değişen bölge kırpılarak
   kodlanır, aynı kareler birleştirilir; `EncodeAnimation`, `DecodeAnimatedInput`)
