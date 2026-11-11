@@ -108,6 +108,7 @@ func iterStreamSampled(chs []channel, s stream, useWP bool, nrefs int, full bool
 			wp = newWP(sw)
 		}
 		props[0] = int32(s.ctxIdx[k])
+		props[1] = int32(s.id)
 		ch := chn.pix
 		for y := 0; y < sh; y++ {
 			base := (s.y0+y)*W + s.x0
@@ -288,7 +289,7 @@ func treeRefs(n *tnode) int {
 
 // baseProps are the properties considered for splits (plus 16+ for
 // channel references).
-var baseProps = []int{0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+var baseProps = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 
 type treeSamples struct {
 	n      int

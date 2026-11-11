@@ -1642,9 +1642,11 @@ func planAlpha(a []int32, W, H, xg, yg int) *alphaPlan {
 	if W <= groupDim && H <= groupDim {
 		p.global.chans, p.global.ctxIdx = []int{0}, []int{0}
 	} else {
+		// modular group streams of pass 0: 1 + 3*LF groups + 17 + g
+		nlf := ((W + groupDim*8 - 1) / (groupDim * 8)) * ((H + groupDim*8 - 1) / (groupDim * 8))
 		for gy := 0; gy < yg; gy++ {
 			for gx := 0; gx < xg; gx++ {
-				p.groups = append(p.groups, stream{chans: []int{0}, ctxIdx: []int{0},
+				p.groups = append(p.groups, stream{id: 1 + 3*nlf + 17 + gy*xg + gx, chans: []int{0}, ctxIdx: []int{0},
 					x0: gx * groupDim, y0: gy * groupDim, w: groupDim, h: groupDim})
 			}
 		}

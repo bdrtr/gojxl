@@ -287,6 +287,7 @@ type channel struct {
 
 // stream is a set of channel rectangles coded together.
 type stream struct {
+	id     int   // stream ID (property 1) as the decoder numbers it
 	chans  []int // channel indices (into the modular image)
 	x0, y0 int   // rect origin (same for all channels)
 	w, h   int   // rect size (clipped per channel)
@@ -819,9 +820,11 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	single := xg == 1 && yg == 1
 	var groups []stream
 	if !single {
+		// modular group streams of pass 0: 1 + 3*LF groups + 17 + g
+		nlf := ((im.W + groupDim*8 - 1) / (groupDim * 8)) * ((im.H + groupDim*8 - 1) / (groupDim * 8))
 		for gy := 0; gy < yg; gy++ {
 			for gx := 0; gx < xg; gx++ {
-				s := stream{x0: gx * groupDim, y0: gy * groupDim, w: groupDim, h: groupDim}
+				s := stream{id: 1 + 3*nlf + 17 + gy*xg + gx, x0: gx * groupDim, y0: gy * groupDim, w: groupDim, h: groupDim}
 				for i := firstGroupCh; i < len(chs); i++ {
 					s.chans = append(s.chans, i)
 					s.ctxIdx = append(s.ctxIdx, i-firstGroupCh)
