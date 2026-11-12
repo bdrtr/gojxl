@@ -3,6 +3,8 @@ package jxl
 import (
 	"gojxl/internal/bitio"
 	"gojxl/internal/entropy"
+	"math/bits"
+	"sync"
 )
 
 // Channel is a single modular channel of 32-bit integers.
@@ -143,6 +145,7 @@ type ModularImage struct {
 	BitDepth   int
 	Transforms []Transform
 	WP         WPHeader
+	pooled     bool // channel buffers from the group pool (see release)
 }
 
 func defaultSqueezeParams(img *ModularImage) []SqueezeParams {
@@ -279,12 +282,48 @@ func (img *ModularImage) metaApply(t *Transform) error {
 	return nil
 }
 
-// allocate makes sure all channels have pixel storage.
+// allocate makes sure all channels have pixel storage (from the pool of
+// group-sized buffers for images marked pooled).
 func (img *ModularImage) allocate() {
 	for _, c := range img.Channels {
 		if len(c.Pix) != c.W*c.H {
-			c.Pix = make([]int32, c.W*c.H)
+			if img.pooled {
+				c.Pix = getPix(c.W * c.H)
+			} else {
+				c.Pix = make([]int32, c.W*c.H)
+			}
 		}
+	}
+}
+
+// Group images are decoded, copied into the frame's image and dropped:
+// their channel buffers are reused, by power-of-two size class.
+var pixPools [32]sync.Pool
+
+func getPix(n int) []int32 {
+	if n == 0 {
+		return nil
+	}
+	k := bits.Len(uint(n - 1))
+	if v, ok := pixPools[k].Get().(*[]int32); ok {
+		b := (*v)[:n]
+		clear(b)
+		return b
+	}
+	return make([]int32, n, 1<<k)
+}
+
+// release returns the channel buffers of a pooled image.
+func (img *ModularImage) release() {
+	if !img.pooled {
+		return
+	}
+	for _, c := range img.Channels {
+		if k := cap(c.Pix); k > 0 && k&(k-1) == 0 {
+			b := c.Pix[:0]
+			pixPools[bits.Len(uint(k))-1].Put(&b)
+		}
+		c.Pix = nil
 	}
 }
 

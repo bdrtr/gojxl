@@ -363,7 +363,8 @@ func (fd *frameDecoder) decodeModularRect(br *bitio.Reader, x0, y0, rectSize, mi
 		x0, y0, w, h int
 	}
 	var maps []mapping
-	sub := &ModularImage{BitDepth: full.BitDepth}
+	sub := &ModularImage{BitDepth: full.BitDepth, pooled: true}
+	defer sub.release()
 	for ; c < len(full.Channels); c++ {
 		fc := full.Channels[c]
 		sh := min(fc.HShift, fc.VShift)
