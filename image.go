@@ -94,20 +94,11 @@ func frameToImage(h *jxl.ImageHeader, f *jxl.Frame, opt *Options) image.Image {
 		jxl.ParallelRows(ht, func(y0, y1 int) {
 			tmp := make([]float32, 3*w)
 			for y := y0; y < y1; y++ {
-				r, g, b := f.RGBRow(y, tmp)
-				row := img.Pix[y*img.Stride : y*img.Stride+4*w]
+				var a []float32
 				if alpha != nil {
-					a := alpha.Row(y)
-					for x := 0; x < w; x++ {
-						o := row[4*x : 4*x+4 : 4*x+4]
-						o[0], o[1], o[2], o[3] = q8(r[x]), q8(g[x]), q8(b[x]), q8(a[x])
-					}
-				} else {
-					for x := 0; x < w; x++ {
-						o := row[4*x : 4*x+4 : 4*x+4]
-						o[0], o[1], o[2], o[3] = q8(r[x]), q8(g[x]), q8(b[x]), 255
-					}
+					a = alpha.Row(y)
 				}
+				f.RGBA8Row(y, tmp, a, img.Pix[y*img.Stride:y*img.Stride+4*w])
 			}
 		})
 		return img

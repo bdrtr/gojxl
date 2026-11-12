@@ -113,7 +113,7 @@ func benchRows() (rows [][]byte) {
 		r := make([]byte, w*bpp)
 		for i := range r {
 			if i >= bpp {
-				r[i] = byte((int(r[i-bpp]) + int(prev[i])) / 2) + byte(rng.Intn(9)-4)
+				r[i] = byte((int(r[i-bpp])+int(prev[i]))/2) + byte(rng.Intn(9)-4)
 			} else {
 				r[i] = byte(rng.Intn(256))
 			}
