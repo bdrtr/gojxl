@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"gojxl/internal/bitio"
 )
@@ -493,9 +494,21 @@ func (fd *frameDecoder) finish() error {
 	if len(img.Channels) != nb+len(fd.ih.ExtraChannels) {
 		return invalid("modular channel count")
 	}
+	// integer channels become float planes in place (same size, both
+	// pointer-free); a channel's memory is used once only
+	used := map[*int32]bool{}
+	plane := func(ch *Channel) *Plane {
+		n := ch.W * ch.H
+		if n > 0 && len(ch.Pix) >= n && !used[&ch.Pix[0]] {
+			used[&ch.Pix[0]] = true
+			return &Plane{W: ch.W, H: ch.H, Pix: unsafe.Slice((*float32)(unsafe.Pointer(&ch.Pix[0])), n)}
+		}
+		return newPlane(ch.W, ch.H)
+	}
 	if nb > 0 {
 		xyb := fd.ih.XYBEncoded
-		for c := 0; c < 3; c++ {
+		// with XYB, B adds Y (channel 0): convert channel 0 (c = 1) last
+		for _, c := range [3]int{0, 2, 1} {
 			cin := c
 			if xyb && c < 2 {
 				cin = 1 - c
@@ -507,7 +520,7 @@ func (fd *frameDecoder) finish() error {
 				fd.color[c] = fd.color[0]
 				continue
 			}
-			p := newPlane(ch.W, ch.H)
+			p := plane(ch)
 			bd := fd.ih.BitDepth
 			switch {
 			case xyb:
@@ -539,7 +552,7 @@ func (fd *frameDecoder) finish() error {
 	fd.ec = make([]*Plane, len(fd.ih.ExtraChannels))
 	for i, e := range fd.ih.ExtraChannels {
 		ch := img.Channels[nb+i]
-		p := newPlane(ch.W, ch.H)
+		p := plane(ch)
 		if e.BitDepth.Float {
 			for k, v := range ch.Pix {
 				p.Pix[k] = intToFloat(v, e.BitDepth)
