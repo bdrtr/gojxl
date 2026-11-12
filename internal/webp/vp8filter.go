@@ -1,6 +1,11 @@
 package webp
 
-import "image"
+import (
+	"image"
+	"runtime"
+	"sync"
+	"sync/atomic"
+)
 
 // Loop filter (applied to the whole frame after reconstruction, macroblock
 // by macroblock in raster order: left edge, inner vertical edges, top
@@ -53,67 +58,106 @@ func (d *vp8) strengths() (fs [4][2]fstrength) {
 	return
 }
 
+// loopFilter filters the frame. Rows of macroblocks run in parallel as a
+// wavefront: macroblock (x, y) reads and writes pixels of (x, y-1) that
+// (x+1, y-1) filters, so it waits until the row above has done x+1.
 func (d *vp8) loopFilter(y, u, v []byte, ys, uvs int, inner []bool, segs []uint8, i4 []bool) {
 	fs := d.strengths()
-	for my := 0; my < d.mbh; my++ {
-		for mx := 0; mx < d.mbw; mx++ {
-			i := my*d.mbw + mx
-			b := 0
-			if i4[i] {
-				b = 1
-			}
-			f := fs[segs[i]][b]
-			if f.limit == 0 {
-				continue
-			}
-			yo := my*16*ys + mx*16
-			uo := my*8*uvs + mx*8
-			in := inner[i]
-			if d.simple {
-				if mx > 0 {
-					simpleFilter(y, yo, 1, ys, f.limit+4)
-				}
-				if in {
-					for k := 4; k < 16; k += 4 {
-						simpleFilter(y, yo+k, 1, ys, f.limit)
-					}
-				}
-				if my > 0 {
-					simpleFilter(y, yo, ys, 1, f.limit+4)
-				}
-				if in {
-					for k := 4; k < 16; k += 4 {
-						simpleFilter(y, yo+k*ys, ys, 1, f.limit)
-					}
-				}
-				continue
-			}
-			if mx > 0 {
-				filterLoop26(y, yo, 1, ys, 16, f.limit+4, f.ilevel, f.hev)
-				filterLoop26(u, uo, 1, uvs, 8, f.limit+4, f.ilevel, f.hev)
-				filterLoop26(v, uo, 1, uvs, 8, f.limit+4, f.ilevel, f.hev)
-			}
-			if in {
-				for k := 4; k < 16; k += 4 {
-					filterLoop24(y, yo+k, 1, ys, 16, f.limit, f.ilevel, f.hev)
-				}
-				filterLoop24(u, uo+4, 1, uvs, 8, f.limit, f.ilevel, f.hev)
-				filterLoop24(v, uo+4, 1, uvs, 8, f.limit, f.ilevel, f.hev)
-			}
-			if my > 0 {
-				filterLoop26(y, yo, ys, 1, 16, f.limit+4, f.ilevel, f.hev)
-				filterLoop26(u, uo, uvs, 1, 8, f.limit+4, f.ilevel, f.hev)
-				filterLoop26(v, uo, uvs, 1, 8, f.limit+4, f.ilevel, f.hev)
-			}
-			if in {
-				for k := 4; k < 16; k += 4 {
-					filterLoop24(y, yo+k*ys, ys, 1, 16, f.limit, f.ilevel, f.hev)
-				}
-				filterLoop24(u, uo+4*uvs, uvs, 1, 8, f.limit, f.ilevel, f.hev)
-				filterLoop24(v, uo+4*uvs, uvs, 1, 8, f.limit, f.ilevel, f.hev)
+	nw := min(runtime.GOMAXPROCS(0), d.mbh)
+	if nw <= 1 || d.mbw*d.mbh < 64 {
+		for my := 0; my < d.mbh; my++ {
+			for mx := 0; mx < d.mbw; mx++ {
+				d.filterMB(y, u, v, ys, uvs, inner, segs, i4, &fs, mx, my)
 			}
 		}
+		return
 	}
+	done := make([]atomic.Int32, d.mbh) // macroblocks filtered per row
+	var next atomic.Int32
+	var wg sync.WaitGroup
+	for w := 0; w < nw; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				my := int(next.Add(1) - 1)
+				if my >= d.mbh {
+					return
+				}
+				for mx := 0; mx < d.mbw; mx++ {
+					if my > 0 {
+						for need := int32(min(mx+2, d.mbw)); done[my-1].Load() < need; {
+							runtime.Gosched()
+						}
+					}
+					d.filterMB(y, u, v, ys, uvs, inner, segs, i4, &fs, mx, my)
+					done[my].Store(int32(mx + 1))
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// filterMB filters the edges of one macroblock (left, inner vertical, top,
+// inner horizontal).
+func (d *vp8) filterMB(y, u, v []byte, ys, uvs int, inner []bool, segs []uint8, i4 []bool, fs *[4][2]fstrength, mx, my int) {
+	i := my*d.mbw + mx
+	b := 0
+	if i4[i] {
+		b = 1
+	}
+	f := fs[segs[i]][b]
+	if f.limit == 0 {
+		return
+	}
+	yo := my*16*ys + mx*16
+	uo := my*8*uvs + mx*8
+	in := inner[i]
+	if d.simple {
+		if mx > 0 {
+			simpleFilter(y, yo, 1, ys, f.limit+4)
+		}
+		if in {
+			for k := 4; k < 16; k += 4 {
+				simpleFilter(y, yo+k, 1, ys, f.limit)
+			}
+		}
+		if my > 0 {
+			simpleFilter(y, yo, ys, 1, f.limit+4)
+		}
+		if in {
+			for k := 4; k < 16; k += 4 {
+				simpleFilter(y, yo+k*ys, ys, 1, f.limit)
+			}
+		}
+		return
+	}
+	if mx > 0 {
+		filterLoop26(y, yo, 1, ys, 16, f.limit+4, f.ilevel, f.hev)
+		filterLoop26(u, uo, 1, uvs, 8, f.limit+4, f.ilevel, f.hev)
+		filterLoop26(v, uo, 1, uvs, 8, f.limit+4, f.ilevel, f.hev)
+	}
+	if in {
+		for k := 4; k < 16; k += 4 {
+			filterLoop24(y, yo+k, 1, ys, 16, f.limit, f.ilevel, f.hev)
+		}
+		filterLoop24(u, uo+4, 1, uvs, 8, f.limit, f.ilevel, f.hev)
+		filterLoop24(v, uo+4, 1, uvs, 8, f.limit, f.ilevel, f.hev)
+	}
+	if my > 0 {
+		filterLoop26(y, yo, ys, 1, 16, f.limit+4, f.ilevel, f.hev)
+		filterLoop26(u, uo, uvs, 1, 8, f.limit+4, f.ilevel, f.hev)
+		filterLoop26(v, uo, uvs, 1, 8, f.limit+4, f.ilevel, f.hev)
+	}
+	if in {
+		for k := 4; k < 16; k += 4 {
+			filterLoop24(y, yo+k*ys, ys, 1, 16, f.limit, f.ilevel, f.hev)
+		}
+		filterLoop24(u, uo+4*uvs, uvs, 1, 8, f.limit, f.ilevel, f.hev)
+		filterLoop24(v, uo+4*uvs, uvs, 1, 8, f.limit, f.ilevel, f.hev)
+	}
+
 }
 
 func iabs(v int) int {
@@ -296,18 +340,35 @@ func yuvToRGBA(img *image.NRGBA, yp, up, vp []byte, w, h, ys, uvs int) {
 	rowU := func(c int) []byte { return up[c*uvs:] }
 	rowV := func(c int) []byte { return vp[c*uvs:] }
 	dst := func(y int) []uint8 { return img.Pix[y*img.Stride : y*img.Stride+4*w] }
+	// row 0 alone, then pairs (2k+1, 2k+2) from chroma rows k and k+1, in
+	// parallel bands of pairs; an even height ends with a single row
+	pairs := (h - 1) / 2
+	band := max(16, pairs/(4*runtime.GOMAXPROCS(0))+1)
+	var wg sync.WaitGroup
+	for p0 := 0; p0 < pairs; p0 += band {
+		wg.Add(1)
+		go func(p0, p1 int) {
+			defer wg.Done()
+			for k := p0; k < p1; k++ {
+				y := 2*k + 1
+				upsampleRows(rowY(y), rowY(y+1), rowU(k), rowV(k), rowU(k+1), rowV(k+1), dst(y), dst(y+1), w)
+				alpha255(dst(y))
+				alpha255(dst(y + 1))
+			}
+		}(p0, min(p0+band, pairs))
+	}
 	upsampleRows(rowY(0), nil, rowU(0), rowV(0), rowU(0), rowV(0), dst(0), nil, w)
-	c := 0
-	y := 1
-	for ; y+1 < h; y += 2 {
-		upsampleRows(rowY(y), rowY(y+1), rowU(c), rowV(c), rowU(c+1), rowV(c+1), dst(y), dst(y+1), w)
-		c++
+	alpha255(dst(0))
+	if y := 2*pairs + 1; y < h {
+		upsampleRows(rowY(y), nil, rowU(pairs), rowV(pairs), rowU(pairs), rowV(pairs), dst(y), nil, w)
+		alpha255(dst(y))
 	}
-	if y < h { // the last row of an even height
-		upsampleRows(rowY(y), nil, rowU(c), rowV(c), rowU(c), rowV(c), dst(y), nil, w)
-	}
-	for i := 3; i < len(img.Pix); i += 4 {
-		img.Pix[i] = 255
+	wg.Wait()
+}
+
+func alpha255(row []uint8) {
+	for i := 3; i < len(row); i += 4 {
+		row[i] = 255
 	}
 }
 
