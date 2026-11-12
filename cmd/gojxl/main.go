@@ -200,7 +200,15 @@ func cmdInfo(args []string) {
 	fmt.Printf("size: %dx%d\n", info.Width, info.Height)
 	fmt.Printf("bits per sample: %d (float=%v)\n", info.BitsPerSample, info.FloatSamples)
 	fmt.Printf("xyb: %v, grey: %v, alpha: %v, animated: %v\n", info.XYB, info.Grey, info.HasAlpha, info.Animated)
-	fmt.Printf("orientation: %d, extra channels: %d, icc: %d bytes\n", info.Orientation, info.NumExtraChannels, len(info.ICC))
+	fmt.Printf("orientation: %d, extra channels: %d\n", info.Orientation, info.NumExtraChannels)
+	if info.ICC != nil {
+		fmt.Printf("colour: ICC profile, %d bytes\n", len(info.ICC))
+	} else {
+		fmt.Printf("colour: %s\n", info.Colour)
+	}
+	if info.Exif != nil || info.XMP != nil {
+		fmt.Printf("metadata: Exif %d bytes, XMP %d bytes\n", len(info.Exif), len(info.XMP))
+	}
 }
 
 func cmdEncode(args []string) {

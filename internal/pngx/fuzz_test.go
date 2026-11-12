@@ -52,7 +52,14 @@ func FuzzDecode(f *testing.F) {
 		g.Pix[i] = uint8(i * 13)
 	}
 	add(g)
+	// colour and metadata chunks
+	img := image.NewGray(image.Rect(0, 0, 8, 8))
+	var b bytes.Buffer
+	png.Encode(&b, img)
+	f.Add(InsertChunks(b.Bytes(), ICCChunk(make([]byte, 300)), CICPChunk(12, 13), Chunk{"gAMA", []byte{0, 0, 0xb1, 0x8f}},
+		ExifChunk([]byte("II*\x00\x08\x00\x00\x00")), XMPChunk([]byte("<x/>"))))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		Decode(data)
+		ReadAncillary(data)
 	})
 }

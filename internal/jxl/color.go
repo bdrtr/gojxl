@@ -3,6 +3,7 @@ package jxl
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 )
 
@@ -261,6 +262,33 @@ func SynthesizeICC(c *ColourEncoding) []byte {
 		iccTag{"bXYZ", xyzTag([3]float64{m[2], m[5], m[8]})},
 		iccTag{"rTRC", trc}, iccTag{"gTRC", trc}, iccTag{"bTRC", trc})
 	return buildICC("RGB ", tags)
+}
+
+// String describes the encoding as jxlinfo does.
+func (c *ColourEncoding) String() string {
+	if c.WantICC {
+		return "ICC profile"
+	}
+	xy := func(v [2]float64) string { return fmt.Sprintf("(%.6f, %.6f)", v[0], v[1]) }
+	sp := map[uint32]string{CSRGB: "RGB", CSGrey: "grey", CSXYB: "XYB", CSUnknown: "unknown"}[c.ColourSpace]
+	wp := map[uint32]string{WPD65: "D65", WPE: "E", WPDCI: "DCI"}[c.WhitePoint]
+	if c.WhitePoint == WPCustom {
+		wp = "custom " + xy(c.White)
+	}
+	s := sp + ", white point " + wp
+	if c.ColourSpace != CSGrey {
+		pr := map[uint32]string{PrimSRGB: "sRGB", Prim2100: "BT.2100", PrimP3: "P3"}[c.Primaries]
+		if c.Primaries == PrimCustom {
+			pr = "custom " + xy(c.Red) + " " + xy(c.Green) + " " + xy(c.Blue)
+		}
+		s += ", primaries " + pr
+	}
+	tf := map[uint32]string{TF709: "BT.709", TFUnknown: "unknown", TFLinear: "linear", TFSRGB: "sRGB", TFPQ: "PQ", TFDCI: "DCI", TFHLG: "HLG"}[c.TransferFunction]
+	if c.TransferFunction == TFGamma {
+		tf = fmt.Sprintf("gamma %.7f", c.Gamma)
+	}
+	ri := [4]string{"perceptual", "relative", "saturation", "absolute"}[c.RenderingIntent&3]
+	return s + ", transfer " + tf + ", " + ri + " intent"
 }
 
 func (c *ColourEncoding) describe() string {

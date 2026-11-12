@@ -9,6 +9,7 @@ import (
 	"io"
 	"sync"
 
+	"gojxl/internal/exif"
 	ijpeg "gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
@@ -17,7 +18,8 @@ import (
 // ConvertToJXL encodes an image file as JPEG XL: PNG or APNG, GIF, JPEG,
 // or any other format registered with package image. The colour space of
 // the input is kept (PNG cICP, iCCP, sRGB and gAMA/cHRM chunks, JPEG ICC
-// profiles; opt.ICC overrides them). With Distance 0, JPEG files are
+// profiles; opt.ICC overrides them), as are its Exif and XMP metadata
+// (the Exif orientation becomes the image's). With Distance 0, JPEG files are
 // recompressed losslessly (restorable byte for byte with ReconstructJPEG)
 // when possible, unless opt.JPEGPixels is set; animated GIF and APNG files
 // become animations.
@@ -32,25 +34,31 @@ func ConvertToJXL(data []byte, opt *EncodeOptions) (out []byte, err error) {
 			return out, nil
 		}
 	}
-	col := inputColour(data)
+	col, meta := readInput(data)
 	if o.ICC != nil {
 		var ok bool
 		if col, ok = specFromICC(o.ICC); !ok {
 			return nil, errBadICC
 		}
 	}
+	if o.Exif != nil {
+		meta.exif = o.Exif
+	}
+	if o.XMP != nil {
+		meta.xmp = o.XMP
+	}
 	anim, err := DecodeAnimatedInput(data)
 	if err != nil {
 		return nil, err
 	}
 	if anim != nil {
-		return encodeAnimation(anim, &o, col)
+		return encodeAnimation(anim, &o, col, meta)
 	}
 	img, err := decodeInput(data)
 	if err != nil {
 		return nil, err
 	}
-	return encodeImage(img, &o, col)
+	return encodeImage(img, &o, col, meta)
 }
 
 // decodeInput decodes PNG (with the fast pngx decoder), JPEG or any other
@@ -66,7 +74,7 @@ func decodeInput(data []byte) (image.Image, error) {
 // ConvertToJPEG writes a JPEG XL image to w as JPEG: the original file
 // when it is a losslessly recompressed JPEG (see ReconstructJPEG), else
 // the first frame's pixels encoded at the given quality (1-100), with the
-// colour profile of the decoded pixels.
+// colour profile of the decoded pixels and the Exif and XMP metadata.
 func ConvertToJPEG(w io.Writer, data []byte, quality int) (err error) {
 	defer recoverErr(&err)
 	jpg, err := ReconstructJPEG(data)
@@ -86,8 +94,8 @@ func ConvertToJPEG(w io.Writer, data []byte, quality int) (err error) {
 		return err
 	}
 	out := buf.Bytes()
-	if info, err := Stat(data); err == nil && info.OutputICC != nil {
-		out = ijpeg.InsertICC(out, info.OutputICC)
+	if info, err := Stat(data); err == nil {
+		out = ijpeg.InsertMetadata(out, info.OutputICC, exif.ResetOrientation(info.Exif), info.XMP)
 	}
 	_, err = w.Write(out)
 	return err
@@ -105,13 +113,20 @@ func ConvertToPNG(w io.Writer, data []byte, opt *Options) (err error) {
 	if ierr != nil {
 		info = &Info{}
 	}
-	// colour description chunks after IHDR (cICP before iCCP)
+	// colour description chunks after IHDR (cICP before iCCP), then the
+	// metadata (the pixels are oriented: the Exif orientation becomes 1)
 	var extra []pngx.Chunk
 	if info.CICP != nil {
 		extra = append(extra, pngx.CICPChunk(info.CICP[0], info.CICP[1]))
 	}
 	if info.OutputICC != nil {
 		extra = append(extra, pngx.ICCChunk(info.OutputICC))
+	}
+	if info.Exif != nil {
+		extra = append(extra, pngx.ExifChunk(exif.ResetOrientation(info.Exif)))
+	}
+	if info.XMP != nil {
+		extra = append(extra, pngx.XMPChunk(info.XMP))
 	}
 	if info.Animated {
 		anim, err := DecodeAll(data)
@@ -128,21 +143,15 @@ func ConvertToPNG(w io.Writer, data []byte, opt *Options) (err error) {
 			if err := pngx.EncodeAPNG(&buf, frames, delays, anim.NumLoops, flate.BestSpeed); err != nil {
 				return err
 			}
-			return writeWithChunks(w, buf.Bytes(), info)
+			return writeWithChunks(w, buf.Bytes(), extra)
 		}
 	}
 	return writeFramePNG(w, data, opt, info, extra)
 }
 
-// writeWithChunks writes a PNG with the colour chunks of info inserted.
-func writeWithChunks(w io.Writer, png []byte, info *Info) error {
-	if info.OutputICC != nil {
-		png = pngx.InsertICC(png, info.OutputICC)
-	}
-	if info.CICP != nil {
-		png = pngx.InsertCICP(png, info.CICP[0], info.CICP[1])
-	}
-	_, err := w.Write(png)
+// writeWithChunks writes a PNG with chunks inserted after IHDR.
+func writeWithChunks(w io.Writer, png []byte, extra []pngx.Chunk) error {
+	_, err := w.Write(pngx.InsertChunks(png, extra...))
 	return err
 }
 
@@ -166,7 +175,7 @@ func writeFramePNG(w io.Writer, data []byte, opt *Options, info *Info, extra []p
 		if err := pngx.Encode(&buf, frameToImage(h, f, opt), flate.BestSpeed); err != nil {
 			return err
 		}
-		return writeWithChunks(w, buf.Bytes(), info)
+		return writeWithChunks(w, buf.Bytes(), extra)
 	}
 	var alpha *jxl.Plane
 	if ai := h.AlphaChannel(); ai >= 0 && ai < len(f.EC) {

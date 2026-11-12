@@ -68,3 +68,29 @@ func InsertCICP(png []byte, primaries, transfer byte) []byte {
 	out = append(out, png[33:]...)
 	return out
 }
+
+// InsertChunks inserts chunks right after the IHDR chunk of an encoded
+// PNG, in order.
+func InsertChunks(png []byte, chunks ...Chunk) []byte {
+	if len(png) < 33 || len(chunks) == 0 {
+		return png
+	}
+	out := append([]byte(nil), png[:33]...)
+	for _, c := range chunks {
+		out = append(out, makeChunk(c.Type, c.Data)...)
+	}
+	return append(out, png[33:]...)
+}
+
+// ExifChunk returns the eXIf chunk of Exif data (TIFF format).
+func ExifChunk(tiff []byte) Chunk { return Chunk{"eXIf", tiff} }
+
+// XMPChunk returns the iTXt chunk that carries an XMP packet.
+func XMPChunk(xmp []byte) Chunk {
+	// keyword, NUL, uncompressed, method 0, empty language and
+	// translated keyword
+	data := append([]byte(xmpKeyword+"\x00\x00\x00\x00\x00"), xmp...)
+	return Chunk{"iTXt", data}
+}
+
+const xmpKeyword = "XML:com.adobe.xmp"

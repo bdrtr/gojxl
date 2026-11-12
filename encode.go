@@ -40,6 +40,11 @@ type EncodeOptions struct {
 	// JPEGPixels makes ConvertToJXL encode the pixels of JPEG input
 	// instead of recompressing its DCT coefficients losslessly.
 	JPEGPixels bool
+	// Exif (TIFF format, as in PNG eXIf chunks) and XMP are stored in
+	// metadata boxes (for ConvertToJXL: those of the input file, unless
+	// set). The Exif orientation tag becomes the image's orientation: the
+	// samples are taken as stored, before that rotation.
+	Exif, XMP []byte
 }
 
 // errBadICC reports a malformed EncodeOptions.ICC.
@@ -65,25 +70,33 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 			return nil, errBadICC
 		}
 	}
-	return encodeImage(img, opt, col)
+	return encodeImage(img, opt, col, optMetadata(opt))
 }
 
-// encodeImage encodes img, whose samples col describes.
-func encodeImage(img image.Image, opt *EncodeOptions, col colourSpec) ([]byte, error) {
+// encodeImage encodes img, whose samples col describes, with metadata.
+func encodeImage(img image.Image, opt *EncodeOptions, col colourSpec, meta metadata) ([]byte, error) {
 	o := enc.Options{Effort: 4, Consume: true} // the planar copy is ours
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}
 	im := toPlanar(img)
 	col.apply(im)
+	meta.apply(im)
+	var cs []byte
+	var err error
 	if opt != nil && opt.Distance > 0 {
 		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, Effort: opt.Effort, LibAQ: true}
 		if enc.TuneLossy != nil {
 			enc.TuneLossy(&lo)
 		}
-		return enc.EncodeVarDCT(im, lo)
+		cs, err = enc.EncodeVarDCT(im, lo)
+	} else {
+		cs, err = enc.EncodeLossless(im, o)
 	}
-	return enc.EncodeLossless(im, o)
+	if err != nil {
+		return nil, err
+	}
+	return meta.wrap(cs), nil
 }
 
 func toPlanar(img image.Image) *enc.Image {

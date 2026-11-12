@@ -96,6 +96,17 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   16-bit yazılır (önceden 8-bit'e indiriliyordu)
 - JXL → JPEG (`ConvertToJPEG`) çözülen piksellerin profilini APP2 ICC olarak yazar
 
+**Metadata (Exif, XMP, yönlendirme)**
+- PNG `eXIf`/`iTXt` (XMP, sıkıştırılmış dahil) ve JPEG APP1 Exif/XMP
+  JXL `Exif`/`xml ` kutularına taşınır (küçükse Brotli `brob`); kütüphanede
+  `EncodeOptions.Exif`/`XMP`
+- Exif yönlendirmesi JXL başlığına yazılır (cjxl gibi; JPEG dönüştürmede de):
+  telefon fotoğrafları JXL görüntüleyicilerde doğru döner. JPEG geri
+  üretimi bayt-birebir kalır
+- Çözmede pikseller döndürülür; PNG çıktısına `eXIf` + `iTXt`, JPEG çıktısına
+  APP1 yazılır ve Exif'teki yön 1'e çekilir (djxl gibi; çift döndürme olmaz)
+- `gojxl info` renk kodlamasını (jxlinfo biçiminde) ve metadata boyutlarını gösterir
+
 **Kayıpsız kodlayıcı (Modular)**
 - Efor 1–3: sabit bağlam ağaçları, YCoCg, Gradient/Weighted predictor (hızlı)
 - Efor 4+ (varsayılan 4): **MA ağacı öğrenme** — örneklenmiş piksellerden

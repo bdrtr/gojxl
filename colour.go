@@ -1,11 +1,9 @@
 package gojxl
 
 import (
-	"bytes"
 	"encoding/binary"
 
 	"gojxl/internal/enc"
-	"gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
 )
@@ -41,7 +39,7 @@ func specFromICC(icc []byte) (s colourSpec, ok bool) {
 
 // specFromPNG describes the samples of a PNG file by its colour chunks,
 // in their order of precedence: cICP, iCCP, sRGB, then gAMA and cHRM.
-func specFromPNG(ci pngx.ColourInfo) colourSpec {
+func specFromPNG(ci pngx.Ancillary) colourSpec {
 	if c := ci.CICP; c != nil {
 		if e := jxl.EncodingFromCICP(c[0], c[1], c[2], c[3]); e != nil {
 			return colourSpec{enc: e}
@@ -73,19 +71,6 @@ func specFromPNG(ci pngx.ColourInfo) colourSpec {
 		return colourSpec{}
 	}
 	return colourSpec{enc: e}
-}
-
-// inputColour returns the colour description of an image file's samples:
-// PNG colour chunks or a JPEG ICC profile.
-func inputColour(data []byte) colourSpec {
-	switch {
-	case bytes.HasPrefix(data, []byte("\x89PNG")):
-		return specFromPNG(pngx.ReadColourInfo(data))
-	case len(data) > 2 && data[0] == 0xff && data[1] == 0xd8:
-		s, _ := specFromICC(jpeg.ICCProfile(data))
-		return s
-	}
-	return colourSpec{}
 }
 
 // apply sets the colour description of im. An ICC profile of the other

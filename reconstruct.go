@@ -35,31 +35,15 @@ func ReconstructJPEG(data []byte) (out []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	var jbrd, exif, xmp []byte
-	for _, b := range d.Container.Boxes {
-		t, payload := b.Type, b.Data
-		if t == "brob" && len(payload) >= 4 {
-			t = string(payload[:4])
-			if payload, err = brotli.Decode(payload[4:], 1<<28); err != nil {
-				return nil, err
-			}
-		}
-		switch t {
-		case "jbrd":
-			jbrd = payload
-		case "Exif":
-			if len(payload) >= 4 {
-				exif = payload[4:]
-			}
-		case "xml ":
-			xmp = payload
-		}
+	jbrd, meta, err := boxMetadata(d.Container.Boxes, true)
+	if err != nil {
+		return nil, err
 	}
 	if jbrd == nil {
 		return nil, ErrNoJPEG
 	}
 	dec := func(b []byte) ([]byte, error) { return brotli.Decode(b, 1<<28) }
-	img, err := jpeg.ParseJBRD(jbrd, dec, d.ICC, exif, xmp)
+	img, err := jpeg.ParseJBRD(jbrd, dec, d.ICC, meta.exif, meta.xmp)
 	if err != nil {
 		return nil, err
 	}

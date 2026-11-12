@@ -34,6 +34,12 @@ type Info struct {
 	// CICP holds H.273 (primaries, transfer) code points for HDR (PQ/HLG)
 	// output, or nil.
 	CICP []byte
+	// Exif (TIFF format) and XMP metadata from the container's boxes, or
+	// nil. The Exif orientation tag is as stored; Orientation is the one
+	// decoders apply.
+	Exif, XMP []byte
+	// Colour describes the colour encoding of the image header.
+	Colour string
 }
 
 func readAll(r io.Reader) ([]byte, error) {
@@ -67,8 +73,12 @@ func Stat(data []byte) (*Info, error) {
 	}
 	h := d.Header
 	w, ht := h.OrientedSize()
+	_, meta, _ := boxMetadata(d.Container.Boxes, false)
 	return &Info{
 		Width: w, Height: ht,
+		Exif:             meta.exif,
+		XMP:              meta.xmp,
+		Colour:           h.Colour.String(),
 		BitsPerSample:    int(h.BitDepth.BitsPerSample),
 		FloatSamples:     h.BitDepth.Float,
 		HasAlpha:         h.AlphaChannel() >= 0,

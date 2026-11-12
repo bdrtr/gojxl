@@ -27,6 +27,9 @@ type Image struct {
 	// XYB through either.
 	Colour *jxl.ColourEncoding
 	ICC    []byte
+	// Orientation (1-8 as in Exif, 0 = 1) tells decoders how to rotate or
+	// flip the samples for display.
+	Orientation int
 }
 
 // Options controls encoding.
@@ -90,15 +93,25 @@ func (o FrameOpts) writeCropBlend(w *bitio.Writer, fw, fh, nec int) {
 
 // writeAnimHeader writes the extra-fields part of the image metadata for
 // an animation.
-func writeAnimHeader(w *bitio.Writer, anim *Anim) {
-	w.Write(3, 0)      // orientation
+// writeExtraFields writes the image metadata's extra_fields flag and, when
+// set (orientation or animation), the fields.
+func writeExtraFields(w *bitio.Writer, orientation int, anim *Anim) (extra bool) {
+	extra = anim != nil || orientation > 1
+	w.WriteBool(extra)
+	if !extra {
+		return
+	}
+	w.Write(3, uint64(max(orientation, 1)-1))
 	w.WriteBool(false) // no intrinsic size
 	w.WriteBool(false) // no preview
-	w.WriteBool(true)  // animation
-	w.WriteU32(anim.TpsNum, val(100), val(1000), bitsOff(10, 1), bitsOff(30, 1))
-	w.WriteU32(anim.TpsDen, val(1), val(1001), bitsOff(8, 1), bitsOff(10, 1))
-	w.WriteU32(anim.Loops, val(0), bitio.Bits(3), bitio.Bits(16), bitio.Bits(32))
-	w.WriteBool(false) // no timecodes
+	w.WriteBool(anim != nil)
+	if anim != nil {
+		w.WriteU32(anim.TpsNum, val(100), val(1000), bitsOff(10, 1), bitsOff(30, 1))
+		w.WriteU32(anim.TpsDen, val(1), val(1001), bitsOff(8, 1), bitsOff(10, 1))
+		w.WriteU32(anim.Loops, val(0), bitio.Bits(3), bitio.Bits(16), bitio.Bits(32))
+		w.WriteBool(false) // no timecodes
+	}
+	return
 }
 
 // Anim is the animation header: ticks per second TpsNum/TpsDen.
@@ -145,10 +158,7 @@ func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	w.Write(16, 0x0aff)
 	writeSize(w, im.W, im.H)
 	w.WriteBool(false) // metadata not all default
-	w.WriteBool(anim != nil)
-	if anim != nil {
-		writeAnimHeader(w, anim)
-	}
+	extra := writeExtraFields(w, im.Orientation, anim)
 	writeBitDepth(w, im.BitDepth)
 	w.WriteBool(im.BitDepth <= 12) // modular_16bit_buffers
 	nec := 0
@@ -161,7 +171,7 @@ func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	}
 	w.WriteBool(false) // xyb_encoded
 	writeColour(w, im, im.Grey)
-	if anim != nil {
+	if extra {
 		w.WriteBool(true) // default tone mapping
 	}
 	w.WriteU64(0)     // extensions

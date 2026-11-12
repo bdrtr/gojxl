@@ -202,7 +202,7 @@ func TestJPEGColour(t *testing.T) {
 	if err := jpeg.Encode(&b, colourTestImage(), &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
 	}
-	file := ijpeg.InsertICC(b.Bytes(), jxl.SynthesizeICC(&encP3))
+	file := ijpeg.InsertMetadata(b.Bytes(), jxl.SynthesizeICC(&encP3), nil, nil)
 	if !bytes.Equal(ijpeg.ICCProfile(file), jxl.SynthesizeICC(&encP3)) {
 		t.Fatal("ICC not found in JPEG")
 	}

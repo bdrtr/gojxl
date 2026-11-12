@@ -27,7 +27,9 @@ func FuzzParse(f *testing.F) {
 	var b bytes.Buffer
 	jpeg.Encode(&b, gray, nil)
 	f.Add(b.Bytes())
+	f.Add(InsertMetadata(b.Bytes(), make([]byte, 200), []byte("MM\x00*\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00"), []byte("<x/>")))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		Parse(data)
+		ReadMetadata(data)
 	})
 }

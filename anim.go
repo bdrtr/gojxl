@@ -25,11 +25,12 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 			return nil, errBadICC
 		}
 	}
-	return encodeAnimation(anim, opt, col)
+	return encodeAnimation(anim, opt, col, optMetadata(opt))
 }
 
-// encodeAnimation encodes an animation whose samples col describes.
-func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec) ([]byte, error) {
+// encodeAnimation encodes an animation whose samples col describes, with
+// metadata.
+func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec, meta metadata) ([]byte, error) {
 	if anim == nil || len(anim.Frames) == 0 {
 		return nil, errors.New("gojxl: empty animation")
 	}
@@ -83,6 +84,7 @@ func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec) ([]byt
 			im.Alpha = true
 		}
 		col.apply(im) // cropped frames keep it
+		meta.apply(im)
 	}
 	// frames identical to their predecessor only extend its duration;
 	// others are cropped to the region that changed
@@ -148,6 +150,7 @@ func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec) ([]byt
 		}
 		out = append(out, outs[i]...)
 	}
+	out = meta.wrap(out)
 	return out, nil
 }
 

@@ -480,8 +480,21 @@ func assembleICC(chunks [][]byte) []byte {
 // ICCProfile returns the ICC profile in the APP2 segments of a JPEG file,
 // or nil, without parsing the rest of the file.
 func ICCProfile(data []byte) []byte {
+	icc, _, _ := ReadMetadata(data)
+	return icc
+}
+
+const (
+	exifSig = "Exif\x00\x00"
+	xmpSig  = "http://ns.adobe.com/xap/1.0/\x00"
+)
+
+// ReadMetadata returns the ICC profile (APP2), Exif data (TIFF format, from
+// the first Exif APP1) and XMP packet (first XMP APP1) of a JPEG file,
+// reading only the segments before the image data.
+func ReadMetadata(data []byte) (icc, exif, xmp []byte) {
 	if len(data) < 4 || data[0] != 0xff || data[1] != 0xd8 {
-		return nil
+		return nil, nil, nil
 	}
 	var chunks [][]byte
 	for p := 2; p+4 <= len(data) && data[p] == 0xff; {
@@ -494,18 +507,24 @@ func ICCProfile(data []byte) []byte {
 			p += 2
 			continue
 		case m == 0xda || m == 0xd9: // scan data or end
-			return assembleICC(chunks)
+			return assembleICC(chunks), exif, xmp
 		}
 		n := int(data[p+2])<<8 | int(data[p+3])
 		if n < 2 || p+2+n > len(data) {
 			break
 		}
-		if pl := data[p+4 : p+2+n]; m == 0xe2 && len(pl) >= 14 && string(pl[:12]) == "ICC_PROFILE\x00" {
+		pl := data[p+4 : p+2+n]
+		switch {
+		case m == 0xe2 && len(pl) >= 14 && string(pl[:12]) == "ICC_PROFILE\x00":
 			chunks = append(chunks, pl)
+		case m == 0xe1 && exif == nil && len(pl) > len(exifSig) && string(pl[:len(exifSig)]) == exifSig:
+			exif = pl[len(exifSig):]
+		case m == 0xe1 && xmp == nil && len(pl) > len(xmpSig) && string(pl[:len(xmpSig)]) == xmpSig:
+			xmp = pl[len(xmpSig):]
 		}
 		p += 2 + n
 	}
-	return assembleICC(chunks)
+	return assembleICC(chunks), exif, xmp
 }
 
 func (p *parser) sofSeg(pos *int) error {
@@ -1031,30 +1050,42 @@ func (p *parser) refineBlock(br *bitReader, act *huffTable, Ss, Se, Al int, eobr
 	return nil
 }
 
-// InsertICC returns a JPEG file with icc stored in APP2 ICC_PROFILE
-// segments after the SOI marker (and a JFIF APP0 segment).
-func InsertICC(jpg, icc []byte) []byte {
-	if len(jpg) < 4 || len(icc) == 0 {
+// InsertMetadata returns a JPEG file with Exif data (TIFF format) and an
+// XMP packet in APP1 segments and an ICC profile in APP2 ICC_PROFILE
+// segments, after the SOI marker (and a JFIF APP0 segment). Parts that do
+// not fit a segment are left out.
+func InsertMetadata(jpg, icc, exif, xmp []byte) []byte {
+	if len(jpg) < 4 {
 		return jpg
 	}
 	at := 2
 	if jpg[2] == 0xff && jpg[3] == 0xe0 && len(jpg) >= 6 {
 		at = min(4+(int(jpg[4])<<8|int(jpg[5])), len(jpg))
 	}
-	const part = 65519 // segment payload after the 14-byte header
-	n := (len(icc) + part - 1) / part
-	if n > 255 {
-		return jpg
-	}
-	out := make([]byte, 0, len(jpg)+len(icc)+18*n)
+	out := make([]byte, 0, len(jpg)+len(icc)+len(exif)+len(xmp)+64)
 	out = append(out, jpg[:at]...)
-	for i := 0; i < n; i++ {
-		p := icc[i*part : min((i+1)*part, len(icc))]
-		l := 2 + 14 + len(p)
-		out = append(out, 0xff, 0xe2, byte(l>>8), byte(l))
-		out = append(out, "ICC_PROFILE\x00"...)
-		out = append(out, byte(i+1), byte(n))
-		out = append(out, p...)
+	seg := func(m byte, parts ...[]byte) {
+		l := 2
+		for _, p := range parts {
+			l += len(p)
+		}
+		out = append(out, 0xff, m, byte(l>>8), byte(l))
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+	}
+	const maxPayload = 65533
+	if len(exif) > 0 && len(exif)+len(exifSig) <= maxPayload {
+		seg(0xe1, []byte(exifSig), exif)
+	}
+	if len(xmp) > 0 && len(xmp)+len(xmpSig) <= maxPayload {
+		seg(0xe1, []byte(xmpSig), xmp)
+	}
+	const part = maxPayload - 14 // after the ICC_PROFILE header
+	if n := (len(icc) + part - 1) / part; n > 0 && n <= 255 {
+		for i := 0; i < n; i++ {
+			seg(0xe2, []byte("ICC_PROFILE\x00"), []byte{byte(i + 1), byte(n)}, icc[i*part:min((i+1)*part, len(icc))])
+		}
 	}
 	return append(out, jpg[at:]...)
 }
