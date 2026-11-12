@@ -1242,7 +1242,13 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				for c := 0; c < 3; c++ {
 					rc.compute(c, xyb[c], pw, ph, bx0, by0, sel.rowLens())
 				}
-				cost := func(ti, bx, by int) float64 {
+				// cost is the RD cost of type ti at (bx, by), or +Inf once mul
+				// times the cost of the channels done reaches bound: the
+				// channel terms are non-negative, so the candidate cannot
+				// then beat the plan costing bound (its comparison has the
+				// same outcome). Y goes first (it decides most often); the
+				// terms are summed in X, Y, B order, as without a bound.
+				cost := func(ti, bx, by int, bound, mul float64) float64 {
 					vt := vtypes[ti]
 					if bx*8+vt.cols() > pw || by*8+vt.rows() > ph || bx+vt.cx > bw || by+vt.cy > bh {
 						return math.Inf(1)
@@ -1251,8 +1257,8 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					if len(buf) < sz {
 						buf = make([]float32, sz)
 					}
-					var j float64
-					for c := 0; c < 3; c++ {
+					var t [3]float64
+					for k, c := range [3]int{1, 0, 2} {
 						if ti >= vtIdent {
 							fdct8Kind(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, buf[:sz])
 						} else if vt.split {
@@ -1261,9 +1267,21 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
 						}
 						dd, rr := rdCostPre(buf[:sz], selSt[ti][c], selInv[ti][c], torder[ti], vt, baseStep, chanDistW[c])
-						j += dd/64 + mu*rr
+						t[c] = dd/64 + mu*rr
+						var part float64
+						switch k {
+						case 0:
+							part = t[1]
+						case 1:
+							part = t[0] + t[1]
+						default:
+							return t[0] + t[1] + t[2]
+						}
+						if mul > 0 && part*mul >= bound {
+							return math.Inf(1)
+						}
 					}
-					return j
+					return math.Inf(1) // not reached
 				}
 				set := func(ti, bx, by int) {
 					vt := vtypes[ti]
@@ -1297,19 +1315,23 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					}
 					return a
 				}
-				one := func(ti, x, y int) plan {
-					p := plan{cost: cost(ti, x, y), n: 1}
+				// one costs a single varblock against the plan it is compared
+				// with (at mul times its cost)
+				one := func(ti, x, y int, rival plan, mul float64) plan {
+					p := plan{cost: cost(ti, x, y, rival.cost, mul), n: 1}
 					p.ps[0] = uint8(ti<<4 | (y-by0)<<2 | (x - bx0))
 					return p
 				}
+				// or replaces a plan by a single varblock if that costs less
+				or := func(p plan, ti, x, y int) plan { return better(p, one(ti, x, y, p, 1)) }
 				c8 := func(x, y int) plan {
 					if x >= bw || y >= bh {
 						return plan{}
 					}
-					p := plan{cost: cost(0, x, y)}
+					p := plan{cost: cost(0, x, y, math.Inf(1), 1)}
 					if sel.split {
 						for _, ti := range [2]int{vtDCT4x8, vtDCT8x4} {
-							q := one(ti, x, y)
+							q := one(ti, x, y, p, splitMul)
 							q.cost *= splitMul
 							p = better(p, q)
 						}
@@ -1317,7 +1339,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					if sel.small {
 						for ti := vtIdent; ti <= vtAFV3; ti++ {
 							if fam := min(ti-vtIdent, 3); smallMask&(1<<fam) != 0 {
-								q := one(ti, x, y)
+								q := one(ti, x, y, p, smallMul[fam])
 								q.cost *= smallMul[fam]
 								p = better(p, q)
 							}
@@ -1333,28 +1355,28 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					if !sel.rect {
 						p := join(join(a, b), join(c, e))
 						if sel.dct16 {
-							p = better(p, one(1, sx, sy))
+							p = or(p, 1, sx, sy)
 						}
 						return p
 					}
-					left := better(join(a, c), one(3, sx, sy))
-					right := better(join(b, e), one(3, sx+1, sy))
-					top := better(join(a, b), one(4, sx, sy))
-					bottom := better(join(c, e), one(4, sx, sy+1))
+					left := or(join(a, c), 3, sx, sy)
+					right := or(join(b, e), 3, sx+1, sy)
+					top := or(join(a, b), 4, sx, sy)
+					bottom := or(join(c, e), 4, sx, sy+1)
 					p := better(join(left, right), join(top, bottom))
-					return better(p, one(1, sx, sy))
+					return or(p, 1, sx, sy)
 				}
 				q := [4]plan{quad(bx0, by0), quad(bx0+2, by0), quad(bx0, by0+2), quad(bx0+2, by0+2)}
 				all := join(join(q[0], q[1]), join(q[2], q[3]))
 				best := all
 				if sel.dct32 {
-					best = better(all, one(2, bx0, by0))
+					best = or(all, 2, bx0, by0)
 				}
 				if sel.rect32 {
-					left := better(join(q[0], q[2]), one(5, bx0, by0))
-					right := better(join(q[1], q[3]), one(5, bx0+2, by0))
-					top := better(join(q[0], q[1]), one(6, bx0, by0))
-					bottom := better(join(q[2], q[3]), one(6, bx0, by0+2))
+					left := or(join(q[0], q[2]), 5, bx0, by0)
+					right := or(join(q[1], q[3]), 5, bx0+2, by0)
+					top := or(join(q[0], q[1]), 6, bx0, by0)
+					bottom := or(join(q[2], q[3]), 6, bx0, by0+2)
 					best = better(better(join(left, right), join(top, bottom)), best)
 				}
 				// keep the chosen coefficients for pass A
