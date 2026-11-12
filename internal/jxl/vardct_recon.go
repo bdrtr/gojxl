@@ -596,9 +596,25 @@ func llfFromDC(t int, dc *Plane, bx, by int, c []float32) {
 	}
 }
 
-// finish dequantizes and transforms all groups into XYB planes.
-func (v *vardctState) finish() error {
-	v.captureAC()
+// recon holds what the dequantisation and transform of groups needs.
+type recon struct {
+	xdm, bdm, invGS float32
+	dqb             [3]*dequantBias
+	maxN            int
+	ws              []*reconScratch // per worker
+}
+
+type reconScratch struct {
+	coef    [3][]float32
+	scratch []float32
+}
+
+// prepareRecon allocates the XYB planes and readies the dequantisation
+// tables; after it, groups can be reconstructed (reconGroup) in any order.
+func (v *vardctState) prepareRecon() error {
+	if v.rc != nil {
+		return nil
+	}
 	fh := v.fh
 	ih := v.fd.ih
 	for c := 0; c < 3; c++ {
@@ -612,79 +628,97 @@ func (v *vardctState) finish() error {
 			}
 		}
 	}
-	xdm := powf(0.8, float32(fh.XQMScale)-2)
-	bdm := powf(0.8, float32(fh.BQMScale)-2)
-	invGS := float32(65536.0 / float64(v.globalScale))
-	var dqb [3]*dequantBias
-	for c := range dqb {
-		dqb[c] = newDequantBias(ih.Opsin.QuantBias[c], ih.Opsin.QuantBiasNumerator)
+	rc := &recon{
+		xdm:   powf(0.8, float32(fh.XQMScale)-2),
+		bdm:   powf(0.8, float32(fh.BQMScale)-2),
+		invGS: float32(65536.0 / float64(v.globalScale)),
+		maxN:  64,
+		ws:    make([]*reconScratch, numWorkers()),
 	}
-	type wscratch struct {
-		coef    [3][]float32
-		scratch []float32
+	for c := range rc.dqb {
+		rc.dqb[c] = newDequantBias(ih.Opsin.QuantBias[c], ih.Opsin.QuantBiasNumerator)
 	}
-	ws := make([]*wscratch, numWorkers())
-	maxN := 64
 	for t := 0; t < numACS; t++ {
 		if v.usedACS&(1<<t) != 0 {
-			maxN = max(maxN, 64*acsCoveredX[t]*acsCoveredY[t])
+			rc.maxN = max(rc.maxN, 64*acsCoveredX[t]*acsCoveredY[t])
 		}
 	}
-	err := parallelForW(len(v.groups), func(wk, g int) error {
-		gc := v.groups[g]
-		if ws[wk] == nil {
-			w := &wscratch{scratch: make([]float32, 2*maxN+3*256)}
-			for c := 0; c < 3; c++ {
-				w.coef[c] = make([]float32, maxN)
-			}
-			ws[wk] = w
+	v.rc = rc
+	return nil
+}
+
+// reconGroup dequantises and transforms group g into the XYB planes (wk:
+// worker index for scratch buffers) and releases its coefficients.
+func (v *vardctState) reconGroup(wk, g int) {
+	rc := v.rc
+	gc := v.groups[g]
+	if rc.ws[wk] == nil {
+		w := &reconScratch{scratch: make([]float32, 2*rc.maxN+3*256)}
+		for c := 0; c < 3; c++ {
+			w.coef[c] = make([]float32, rc.maxN)
 		}
-		coef := ws[wk].coef
-		scratch := ws[wk].scratch
-		for vi := range gc.vbs {
-			vb := &gc.vbs[vi]
-			t := int(vb.typ)
-			n := 64 * acsCoveredX[t] * acsCoveredY[t]
-			tables := v.qtables[acsQuantTable[t]]
-			scale := invGS / float32(vb.qf)
-			muls := [3]float32{scale * xdm, scale, scale * bdm}
-			// dequantize
-			for c := 0; c < 3; c++ {
-				if vb.off[c] < 0 {
-					continue
-				}
-				q := gc.coef[c][vb.off[c] : int(vb.off[c])+n]
-				m := tables[c][:n]
-				o := coef[c][:n]
-				mul := muls[c]
-				dequantRow(q, m, o, mul, dqb[c])
+		rc.ws[wk] = w
+	}
+	coef := rc.ws[wk].coef
+	scratch := rc.ws[wk].scratch
+	for vi := range gc.vbs {
+		vb := &gc.vbs[vi]
+		t := int(vb.typ)
+		n := 64 * acsCoveredX[t] * acsCoveredY[t]
+		tables := v.qtables[acsQuantTable[t]]
+		scale := rc.invGS / float32(vb.qf)
+		muls := [3]float32{scale * rc.xdm, scale, scale * rc.bdm}
+		// dequantize
+		for c := 0; c < 3; c++ {
+			if vb.off[c] < 0 {
+				continue
 			}
-			if !v.sub {
-				tx, ty := int(vb.bx)/8, int(vb.by)/8
-				xcc := v.baseX + float32(v.ytox[ty*v.tw+tx])/float32(v.colorFactor)
-				bcc := v.baseB + float32(v.ytob[ty*v.tw+tx])/float32(v.colorFactor)
-				y := coef[1][:n]
-				x := coef[0][:n]
-				b := coef[2][:n]
-				for k := 0; k < n; k++ {
-					x[k] += xcc * y[k]
-					b[k] += bcc * y[k]
-				}
-			}
-			for c := 0; c < 3; c++ {
-				if vb.off[c] < 0 {
-					continue
-				}
-				sbx, sby := int(vb.bx)>>v.hs[c], int(vb.by)>>v.vs[c]
-				llfFromDC(t, v.dc[c], sbx, sby, coef[c])
-				op := v.out[c]
-				transformToPixels(t, coef[c], op.Pix[sby*8*op.W+sbx*8:], op.W, scratch)
+			q := gc.coef[c][vb.off[c] : int(vb.off[c])+n]
+			m := tables[c][:n]
+			o := coef[c][:n]
+			mul := muls[c]
+			dequantRow(q, m, o, mul, rc.dqb[c])
+		}
+		if !v.sub {
+			tx, ty := int(vb.bx)/8, int(vb.by)/8
+			xcc := v.baseX + float32(v.ytox[ty*v.tw+tx])/float32(v.colorFactor)
+			bcc := v.baseB + float32(v.ytob[ty*v.tw+tx])/float32(v.colorFactor)
+			y := coef[1][:n]
+			x := coef[0][:n]
+			b := coef[2][:n]
+			for k := 0; k < n; k++ {
+				x[k] += xcc * y[k]
+				b[k] += bcc * y[k]
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		return err
+		for c := 0; c < 3; c++ {
+			if vb.off[c] < 0 {
+				continue
+			}
+			sbx, sby := int(vb.bx)>>v.hs[c], int(vb.by)>>v.vs[c]
+			llfFromDC(t, v.dc[c], sbx, sby, coef[c])
+			op := v.out[c]
+			transformToPixels(t, coef[c], op.Pix[sby*8*op.W+sbx*8:], op.W, scratch)
+		}
+	}
+	v.groups[g] = nil // coefficients are no longer needed
+}
+
+// finish dequantizes and transforms all groups into XYB planes (unless
+// they were reconstructed as they were decoded).
+func (v *vardctState) finish() error {
+	fh := v.fh
+	if !v.streamed {
+		v.captureAC()
+		if err := v.prepareRecon(); err != nil {
+			return err
+		}
+		if err := parallelForW(len(v.groups), func(wk, g int) error {
+			v.reconGroup(wk, g)
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
 	v.groups = nil // coefficients are no longer needed
 	if fn := os.Getenv("JXLDUMPACS"); fn != "" {

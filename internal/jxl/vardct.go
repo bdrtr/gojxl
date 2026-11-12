@@ -131,7 +131,8 @@ type varblock struct {
 
 type groupCoeffs struct {
 	vbs  []varblock
-	coef [3][]int32
+	size [3]int32
+	coef [3][]int32 // allocated when the group's first pass is decoded
 }
 
 type vardctState struct {
@@ -161,16 +162,18 @@ type vardctState struct {
 	ytob  []int8
 	tw    int
 
-	qenc    [numQuantTables]quantEncoding
-	qtables [numQuantTables][3][]float32
-	qtOnce  [numQuantTables]sync.Once
-	qtErr   [numQuantTables]error
-	presets int
-	passes  []hfPass
-	usedACS uint32
-	acsMu   sync.Mutex
-	groups  []*groupCoeffs
-	out     [3]*Plane
+	qenc     [numQuantTables]quantEncoding
+	qtables  [numQuantTables][3][]float32
+	qtOnce   [numQuantTables]sync.Once
+	qtErr    [numQuantTables]error
+	presets  int
+	passes   []hfPass
+	usedACS  uint32
+	rc       *recon // reconstruction state (prepareRecon)
+	streamed bool   // groups were reconstructed as they were decoded
+	acsMu    sync.Mutex
+	groups   []*groupCoeffs
+	out      [3]*Plane
 }
 
 func newVarDCTState(fd *frameDecoder) *vardctState {
@@ -676,9 +679,7 @@ func (v *vardctState) allocHF(np int) {
 				gc.vbs = append(gc.vbs, vb)
 			}
 		}
-		for c := 0; c < 3; c++ {
-			gc.coef[c] = make([]int32, off[c])
-		}
+		gc.size = off
 		v.groups[g] = gc
 	}
 }
@@ -699,6 +700,11 @@ var coeffNumNonzeroCtx = [63]uint16{
 func (v *vardctState) decodePassGroup(br *bitio.Reader, pass, g int) error {
 	fh := v.fh
 	gc := v.groups[g]
+	for c := range gc.coef {
+		if gc.coef[c] == nil {
+			gc.coef[c] = make([]int32, gc.size[c])
+		}
+	}
 	p := &v.passes[pass]
 	b := &v.bctx
 	hfp := int(br.Read(uint(ceilLog2(v.presets))))

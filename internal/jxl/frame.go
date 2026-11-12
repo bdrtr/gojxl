@@ -203,24 +203,39 @@ func (fd *frameDecoder) decode() error {
 	}
 	// pass groups
 	np := int(fh.Passes.NumPasses)
+	// single-pass VarDCT: each group is dequantised and transformed right
+	// after its coefficients are decoded, so they are never all in memory
+	stream := false
 	if fd.vd != nil {
 		fd.vd.allocHF(np)
+		if np == 1 && fd.dec.capture == nil {
+			if err := fd.vd.prepareRecon(); err != nil {
+				return err
+			}
+			stream, fd.vd.streamed = true, true
+		}
 	}
 	for p := 0; p < np; p++ {
-		pg := func(g int) error {
+		pg := func(wk, g int) error {
 			r, err := fd.section(2 + fh.NumLFGroups + p*fh.NumGroups + g)
 			if err != nil {
 				return err
 			}
-			return fd.decodePassGroup(r, p, g)
+			if err := fd.decodePassGroup(r, p, g); err != nil {
+				return err
+			}
+			if stream {
+				fd.vd.reconGroup(wk, g)
+			}
+			return nil
 		}
 		if fd.toc.Single {
 			for g := 0; g < fh.NumGroups; g++ {
-				if err := pg(g); err != nil {
+				if err := pg(0, g); err != nil {
 					return err
 				}
 			}
-		} else if err := parallelFor(fh.NumGroups, pg); err != nil {
+		} else if err := parallelForW(fh.NumGroups, pg); err != nil {
 			return err
 		}
 	}
