@@ -39,10 +39,7 @@ func abs64(v int64) int64 {
 }
 
 func errWeight(x uint32, maxw uint32) uint32 {
-	shift := bits.Len32(x+1) - 1 - 5
-	if shift < 0 {
-		shift = 0
-	}
+	shift := max(bits.Len32(x+1)-1-5, 0) // branch-free
 	return 4 + ((maxw * wpDiv[(x>>uint(shift))&63]) >> uint(shift))
 }
 
@@ -101,10 +98,11 @@ func (s *wpState) predict(x, y int, N, W, NE, NW, NN int64) (int64, int64) {
 	wsum = w0 + w1 + w2 + w3
 	sum := int64(wsum>>1) - 1 + p0*int64(w0) + p1*int64(w1) + p2*int64(w2) + p3*int64(w3)
 	pred := (sum * int64(wpDiv[(wsum-1)&63])) >> 24
+	// clamp when the errors agree in sign (selected without a branch: the
+	// condition is data-dependent)
+	clamped := max(min(W, NE, N), min(max(W, NE, N), pred))
 	if ((teN ^ teW) | (teN ^ teNW)) <= 0 {
-		mx := max(W, NE, N)
-		mn := min(W, NE, N)
-		pred = max(mn, min(mx, pred))
+		pred = clamped
 	}
 	s.pred = pred
 	return (pred + 3) >> 3, p
