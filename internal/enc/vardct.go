@@ -455,7 +455,11 @@ const (
 	vtAFV3   = 15
 )
 
-var chanScale = [3]float32{0.8, 1, 1} // x_qm_scale 3, b_qm_scale 2
+// chanScale is the decoder's quantisation matrix multiplier per channel,
+// 0.8^(qm_scale-2) for x_qm_scale 3 and b_qm_scale 3 (as cjxl 0.12; b 3
+// rather than 2 on 15 photos: BD-rate -0.2% by SSIMULACRA 2, -0.7% above
+// SSIMULACRA 2 85, -0.9% by PSNR).
+var chanScale = [3]float32{0.8, 1, 0.8}
 
 // chanDistW weights channel errors by their visibility (from the DC-ish
 // quantisation weights of the default DCT8 table).
@@ -1913,7 +1917,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		out.WriteU32(1, val(1), val(2), val(4), val(8)) // ec upsampling
 	}
 	out.Write(3, 3) // x_qm_scale
-	out.Write(3, 2) // b_qm_scale
+	out.Write(3, 3) // b_qm_scale
 	out.WriteU32(1, val(1), val(2), val(3), bitsOff(3, 4))
 	fo.writeCropBlend(out, im.W, im.H, nec)
 	out.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48)) // name
