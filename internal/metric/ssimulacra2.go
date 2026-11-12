@@ -10,25 +10,56 @@ import (
 
 // SSIMULACRA2 returns the SSIMULACRA 2 score of dist against orig (100 =
 // identical, 90 ~ visually lossless, 70 ~ high quality, 50 ~ medium). It
-// is a port of libjxl's tools/ssimulacra2.cc; inputs are taken as sRGB and
-// alpha is blended onto a 0.5 grey background, as the reference tool does.
+// is a port of libjxl's tools/ssimulacra2.cc; inputs are taken as sRGB.
+// As the reference tool does, when orig has transparent pixels both
+// images are blended onto dark (0.1) and bright (0.9) backgrounds and the
+// worse score is returned.
 func SSIMULACRA2(orig, dist image.Image) (float64, error) {
 	if orig.Bounds().Size() != dist.Bounds().Size() {
 		return 0, errors.New("metric: image sizes differ")
 	}
+	if !opaque(orig) {
+		s0, err := ssimulacra2(orig, dist, 0.1)
+		if err != nil {
+			return 0, err
+		}
+		s1, err := ssimulacra2(orig, dist, 0.9)
+		return min(s0, s1), err
+	}
+	return ssimulacra2(orig, dist, 0.5)
+}
+
+func opaque(img image.Image) bool {
+	if o, ok := img.(interface{ Opaque() bool }); ok {
+		return o.Opaque()
+	}
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a != 0xffff {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func ssimulacra2(orig, dist image.Image, bg float32) (float64, error) {
 	w, h := orig.Bounds().Dx(), orig.Bounds().Dy()
 	if w < 8 || h < 8 {
 		return 0, errors.New("metric: image smaller than 8x8")
 	}
-	a, b := toLinear(orig), toLinear(dist)
+	a, b := toLinear(orig, bg), toLinear(dist, bg)
 	var subs [6][18]float64 // per scale: ssim[3*2], edge[3*4]
 	nscales := 0
 	for scale := 0; scale < 6; scale++ {
-		if scale > 0 {
-			a, b = a.downsample(), b.downsample()
-		}
+		// as the reference: the size test comes before downsampling, so
+		// the last scale computed may be smaller than 8
 		if a.w < 8 || a.h < 8 {
 			break
+		}
+		if scale > 0 {
+			a, b = a.downsample(), b.downsample()
 		}
 		x1, x2 := a.xyb(), b.xyb()
 		var ssim [6]float64
@@ -97,8 +128,8 @@ func srgbToLinear(v float32) float32 {
 }
 
 // toLinear converts an image to linear sRGB planes (alpha blended onto a
-// 0.5 background in encoded sRGB).
-func toLinear(img image.Image) planes {
+// background of value bg in encoded sRGB).
+func toLinear(img image.Image, bg float32) planes {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	p := planes{w: w, h: h}
@@ -109,7 +140,6 @@ func toLinear(img image.Image) planes {
 	for i := range lut8 {
 		lut8[i] = srgbToLinear(float32(i) / 255)
 	}
-	const bg = 0.5
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			r, g, bl, a := img.At(b.Min.X+x, b.Min.Y+y).RGBA() // premultiplied
