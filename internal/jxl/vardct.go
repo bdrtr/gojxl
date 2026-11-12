@@ -530,10 +530,12 @@ func (v *vardctState) readHfGlobal(br *bitio.Reader) error {
 	fh := v.fh
 	// finalize LF
 	if fh.Flags&FlagUseLFFrame != 0 {
-		lf := v.fd.dec.lf[0]
-		if lf == nil {
+		// the LF frame one level up (an LF frame may use one itself:
+		// cjxl --progressive_dc=2)
+		if int(fh.LFLevel) >= len(v.fd.dec.lf) || v.fd.dec.lf[fh.LFLevel] == nil {
 			return invalid("missing LF frame")
 		}
+		lf := v.fd.dec.lf[fh.LFLevel]
 		for c := 0; c < 3; c++ {
 			src := lf.color[c]
 			dst := v.dc[c]
