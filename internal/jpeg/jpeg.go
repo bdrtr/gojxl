@@ -816,40 +816,55 @@ func (p *parser) decodeBlock(br *bitReader, dct, act *huffTable, Ss, Se, Al int,
 		*eobrun--
 		return nil
 	}
-	*nzr = 0
+	// zero-run count in a local (a store through nzr per coefficient was a
+	// large part of the loop); fast entries have s <= 8, so with Al <= 3
+	// their s+Al < 12 needs no per-coefficient check
+	nz := 0
+	fast := Al <= 3
+	// the bit buffer in locals for the fast path (stored back before
+	// the reader's own methods run)
+	val, left := br.val, br.bitsLeft
 	for k := Ss; k <= Se; k++ {
 		// fast path: symbol and value from one lookup
-		br.fill()
-		if e := act.ac[int32(br.val>>(br.bitsLeft-lutBits))&(1<<lutBits-1)]; e != 0 {
-			if s := int(e >> 12 & 15); s+Al < 12 {
-				k += int(e >> 8 & 15)
-				if k > Se {
-					return errors.New("jpeg: out-of-band coefficient")
-				}
-				br.bitsLeft -= int(e & 0xff)
-				coef[NaturalOrder[k]] = int16(int(e>>16) << Al)
-				*nzr = 0
-				continue
-			}
+		if left <= 16 {
+			br.val, br.bitsLeft = val, left
+			br.fill()
+			val, left = br.val, br.bitsLeft
 		}
+		if e := act.ac[int32(val>>(left-lutBits))&(1<<lutBits-1)]; e != 0 && (fast || int(e>>12&15)+Al < 12) {
+			k += int(e >> 8 & 15)
+			if k > Se {
+				br.val, br.bitsLeft = val, left
+				*nzr = nz
+				return errors.New("jpeg: out-of-band coefficient")
+			}
+			left -= int(e & 0xff)
+			coef[NaturalOrder[k]] = int16(int(e>>16) << Al)
+			nz = 0
+			continue
+		}
+		br.val, br.bitsLeft = val, left
 		sr := br.symbol(act)
 		if sr >= 256 {
+			*nzr = nz
 			return errors.New("jpeg: invalid AC symbol")
 		}
 		r, s := sr>>4, sr&15
 		if s > 0 {
 			k += r
 			if k > Se {
+				*nzr = nz
 				return errors.New("jpeg: out-of-band coefficient")
 			}
 			if s+Al >= 12 {
+				*nzr = nz
 				return errors.New("jpeg: AC coefficient out of range")
 			}
 			coef[NaturalOrder[k]] = int16(extend(br.bits(s), s) << Al)
-			*nzr = 0
+			nz = 0
 		} else if r == 15 {
 			k += 15
-			*nzr++
+			nz++
 		} else {
 			if eobAllowed && k == Ss && *eobrun == 0 {
 				*reset = true
@@ -857,13 +872,18 @@ func (p *parser) decodeBlock(br *bitReader, dct, act *huffTable, Ss, Se, Al int,
 			*eobrun = 1 << r
 			if r > 0 {
 				if !eobAllowed {
+					*nzr = nz
 					return errors.New("jpeg: EOB run crossing DC")
 				}
 				*eobrun += br.bits(r)
 			}
+			val, left = br.val, br.bitsLeft
 			break
 		}
+		val, left = br.val, br.bitsLeft
 	}
+	br.val, br.bitsLeft = val, left
+	*nzr = nz
 	*eobrun--
 	return nil
 }
