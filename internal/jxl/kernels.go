@@ -3,19 +3,44 @@ package jxl
 // Scalar reference kernels. SIMD versions (kernels_simd.go) are used when
 // built with GOEXPERIMENT=simd on amd64 and the CPU supports AVX2+FMA.
 
-func dequantRowScalar(q []int32, m, o []float32, mul, bias, numer float32) {
-	m, o = m[:len(q)], o[:len(q)]
-	for k, qv := range q {
-		switch {
-		case qv == 0:
-			o[k] = 0
-		case qv == 1:
-			o[k] = bias * m[k] * mul
-		case qv == -1:
-			o[k] = -bias * m[k] * mul
+// dequantBias holds a channel's quantisation bias parameters and the
+// adjusted values of small quantised coefficients.
+type dequantBias struct {
+	bias, numer float32
+	adj         [2*dqSmall + 1]float32 // value of q at adj[q+dqSmall]
+}
+
+const dqSmall = 16
+
+func newDequantBias(bias, numer float32) *dequantBias {
+	d := &dequantBias{bias: bias, numer: numer}
+	for i := range d.adj {
+		switch q := i - dqSmall; q {
+		case 0:
+		case 1:
+			d.adj[i] = bias
+		case -1:
+			d.adj[i] = -bias
 		default:
+			f := float32(q)
+			d.adj[i] = f - numer/f
+		}
+	}
+	return d
+}
+
+// dequantRowScalar dequantises q with the bias adjustment (0 stays 0, +-1
+// become +-bias, others q - numer/q); small values come from a table, so
+// the loop has one well-predicted branch.
+func dequantRowScalar(q []int32, m, o []float32, mul float32, d *dequantBias) {
+	m, o = m[:len(q)], o[:len(q)]
+	adj := &d.adj
+	for k, qv := range q {
+		if u := uint32(qv + dqSmall); u <= 2*dqSmall {
+			o[k] = adj[u] * m[k] * mul
+		} else {
 			f := float32(qv)
-			o[k] = (f - numer/f) * m[k] * mul
+			o[k] = (f - d.numer/f) * m[k] * mul
 		}
 	}
 }

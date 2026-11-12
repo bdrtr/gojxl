@@ -125,9 +125,41 @@ func idct8(x []float32) {
 	x[4] = E3 - O3
 }
 
+// dctCos[lg][k*n+i] = cos(pi*(2i+1)k/(2n)) for n = 1<<lg.
+var dctCos = func() (t [6][]float64) {
+	for lg := range t {
+		n := 1 << lg
+		t[lg] = make([]float64, n*n)
+		for k := 0; k < n; k++ {
+			for i := 0; i < n; i++ {
+				t[lg][k*n+i] = math.Cos(math.Pi * float64((2*i+1)*k) / float64(2*n))
+			}
+		}
+	}
+	return
+}()
+
 // dct1dScaled computes the forward scaled DCT (c[0] = mean) directly.
 func dct1dScaled(x []float32, out []float32) {
 	n := len(x)
+	if lg := bits.TrailingZeros(uint(n)); n == 1<<lg && lg < len(dctCos) {
+		ct := dctCos[lg]
+		for k := 0; k < n; k++ {
+			var s float64
+			if k == 0 {
+				for _, v := range x {
+					s += float64(v)
+				}
+			} else {
+				row := ct[k*n : (k+1)*n]
+				for i, v := range x {
+					s += float64(v) * math.Sqrt2 * row[i]
+				}
+			}
+			out[k] = float32(s / float64(n))
+		}
+		return
+	}
 	for k := 0; k < n; k++ {
 		var s float64
 		for i := 0; i < n; i++ {
@@ -305,8 +337,26 @@ func idct8x8Scalar(c []float32, out []float32, stride int) {
 	}
 }
 
+var resampleTab = func() (t [6][]float32) {
+	for lg := range t {
+		n := 1 << lg
+		t[lg] = make([]float32, n)
+		for k := range t[lg] {
+			t[lg][k] = resampleScaleSlow(n, k)
+		}
+	}
+	return
+}()
+
 // resampleScale is DCTTotalResampleScale for an N-point LF DCT upsampled to 8N.
 func resampleScale(n, k int) float32 {
+	if lg := bits.TrailingZeros(uint(n)); n == 1<<lg && lg < len(resampleTab) && k < n {
+		return resampleTab[lg][k]
+	}
+	return resampleScaleSlow(n, k)
+}
+
+func resampleScaleSlow(n, k int) float32 {
 	if k == 0 {
 		return 1
 	}
@@ -565,8 +615,10 @@ func (v *vardctState) finish() error {
 	xdm := powf(0.8, float32(fh.XQMScale)-2)
 	bdm := powf(0.8, float32(fh.BQMScale)-2)
 	invGS := float32(65536.0 / float64(v.globalScale))
-	biases := ih.Opsin.QuantBias
-	numer := ih.Opsin.QuantBiasNumerator
+	var dqb [3]*dequantBias
+	for c := range dqb {
+		dqb[c] = newDequantBias(ih.Opsin.QuantBias[c], ih.Opsin.QuantBiasNumerator)
+	}
 	type wscratch struct {
 		coef    [3][]float32
 		scratch []float32
@@ -605,7 +657,7 @@ func (v *vardctState) finish() error {
 				m := tables[c][:n]
 				o := coef[c][:n]
 				mul := muls[c]
-				dequantRow(q, m, o, mul, biases[c], numer)
+				dequantRow(q, m, o, mul, dqb[c])
 			}
 			if !v.sub {
 				tx, ty := int(vb.bx)/8, int(vb.by)/8

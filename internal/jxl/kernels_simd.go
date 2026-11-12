@@ -87,11 +87,12 @@ func idct8x8(c, out []float32, stride int) {
 	}
 }
 
-func dequantRow(q []int32, m, o []float32, mul, bias, numer float32) {
+func dequantRow(q []int32, m, o []float32, mul float32, d *dequantBias) {
 	if !useSIMD {
-		dequantRowScalar(q, m, o, mul, bias, numer)
+		dequantRowScalar(q, m, o, mul, d)
 		return
 	}
+	bias, numer := d.bias, d.numer
 	n := len(q)
 	k := 0
 	nv, bv, mv, one := bc(numer), bc(bias), bc(mul), bc(1)
@@ -103,7 +104,7 @@ func dequantRow(q []int32, m, o []float32, mul, bias, numer float32) {
 		st(val.Mul(ld(m[k:])).Mul(mv), o[k:])
 	}
 	if k < n {
-		dequantRowScalar(q[k:], m[k:], o[k:], mul, bias, numer)
+		dequantRowScalar(q[k:], m[k:], o[k:], mul, d)
 	}
 }
 

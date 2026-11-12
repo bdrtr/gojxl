@@ -6,8 +6,8 @@ package jxl
 func SIMDActive() bool { return false }
 
 func idct8x8(c, out []float32, stride int) { idct8x8Scalar(c, out, stride) }
-func dequantRow(q []int32, m, o []float32, mul, bias, numer float32) {
-	dequantRowScalar(q, m, o, mul, bias, numer)
+func dequantRow(q []int32, m, o []float32, mul float32, d *dequantBias) {
+	dequantRowScalar(q, m, o, mul, d)
 }
 func epfDiffRow(d, a0, b0, a1, b1, a2, b2 []float32, s0, s1, s2 float32) {
 	epfDiffRowScalar(d, a0, b0, a1, b1, a2, b2, s0, s1, s2)
