@@ -84,23 +84,32 @@ type epf4Args struct {
 
 // epfRow4Scalar is the 4-neighbour EPF step (rows start at a multiple of 8).
 func epfRow4Scalar(a *epf4Args, from int) {
-	for lx := from; lx < a.n; lx++ {
-		is := a.sig[lx>>3]
+	// slices in locals (resliced to n): through a, every access reloads
+	// the slice header and checks bounds
+	n := a.n
+	o0, o1, o2 := a.o[0][:n], a.o[1][:n], a.o[2][:n]
+	c0, c1, c2 := a.c[0][:n], a.c[1][:n], a.c[2][:n]
+	d0, d1, d2 := a.d[0][:n], a.d[1][:n], a.d[2][:n]
+	u0, u1, u2 := a.u[0][:n], a.u[1][:n], a.u[2][:n]
+	r0, r1, r2 := a.r[0][:n], a.r[1][:n], a.r[2][:n]
+	l0, l1, l2 := a.l[0][:n], a.l[1][:n], a.l[2][:n]
+	sv, svu, sh, shl := a.sv[:n], a.svu[:n], a.sh[:n], a.shl[:n]
+	sig, rm := a.sig, a.rowMul
+	for lx := from; lx < n; lx++ {
+		is := sig[lx>>3]
 		if is < minSigma {
-			for c := 0; c < 3; c++ {
-				a.o[c][lx] = a.c[c][lx]
-			}
+			o0[lx], o1[lx], o2[lx] = c0[lx], c1[lx], c2[lx]
 			continue
 		}
-		inv := is * a.rowMul[lx&7]
-		wd := relu32(a.sv[lx]*inv + 1)
-		wu := relu32(a.svu[lx]*inv + 1)
-		wr := relu32(a.sh[lx]*inv + 1)
-		wl := relu32(a.shl[lx]*inv + 1)
+		inv := is * rm[lx&7]
+		wd := relu32(sv[lx]*inv + 1)
+		wu := relu32(svu[lx]*inv + 1)
+		wr := relu32(sh[lx]*inv + 1)
+		wl := relu32(shl[lx]*inv + 1)
 		iw := 1 / (1 + wd + wu + wr + wl)
-		for c := 0; c < 3; c++ {
-			a.o[c][lx] = (a.c[c][lx] + wd*a.d[c][lx] + wu*a.u[c][lx] + wr*a.r[c][lx] + wl*a.l[c][lx]) * iw
-		}
+		o0[lx] = (c0[lx] + wd*d0[lx] + wu*u0[lx] + wr*r0[lx] + wl*l0[lx]) * iw
+		o1[lx] = (c1[lx] + wd*d1[lx] + wu*u1[lx] + wr*r1[lx] + wl*l1[lx]) * iw
+		o2[lx] = (c2[lx] + wd*d2[lx] + wu*u2[lx] + wr*r2[lx] + wl*l2[lx]) * iw
 	}
 }
 
