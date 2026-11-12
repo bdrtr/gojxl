@@ -237,11 +237,14 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 			for r := 0; r < prow; r++ {
 				srow := rowAt(c, mirror(ybase+r, H))
 				dst := pads[c][r*pw : (r+1)*pw]
-				if tx0-B >= 0 && tx1+B <= W {
-					copy(dst, srow[tx0-B:tx1+B])
-					continue
+				// the in-image span is copied, only the few columns past
+				// an image edge are mirrored
+				lo, hi := max(0, tx0-B), min(W, tx1+B)
+				copy(dst[lo-(tx0-B):], srow[lo:hi])
+				for i := 0; i < lo-(tx0-B); i++ {
+					dst[i] = srow[mirror(tx0-B+i, W)]
 				}
-				for i := range dst {
+				for i := hi - (tx0 - B); i < pw; i++ {
 					dst[i] = srow[mirror(tx0-B+i, W)]
 				}
 			}

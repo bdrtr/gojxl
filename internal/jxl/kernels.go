@@ -95,21 +95,27 @@ func epfRow4Scalar(a *epf4Args, from int) {
 	l0, l1, l2 := a.l[0][:n], a.l[1][:n], a.l[2][:n]
 	sv, svu, sh, shl := a.sv[:n], a.svu[:n], a.sh[:n], a.shl[:n]
 	sig, rm := a.sig, a.rowMul
-	for lx := from; lx < n; lx++ {
-		is := sig[lx>>3]
+	// blocks of 8 share a sigma (from is a multiple of 8)
+	for bx := from; bx < n; bx += 8 {
+		e := min(bx+8, n)
+		is := sig[bx>>3]
 		if is < minSigma {
-			o0[lx], o1[lx], o2[lx] = c0[lx], c1[lx], c2[lx]
+			copy(o0[bx:e], c0[bx:e])
+			copy(o1[bx:e], c1[bx:e])
+			copy(o2[bx:e], c2[bx:e])
 			continue
 		}
-		inv := is * rm[lx&7]
-		wd := relu32(sv[lx]*inv + 1)
-		wu := relu32(svu[lx]*inv + 1)
-		wr := relu32(sh[lx]*inv + 1)
-		wl := relu32(shl[lx]*inv + 1)
-		iw := 1 / (1 + wd + wu + wr + wl)
-		o0[lx] = (c0[lx] + wd*d0[lx] + wu*u0[lx] + wr*r0[lx] + wl*l0[lx]) * iw
-		o1[lx] = (c1[lx] + wd*d1[lx] + wu*u1[lx] + wr*r1[lx] + wl*l1[lx]) * iw
-		o2[lx] = (c2[lx] + wd*d2[lx] + wu*u2[lx] + wr*r2[lx] + wl*l2[lx]) * iw
+		for lx := bx; lx < e; lx++ {
+			inv := is * rm[lx&7]
+			wd := relu32(sv[lx]*inv + 1)
+			wu := relu32(svu[lx]*inv + 1)
+			wr := relu32(sh[lx]*inv + 1)
+			wl := relu32(shl[lx]*inv + 1)
+			iw := 1 / (1 + wd + wu + wr + wl)
+			o0[lx] = (c0[lx] + wd*d0[lx] + wu*u0[lx] + wr*r0[lx] + wl*l0[lx]) * iw
+			o1[lx] = (c1[lx] + wd*d1[lx] + wu*u1[lx] + wr*r1[lx] + wl*l1[lx]) * iw
+			o2[lx] = (c2[lx] + wd*d2[lx] + wu*u2[lx] + wr*r2[lx] + wl*l2[lx]) * iw
+		}
 	}
 }
 
