@@ -355,3 +355,68 @@ func TestDecodeToSRGB(t *testing.T) {
 		}
 	}
 }
+
+// pqImage returns src as BT.2100 PQ samples (16-bit; reference white at
+// 203 nits), the way HDR PNGs carry them.
+func pqImage(src *image.NRGBA) *image.NRGBA64 {
+	m := [9]float64{0.6274, 0.3293, 0.0433, 0.0691, 0.9195, 0.0114, 0.0164, 0.0880, 0.8956}
+	pq := func(nits float64) uint16 {
+		const m1, m2 = 0.1593017578125, 78.84375
+		const c1, c2, c3 = 0.8359375, 18.8515625, 18.6875
+		y := math.Pow(math.Max(nits, 0)/10000, m1)
+		return uint16(math.Round(math.Pow((c1+c2*y)/(1+c3*y), m2) * 65535))
+	}
+	out := image.NewNRGBA64(src.Rect)
+	for i := 0; i < len(src.Pix); i += 4 {
+		var l [3]float64
+		for k := range l {
+			v := float64(src.Pix[i+k]) / 255
+			if v <= 0.04045 {
+				l[k] = v / 12.92
+			} else {
+				l[k] = math.Pow((v+0.055)/1.055, 2.4)
+			}
+		}
+		for k := 0; k < 3; k++ {
+			p := pq(203 * (m[3*k]*l[0] + m[3*k+1]*l[1] + m[3*k+2]*l[2]))
+			out.Pix[2*i+2*k], out.Pix[2*i+2*k+1] = uint8(p>>8), uint8(p)
+		}
+		out.Pix[2*i+6], out.Pix[2*i+7] = 255, 255
+	}
+	return out
+}
+
+// PQ input keeps its peak luminance (10000 nits, as libjxl stores it), and
+// decoding to sRGB tone maps it to an SDR image of similar brightness.
+func TestPQToSDR(t *testing.T) {
+	src := colourTestImage()
+	file := pngWith(t, pqImage(src), chunk("cICP", []byte{9, 16, 0, 1}))
+	data, err := ConvertToJXL(file, &EncodeOptions{Effort: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := headerOf(t, data); d.Header.ToneMapping.IntensityTarget != 10000 || d.Header.Colour.TransferFunction != jxl.TFPQ {
+		t.Fatalf("intensity target %v, transfer %d", d.Header.ToneMapping.IntensityTarget, d.Header.Colour.TransferFunction)
+	}
+	img, err := DecodeBytesOptions(data, &Options{SRGB: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ms, mo float64
+	r := src.Bounds()
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			c := src.NRGBAAt(x, y)
+			o := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+			ms += float64(c.R) + float64(c.G) + float64(c.B)
+			mo += float64(o.R) + float64(o.G) + float64(o.B)
+		}
+	}
+	// reference white (203 nits) lands at 203/255 of the SDR peak
+	if ratio := mo / ms; ratio < 0.75 || ratio > 1.0 {
+		t.Errorf("SDR brightness %.2f of the source's", ratio)
+	}
+	if icc, cicp := outputColour(data, &Options{SRGB: true}); icc != nil || cicp != nil {
+		t.Error("SDR output still tagged")
+	}
+}

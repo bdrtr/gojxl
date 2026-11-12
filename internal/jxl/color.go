@@ -495,7 +495,10 @@ type outputTarget struct {
 	enc  func(float32) float32 // linear -> encoded
 	// enc3 are per channel curves when an ICC profile's differ (else nil)
 	enc3 [3]func(float32) float32
-	icc  []byte // profile tagging the output (nil = sRGB)
+	// hdr, when set, takes linear sRGB light (m and enc are identities) to
+	// SDR sRGB
+	hdr *hdrToSDR
+	icc []byte // profile tagging the output (nil = sRGB)
 	// HLG inverse OOTF (display -> scene light): rgb *= Y^hlgExp.
 	hlgExp float32
 	lum    [3]float32

@@ -43,6 +43,7 @@ type Decoder struct {
 	cmykDone   bool
 	srgb       *srgbConv
 	srgbDone   bool
+	sdrTarget  *outputTarget
 	// ForceSRGB renders the output in sRGB (set before decoding frames):
 	// XYB images directly, others by converting their samples; PQ and HLG
 	// images keep their space.
@@ -62,7 +63,15 @@ func (d *Decoder) CMYK() *cmykTransform {
 
 // OutputTarget returns the colour space XYB images are rendered to.
 func (d *Decoder) OutputTarget() *outputTarget {
-	if d.ForceSRGB && d.Header.XYBEncoded && !d.hdr() {
+	if d.ForceSRGB && d.Header.XYBEncoded {
+		if d.hdr() {
+			if d.sdrTarget == nil {
+				id := func(v float32) float32 { return v }
+				hlg := d.Header.Colour.TransferFunction == TFHLG
+				d.sdrTarget = &outputTarget{m: identity3, enc: id, hdr: newHDRToSDR(d.Header.ToneMapping.IntensityTarget, hlg, nil)}
+			}
+			return d.sdrTarget
+		}
 		return &outputTarget{srgb: true}
 	}
 	if !d.targetDone {
@@ -76,6 +85,9 @@ func (d *Decoder) OutputTarget() *outputTarget {
 // points for HDR outputs (PQ, HLG), which ICC profiles cannot describe
 // faithfully. ok is false for other images.
 func (d *Decoder) OutputCICP() (primaries, transfer byte, ok bool) {
+	if d.ForceSRGB && (d.Header.XYBEncoded || d.SRGBConverter() != nil) {
+		return 0, 0, false // tone mapped to sRGB
+	}
 	c := &d.Header.Colour
 	if c.WantICC || c.ColourSpace == CSXYB || c.ColourSpace == CSUnknown || c.WhitePoint != WPD65 {
 		return 0, 0, false
@@ -112,7 +124,7 @@ func (d *Decoder) hdr() bool {
 // OutputICC returns the ICC profile describing decoded pixels, or nil when
 // they are plain sRGB.
 func (d *Decoder) OutputICC() []byte {
-	if d.ForceSRGB && (d.Header.XYBEncoded && !d.hdr() || d.SRGBConverter() != nil) {
+	if d.ForceSRGB && (d.Header.XYBEncoded || d.SRGBConverter() != nil) {
 		return nil
 	}
 	if d.Header.XYBEncoded {

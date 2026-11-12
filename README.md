@@ -105,7 +105,13 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   kırpılır, profil yazılmaz). XYB dosyalar doğrudan sRGB'ye çizilir (djxl
   `--color_space` ile aynı, >116 dB); diğerleri matris/TRC profili, enum
   veya LUT tabanlı RGB profilin A2B0 tablosuyla çevrilir (djxl'in CMS'iyle
-  ~89-92 dB, en fazla 0,2/255 fark). PQ/HLG ton eşleme gerektirdiği için olduğu gibi kalır
+  ~89-92 dB, en fazla 0,2/255 fark)
+- HDR → SDR: `-srgb` PQ ve HLG görüntüleri libjxl'in yöntemiyle 255 nit'e ton
+  eşler (PQ: Rec. 2408 eğrisi, HLG: OOTF; ardından gamut eşleme). XYB dosyalarda
+  djxl `--display_nits=255` ile aynı (PQ 86-90 dB, HLG 106 dB); kayıpsız PQ'da
+  referans beyazın parlaklığı korunur (djxl bu yolda görüntüyü beyaza yıkıyor)
+- PQ/HLG girdilerde başlığa libjxl gibi yoğunluk hedefi yazılır (10000 / 1000 nit;
+  önceden varsayılan 255 kalıyordu ve PQ yanlış ölçeklenirdi)
 
 **Metadata (Exif, XMP, yönlendirme)**
 - PNG `eXIf`/`iTXt` (XMP, sıkıştırılmış dahil) ve JPEG APP1 Exif/XMP
@@ -285,5 +291,5 @@ yüzünden yavaşlar. Tek çekirdekte 4K VarDCT çözme: skaler 20 MP/s, SIMD
 
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - Grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+), daha hızlı JPEG dönüştürme
-- HDR ton eşleme (PQ/HLG → SDR)
+- Kayıplı HDR (PQ/HLG) kodlama
 - Akış (streaming) kod çözme

@@ -63,6 +63,48 @@ func (im *Image) defaultColour() bool {
 	return im.ICC == nil && (c == nil || c.IsSRGB() && c.RenderingIntent == 1)
 }
 
+// intensityTarget returns the peak luminance to store for HDR samples:
+// 10000 nits for PQ and 1000 for HLG (as libjxl sets them), else 0 (the
+// default 255).
+func (im *Image) intensityTarget() float32 {
+	if c := im.Colour; im.ICC == nil && c != nil {
+		switch c.TransferFunction {
+		case jxl.TFPQ:
+			return 10000
+		case jxl.TFHLG:
+			return 1000
+		}
+	}
+	return 0
+}
+
+// writeToneMapping writes the tone_mapping bundle: the default, or the
+// intensity target of HDR samples.
+func writeToneMapping(w *bitio.Writer, im *Image) {
+	it := im.intensityTarget()
+	if it == 0 {
+		w.WriteBool(true) // default
+		return
+	}
+	w.WriteBool(false)
+	w.Write(16, uint64(f16(it)))
+	w.Write(16, 0)     // min_nits
+	w.WriteBool(false) // not relative to max display
+	w.Write(16, 0)     // linear_below
+}
+
+// f16 encodes a positive normal value as IEEE half precision (rounded).
+func f16(v float32) uint16 {
+	b := math.Float32bits(v)
+	exp := int(b>>23&0xff) - 127 + 15
+	mant := b & 0x7fffff
+	h := uint32(exp)<<10 | mant>>13
+	if mant&0x1000 != 0 { // round half up
+		h++
+	}
+	return uint16(h)
+}
+
 func writeXY(w *bitio.Writer, xy [2]float64) {
 	for _, v := range xy {
 		w.WriteU32(bitio.PackSigned(int32(math.Round(v*1e6))), bitio.Bits(19), bitsOff(19, 524288), bitsOff(20, 1048576), bitsOff(21, 2097152))

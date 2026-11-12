@@ -554,7 +554,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	out.WriteBool(false) // metadata
 	// the Exif orientation, as libjxl sets it (the jbrd box keeps the
 	// Exif data itself unchanged)
-	extra := writeExtraFields(out, exif.Orientation(j.EXIF), nil)
+	extra := writeExtraFields(out, exif.Orientation(j.EXIF), nil, false)
 	writeBitDepth(out, 8)
 	out.WriteBool(true)                                            // 16-bit buffers suffice
 	out.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1)) // no extra channels

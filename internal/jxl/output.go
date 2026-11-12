@@ -17,6 +17,7 @@ type xybConv struct {
 	// per channel curves (ICC profiles whose channels differ), else nil
 	f3     [3]func(float32) float32
 	lut3   [3]*tfLUT
+	post   *hdrToSDR // tone mapping of linear sRGB to SDR sRGB
 	linear bool
 	hlgExp float32
 	lum    [3]float32
@@ -42,6 +43,10 @@ func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 	for i := 0; i < 3; i++ {
 		c.bias[i] = o.OpsinBias[i]
 		c.cbrtBias[i] = float32(math.Cbrt(float64(o.OpsinBias[i])))
+	}
+	if t != nil && t.hdr != nil {
+		c.post = t.hdr
+		return c
 	}
 	if t != nil && !t.srgb {
 		c.f = t.enc
@@ -84,6 +89,8 @@ func (c *xybConv) row(x, y, b, r, g, bo []float32) {
 		}
 	}
 	switch {
+	case c.post != nil:
+		c.post.rows(r, g, bo)
 	case c.linear:
 	case c.lut3[0] != nil:
 		c.lut3[0].apply(r, c.f3[0])
@@ -110,7 +117,7 @@ func (f *Frame) RGB8Row(yy int, tmp, a []float32, dst []byte, stride int) {
 	w := f.Width
 	dst = dst[:stride*w]
 	c := f.conv
-	if c != nil && !f.grey && !c.linear && c.hlgExp == 0 && c.lut3[0] == nil {
+	if c != nil && !f.grey && !c.linear && c.hlgExp == 0 && c.lut3[0] == nil && c.post == nil {
 		c.tf8Once.Do(func() { c.tf8 = buildTF8(c.f) })
 	}
 	if c != nil && c.tf8 != nil && !f.grey && !c.linear && c.hlgExp == 0 {

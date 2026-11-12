@@ -94,9 +94,9 @@ func (o FrameOpts) writeCropBlend(w *bitio.Writer, fw, fh, nec int) {
 // writeAnimHeader writes the extra-fields part of the image metadata for
 // an animation.
 // writeExtraFields writes the image metadata's extra_fields flag and, when
-// set (orientation or animation), the fields.
-func writeExtraFields(w *bitio.Writer, orientation int, anim *Anim) (extra bool) {
-	extra = anim != nil || orientation > 1
+// set (orientation, animation or an HDR tone mapping to store), the fields.
+func writeExtraFields(w *bitio.Writer, orientation int, anim *Anim, hdr bool) (extra bool) {
+	extra = anim != nil || orientation > 1 || hdr
 	w.WriteBool(extra)
 	if !extra {
 		return
@@ -158,7 +158,7 @@ func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	w.Write(16, 0x0aff)
 	writeSize(w, im.W, im.H)
 	w.WriteBool(false) // metadata not all default
-	extra := writeExtraFields(w, im.Orientation, anim)
+	extra := writeExtraFields(w, im.Orientation, anim, im.intensityTarget() != 0)
 	writeBitDepth(w, im.BitDepth)
 	w.WriteBool(im.BitDepth <= 12) // modular_16bit_buffers
 	nec := 0
@@ -172,7 +172,7 @@ func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	w.WriteBool(false) // xyb_encoded
 	writeColour(w, im, im.Grey)
 	if extra {
-		w.WriteBool(true) // default tone mapping
+		writeToneMapping(w, im)
 	}
 	w.WriteU64(0)     // extensions
 	w.WriteBool(true) // default transform data
