@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"sync/atomic"
 
 	"gojxl/internal/enc"
 	"gojxl/internal/jpeg"
+	"gojxl/internal/jxl"
 )
 
 // EncodeOptions controls lossless encoding.
@@ -103,15 +105,24 @@ func toPlanar(img image.Image) *enc.Image {
 		return im
 	case *image.NRGBA:
 		r, g, bl, a := make([]int32, n), make([]int32, n), make([]int32, n), make([]int32, n)
-		opaque := true
-		for y := 0; y < h; y++ {
-			row := src.Pix[y*src.Stride : y*src.Stride+4*w]
-			for x := 0; x < w; x++ {
-				i := y*w + x
-				r[i], g[i], bl[i], a[i] = int32(row[4*x]), int32(row[4*x+1]), int32(row[4*x+2]), int32(row[4*x+3])
-				opaque = opaque && row[4*x+3] == 255
+		var translucent atomic.Bool
+		jxl.ParallelRows(h, func(y0, y1 int) {
+			op := true
+			for y := y0; y < y1; y++ {
+				row := src.Pix[y*src.Stride : y*src.Stride+4*w]
+				o := y * w
+				rr, gr, br, ar := r[o:o+w], g[o:o+w], bl[o:o+w], a[o:o+w]
+				for x := range rr {
+					p := row[4*x : 4*x+4 : 4*x+4]
+					rr[x], gr[x], br[x], ar[x] = int32(p[0]), int32(p[1]), int32(p[2]), int32(p[3])
+					op = op && p[3] == 255
+				}
 			}
-		}
+			if !op {
+				translucent.Store(true)
+			}
+		})
+		opaque := !translucent.Load()
 		im.Chans = [][]int32{r, g, bl}
 		if !opaque {
 			im.Alpha = true
@@ -167,32 +178,42 @@ func toPlanar(img image.Image) *enc.Image {
 }
 
 // splitOpaque splits interleaved RGBA samples of bs bytes (big-endian)
-// into planes; ok is false if any pixel is not fully opaque.
+// into planes (rows in parallel); ok is false if any pixel is not fully
+// opaque.
 func splitOpaque(pix []byte, stride, w, h, bs int) (r, g, b []int32, ok bool) {
 	n := w * h
 	r, g, b = make([]int32, n), make([]int32, n), make([]int32, n)
-	for y := 0; y < h; y++ {
-		row := pix[y*stride : y*stride+4*bs*w]
-		o := y * w
-		if bs == 1 {
-			for x := 0; x < w; x++ {
-				p := row[4*x : 4*x+4 : 4*x+4]
-				if p[3] != 0xff {
-					return nil, nil, nil, false
+	var translucent atomic.Bool
+	jxl.ParallelRows(h, func(y0, y1 int) {
+		for y := y0; y < y1 && !translucent.Load(); y++ {
+			row := pix[y*stride : y*stride+4*bs*w]
+			o := y * w
+			rr, gr, br := r[o:o+w], g[o:o+w], b[o:o+w]
+			if bs == 1 {
+				for x := range rr {
+					p := row[4*x : 4*x+4 : 4*x+4]
+					if p[3] != 0xff {
+						translucent.Store(true)
+						return
+					}
+					rr[x], gr[x], br[x] = int32(p[0]), int32(p[1]), int32(p[2])
 				}
-				r[o+x], g[o+x], b[o+x] = int32(p[0]), int32(p[1]), int32(p[2])
+				continue
 			}
-			continue
-		}
-		for x := 0; x < w; x++ {
-			p := row[8*x : 8*x+8 : 8*x+8]
-			if p[6] != 0xff || p[7] != 0xff {
-				return nil, nil, nil, false
+			for x := range rr {
+				p := row[8*x : 8*x+8 : 8*x+8]
+				if p[6] != 0xff || p[7] != 0xff {
+					translucent.Store(true)
+					return
+				}
+				rr[x] = int32(p[0])<<8 | int32(p[1])
+				gr[x] = int32(p[2])<<8 | int32(p[3])
+				br[x] = int32(p[4])<<8 | int32(p[5])
 			}
-			r[o+x] = int32(p[0])<<8 | int32(p[1])
-			g[o+x] = int32(p[2])<<8 | int32(p[3])
-			b[o+x] = int32(p[4])<<8 | int32(p[5])
 		}
+	})
+	if translucent.Load() {
+		return nil, nil, nil, false
 	}
 	return r, g, b, true
 }
