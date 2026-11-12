@@ -144,37 +144,147 @@ func dct1dScaled(x []float32, out []float32) {
 // scaledIDCT2D performs a rows x cols IDCT using libjxl's coefficient layout:
 // if rows < cols, in is rows x cols (natural); otherwise in is cols x rows
 // (transposed). Output pixels are written to out with the given stride.
-// in is clobbered.
+// in is clobbered; scratch needs 2*rows*cols floats.
+//
+// Both passes run over all lanes (columns of the current layout) at once,
+// with one transpose in between, so no column is gathered or scattered on
+// its own.
 func scaledIDCT2DScalar(rows, cols int, in []float32, out []float32, stride int, scratch []float32) {
-	m := max(rows, cols)
-	tmp := scratch[:2*m]
-	col := scratch[2*m : 3*m]
+	n := rows * cols
+	tmp, t := scratch[:n], scratch[n:2*n]
 	if rows < cols {
+		// in[r][x]: along r for every x, then along x for every r
+		idctLanes(in[:n], rows, cols, tmp)
+		transposeTo(t, in[:n], rows, cols) // t[x][r]
+		idctLanes(t, cols, rows, tmp)
 		for r := 0; r < rows; r++ {
-			idct1d(in[r*cols:(r+1)*cols], tmp)
-		}
-		cl := col[:rows]
-		for x := 0; x < cols; x++ {
-			for r := range cl {
-				cl[r] = in[r*cols+x]
-			}
-			idct1d(cl, tmp)
-			for r, v := range cl {
-				out[r*stride+x] = v
+			o := out[r*stride : r*stride+cols]
+			for x := range o {
+				o[x] = t[x*rows+r]
 			}
 		}
 		return
 	}
-	for a := 0; a < cols; a++ {
-		idct1d(in[a*rows:(a+1)*rows], tmp)
-	}
-	cl := col[:cols]
+	// in[x][y]: along x for every y, then along y for every x
+	idctLanes(in[:n], cols, rows, tmp)
+	transposeTo(t, in[:n], cols, rows) // t[y][x]
+	idctLanes(t, rows, cols, tmp)
 	for y := 0; y < rows; y++ {
-		for a := range cl {
-			cl[a] = in[a*rows+y]
+		copy(out[y*stride:y*stride+cols], t[y*cols:(y+1)*cols])
+	}
+}
+
+// transposeTo writes the transpose of the r x c array src to dst (c x r).
+func transposeTo(dst, src []float32, r, c int) {
+	src, dst = src[:r*c], dst[:r*c]
+	for i := 0; i < r; i++ {
+		row := src[i*c : (i+1)*c]
+		for j, v := range row {
+			dst[j*r+i] = v
 		}
-		idct1d(cl, tmp)
-		copy(out[y*stride:y*stride+cols], cl)
+	}
+}
+
+// idctLanes computes the scaled IDCT of length n along the first axis of
+// the n x L array x (L independent lanes) in place; tmp needs n*L floats.
+func idctLanes(x []float32, n, L int, tmp []float32) {
+	switch n {
+	case 1:
+		return
+	case 2:
+		a, b := x[:L], x[L:2*L]
+		for l, av := range a {
+			bv := b[l]
+			a[l], b[l] = av+bv, av-bv
+		}
+		return
+	case 4:
+		x0, x1, x2, x3 := x[:L], x[L:2*L], x[2*L:3*L], x[3*L:4*L]
+		x1, x2, x3 = x1[:len(x0)], x2[:len(x0)], x3[:len(x0)]
+		for l, v0 := range x0 {
+			v1, v2, v3 := x1[l], x2[l], x3[l]
+			e0, e1 := v0+v2, v0-v2
+			o1 := v3 + v1
+			o0 := v1 * sqrt2
+			p0 := (o0 + o1) * sec4a
+			p1 := (o0 - o1) * sec4b
+			x0[l], x3[l] = e0+p0, e0-p0
+			x1[l], x2[l] = e1+p1, e1-p1
+		}
+		return
+	case 8:
+		idct8Lanes(x, L)
+		return
+	}
+	h := n / 2
+	// even rows to tmp[:h]; odd rows plus the odd row before (B transpose)
+	// to tmp[h:]
+	for i := 0; i < h; i++ {
+		copy(tmp[i*L:(i+1)*L], x[2*i*L:(2*i+1)*L])
+	}
+	odd := tmp[h*L : n*L]
+	o0, x1 := odd[:L], x[L:2*L]
+	x1 = x1[:len(o0)]
+	for l := range o0 {
+		o0[l] = x1[l] * sqrt2
+	}
+	for i := 1; i < h; i++ {
+		d := odd[i*L : (i+1)*L]
+		a, b := x[(2*i+1)*L:(2*i+2)*L], x[(2*i-1)*L:2*i*L]
+		a, b = a[:len(d)], b[:len(d)]
+		for l := range d {
+			d[l] = a[l] + b[l]
+		}
+	}
+	idctLanes(tmp[:h*L], h, L, x[:h*L])
+	idctLanes(odd, h, L, x[h*L:n*L])
+	s := secHalf(n)
+	for i := 0; i < h; i++ {
+		a, b := tmp[i*L:(i+1)*L], tmp[(h+i)*L:(h+i+1)*L]
+		lo, hi := x[i*L:(i+1)*L], x[(n-1-i)*L:(n-i)*L]
+		b, lo, hi = b[:len(a)], lo[:len(a)], hi[:len(a)]
+		si := s[i]
+		for l, av := range a {
+			bv := b[l] * si
+			lo[l], hi[l] = av+bv, av-bv
+		}
+	}
+}
+
+// idct8Lanes is idct8 over L lanes (x is 8 x L).
+func idct8Lanes(x []float32, L int) {
+	x0, x1, x2, x3 := x[:L], x[L:2*L], x[2*L:3*L], x[3*L:4*L]
+	x4, x5, x6, x7 := x[4*L:5*L], x[5*L:6*L], x[6*L:7*L], x[7*L:8*L]
+	x1, x2, x3 = x1[:len(x0)], x2[:len(x0)], x3[:len(x0)]
+	x4, x5, x6, x7 = x4[:len(x0)], x5[:len(x0)], x6[:len(x0)], x7[:len(x0)]
+	s80, s81, s82, s83 := sec8[0], sec8[1], sec8[2], sec8[3]
+	for l := range x0 {
+		v0, v2, v4, v6 := x0[l], x2[l], x4[l], x6[l]
+		e0, e1 := v0+v4, v0-v4
+		eo1 := v6 + v2
+		eo0 := v2 * sqrt2
+		ep0 := (eo0 + eo1) * sec4a
+		ep1 := (eo0 - eo1) * sec4b
+		E0, E3 := e0+ep0, e0-ep0
+		E1, E2 := e1+ep1, e1-ep1
+		v1, v3, v5, v7 := x1[l], x3[l], x5[l], x7[l]
+		o0 := v1 * sqrt2
+		o1 := v3 + v1
+		o2 := v5 + v3
+		o3 := v7 + v5
+		f0, f1 := o0+o2, o0-o2
+		fo1 := o3 + o1
+		fo0 := o1 * sqrt2
+		fp0 := (fo0 + fo1) * sec4a
+		fp1 := (fo0 - fo1) * sec4b
+		O0 := (f0 + fp0) * s80
+		O3 := (f0 - fp0) * s83
+		O1 := (f1 + fp1) * s81
+		O2 := (f1 - fp1) * s82
+		x0[l], x7[l] = E0+O0, E0-O0
+		x1[l], x6[l] = E1+O1, E1-O1
+		x2[l], x5[l] = E2+O2, E2-O2
+		x3[l], x4[l] = E3+O3, E3-O3
 	}
 }
 
@@ -471,7 +581,7 @@ func (v *vardctState) finish() error {
 	err := parallelForW(len(v.groups), func(wk, g int) error {
 		gc := v.groups[g]
 		if ws[wk] == nil {
-			w := &wscratch{scratch: make([]float32, maxN+3*256)}
+			w := &wscratch{scratch: make([]float32, 2*maxN+3*256)}
 			for c := 0; c < 3; c++ {
 				w.coef[c] = make([]float32, maxN)
 			}

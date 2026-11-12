@@ -132,6 +132,7 @@ func cmdDecode(args []string) {
 		if err != nil {
 			fatal(err)
 		}
+		runtime.GC() // the profile covers allocations up to the last GC
 		pprof.Lookup("allocs").WriteTo(mf, 0)
 		mf.Close()
 	}

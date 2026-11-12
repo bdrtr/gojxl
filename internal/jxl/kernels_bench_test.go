@@ -12,7 +12,7 @@ func benchIDCT(b *testing.B, rows, cols int, f func(rows, cols int, in, out []fl
 	}
 	work := make([]float32, len(in))
 	out := make([]float32, rows*cols)
-	scratch := make([]float32, rows*cols+3*256)
+	scratch := make([]float32, 2*rows*cols+3*256)
 	b.SetBytes(int64(rows * cols))
 	for i := 0; i < b.N; i++ {
 		copy(work, in)
@@ -25,7 +25,17 @@ func BenchmarkIDCT32(b *testing.B)       { benchIDCT(b, 32, 32, scaledIDCT2D) }
 func BenchmarkIDCT16x8Scalar(b *testing.B) {
 	benchIDCT(b, 16, 8, scaledIDCT2DScalar)
 }
-func BenchmarkIDCT16x8(b *testing.B) { benchIDCT(b, 16, 8, scaledIDCT2D) }
+func BenchmarkIDCT16x8(b *testing.B)  { benchIDCT(b, 16, 8, scaledIDCT2D) }
+func BenchmarkIDCT32Ref(b *testing.B) { benchIDCT(b, 32, 32, scaledIDCT2DRef) }
+func BenchmarkIDCT16Scalar(b *testing.B) {
+	benchIDCT(b, 16, 16, scaledIDCT2DScalar)
+}
+func BenchmarkIDCT16Ref(b *testing.B)   { benchIDCT(b, 16, 16, scaledIDCT2DRef) }
+func BenchmarkIDCT16x8Ref(b *testing.B) { benchIDCT(b, 16, 8, scaledIDCT2DRef) }
+func BenchmarkIDCT8x16Scalar(b *testing.B) {
+	benchIDCT(b, 8, 16, scaledIDCT2DScalar)
+}
+func BenchmarkIDCT8x16Ref(b *testing.B) { benchIDCT(b, 8, 16, scaledIDCT2DRef) }
 func BenchmarkIDCT8Scalar(b *testing.B) {
 	benchIDCT(b, 8, 8, func(r, c int, in, out []float32, s int, _ []float32) { idct8x8Scalar(in, out, s) })
 }
@@ -69,11 +79,14 @@ func TestSIMDMatchesScalar(t *testing.T) {
 		}
 		a, b := append([]float32(nil), in...), append([]float32(nil), in...)
 		o1, o2 := make([]float32, rows*cols), make([]float32, rows*cols)
-		sc := make([]float32, rows*cols+3*256)
+		sc := make([]float32, 2*rows*cols+3*256)
 		scaledIDCT2DScalar(rows, cols, a, o1, cols, sc)
 		scaledIDCT2D(rows, cols, b, o2, cols, sc)
 		for i := range o1 {
-			if d := o1[i] - o2[i]; d > 1e-3 || d < -1e-3 {
+			// float rounding differs with the operation order; the error
+			// grows with the transform size
+			tol := float32(max(1e-3, 2e-6*float64(rows*cols)))
+			if d := o1[i] - o2[i]; d > tol || d < -tol {
 				t.Fatalf("%dx%d idx %d: %v vs %v", rows, cols, i, o1[i], o2[i])
 			}
 		}

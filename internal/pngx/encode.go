@@ -220,10 +220,6 @@ func compress(l layout, level int) ([]byte, error) {
 			defer wg.Done()
 			prev := make([]byte, rowLen)
 			cur := make([]byte, rowLen)
-			var flt [5][]byte
-			for i := range flt {
-				flt[i] = make([]byte, rowLen+1)
-			}
 			raw := make([]byte, 0, stripRows*(rowLen+1))
 			var buf bytes.Buffer
 			fw, _ := flate.NewWriter(&buf, level)
@@ -244,7 +240,7 @@ func compress(l layout, level int) ([]byte, error) {
 				raw = raw[:0]
 				for y := y0; y < y1; y++ {
 					row(y, cur)
-					raw = append(raw, filterRow(&flt, cur, prev, bpp, y == 0)...)
+					raw = filterRow(raw, cur, prev, bpp, y == 0)
 					prev, cur = cur, prev
 				}
 				buf.Reset()
@@ -319,67 +315,108 @@ func adler32Combine(a1, a2 uint32, len2 int) uint32 {
 	return sum2<<16 | sum1
 }
 
-// filterRow picks the filter with the smallest sum of absolute values (as
-// image/png and libpng do) and returns filter byte plus filtered row.
-func filterRow(flt *[5][]byte, cur, prev []byte, bpp int, first bool) []byte {
+// filterRow appends the filter byte and the filtered row to dst, picking
+// the filter with the smallest sum of absolute values (as image/png and
+// libpng do; ties go to the lower filter type). The first row only tries
+// None and Sub. The sums for all filters are computed in one pass.
+func filterRow(dst, cur, prev []byte, bpp int, first bool) []byte {
 	n := len(cur)
-	best, bestSum := 0, 1<<62
-	try := func(f int) {
-		d := flt[f]
-		d[0] = byte(f)
-		r := d[1:]
-		s := 0
-		switch f {
-		case 0:
-			copy(r, cur)
-		case 1:
-			copy(r[:bpp], cur[:bpp])
-			for i := bpp; i < n; i++ {
-				r[i] = cur[i] - cur[i-bpp]
-			}
-		case 2:
-			for i := 0; i < n; i++ {
-				r[i] = cur[i] - prev[i]
-			}
-		case 3:
-			for i := 0; i < bpp; i++ {
-				r[i] = cur[i] - prev[i]>>1
-			}
-			for i := bpp; i < n; i++ {
-				r[i] = cur[i] - byte((int(cur[i-bpp])+int(prev[i]))>>1)
-			}
-		case 4:
-			for i := 0; i < bpp; i++ {
-				r[i] = cur[i] - prev[i]
-			}
-			for i := bpp; i < n; i++ {
-				a, b, c := int(cur[i-bpp]), int(prev[i]), int(prev[i-bpp])
-				p := a + b - c
-				pa, pb, pc := abs(p-a), abs(p-b), abs(p-c)
-				pr := c
-				if pa <= pb && pa <= pc {
-					pr = a
-				} else if pb <= pc {
-					pr = b
-				}
-				r[i] = cur[i] - byte(pr)
-			}
+	prev = prev[:n]
+	k := min(bpp, n)
+	var s0, s1, s2, s3, s4 int
+	for i := 0; i < k; i++ {
+		x, b := cur[i], prev[i]
+		s0 += absB(x)
+		s2 += absB(x - b)
+		s3 += absB(x - b>>1)
+	}
+	s1, s4 = s0, s2
+	x, left := cur[k:], cur[:n-k]
+	up, ul := prev[k:], prev[:n-k]
+	left, up, ul = left[:len(x)], up[:len(x)], ul[:len(x)]
+	if first {
+		for j, v := range x {
+			s0 += absB(v)
+			s1 += absB(v - left[j])
 		}
-		for _, v := range r {
-			s += abs(int(int8(v)))
+	} else {
+		// two loops: one with all five sums spills registers
+		for j, v := range x {
+			s0 += absB(v)
+			s1 += absB(v - left[j])
+			s2 += absB(v - up[j])
 		}
-		if s < bestSum {
-			best, bestSum = f, s
+		for j, v := range x {
+			a, b := left[j], up[j]
+			s3 += absB(v - byte((uint(a)+uint(b))>>1))
+			s4 += absB(v - paethPred(a, b, ul[j]))
 		}
 	}
-	try(0)
-	try(1)
+	best, bs := 0, s0
+	if s1 < bs {
+		best, bs = 1, s1
+	}
 	if !first {
-		try(2)
-		try(3)
-		try(4)
+		if s2 < bs {
+			best, bs = 2, s2
+		}
+		if s3 < bs {
+			best, bs = 3, s3
+		}
+		if s4 < bs {
+			best = 4
+		}
 	}
-	return flt[best]
+	o := len(dst) + 1
+	dst = append(dst, byte(best))
+	dst = append(dst, cur...)
+	r := dst[o : o+n]
+	rx := r[k:]
+	rx = rx[:len(x)]
+	switch best {
+	case 1:
+		for j, v := range x {
+			rx[j] = v - left[j]
+		}
+	case 2:
+		for i := range r {
+			r[i] -= prev[i]
+		}
+	case 3:
+		for i := 0; i < k; i++ {
+			r[i] -= prev[i] >> 1
+		}
+		for j, v := range x {
+			rx[j] = v - byte((uint(left[j])+uint(up[j]))>>1)
+		}
+	case 4:
+		for i := 0; i < k; i++ {
+			r[i] -= prev[i]
+		}
+		for j, v := range x {
+			rx[j] = v - paethPred(left[j], up[j], ul[j])
+		}
+	}
+	return dst
+}
+
+// absB is |int8(v)|.
+func absB(v byte) int {
+	x := int(int8(v))
+	m := x >> 63
+	return (x ^ m) - m
+}
+
+// paethPred is the Paeth predictor, branch-free (selection by masks: the
+// compiler leaves branches in the comparison form, and they mispredict on
+// noisy rows).
+func paethPred(a, b, c byte) byte {
+	ia, ib, ic := int32(a), int32(b), int32(c)
+	pa, pb := ib-ic, ia-ic
+	pc := pa + pb
+	pa, pb, pc = max(pa, -pa), max(pb, -pb), max(pc, -pc)
+	bc := ib ^ ((ib ^ ic) & ((pc - pb) >> 31))                 // c if pc < pb
+	return byte(ia ^ ((ia ^ bc) & ((min(pb, pc) - pa) >> 31))) // bc if pa > min
 }
 
 func abs(x int) int {
