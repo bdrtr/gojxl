@@ -1553,12 +1553,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			h.add(ctx, v)
 		})
 	})
-	hf := hs[0]
-	for _, h := range hs[1:] {
-		if h != nil {
-			hf.merge(h)
-		}
-	}
+	hf := mergeWorkerHists(hs)
 
 	// --- alpha as a lossless modular extra channel
 	var alpha *alphaPlan

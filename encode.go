@@ -47,6 +47,18 @@ type EncodeOptions struct {
 	Exif, XMP []byte
 }
 
+// DistanceFromQuality maps a quality from 0 to 100 (100: lossless) to
+// the Distance that libjxl's encoder (cjxl -q) uses for it.
+func DistanceFromQuality(q float32) float32 {
+	switch {
+	case q >= 100:
+		return 0
+	case q >= 30:
+		return 0.1 + (100-q)*0.09
+	}
+	return 53.0/3000*q*q - 23.0/20*q + 25
+}
+
 // errBadICC reports a malformed EncodeOptions.ICC.
 var errBadICC = errors.New("gojxl: malformed ICC profile")
 

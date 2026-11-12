@@ -2,11 +2,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gojxl"
@@ -25,10 +28,13 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `gojxl - pure Go JPEG XL tool
 
 Usage:
-  gojxl decode [-bench N] input.jxl output.png
-  gojxl encode [-e effort] [-d distance] input output.jxl  (d=0: lossless)
+  gojxl decode [-depth 16] input.jxl output.png|.jpg
+  gojxl decode [-format png|jpg] -o outdir input.jxl...
+  gojxl encode [-e effort] [-d distance | -q quality] input output.jxl
+  gojxl encode [-e effort] [-d distance | -q quality] -o outdir input...
       input: PNG/APNG, GIF, JPEG (recompressed losslessly at d=0); the
-      colour profile of the input is kept
+      colour profile and Exif/XMP metadata of the input are kept;
+      d=0 (q=100) is lossless; "-" reads stdin / writes stdout
   gojxl info input.jxl
   gojxl compare original distorted   (SSIMULACRA 2 and PSNR; PNG/JPEG/GIF/JXL)
 `)
@@ -80,20 +86,80 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
+// readFile reads a file, or standard input for "-".
+func readFile(path string) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(os.Stdin)
+	}
+	return os.ReadFile(path)
+}
+
+// writeFile writes a file, or standard output for "-".
+func writeFile(path string, data []byte) error {
+	if path == "-" {
+		_, err := os.Stdout.Write(data)
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// batch runs convert(input, output) for every input, writing outputs into
+// dir with the extension ext, jobs at a time; it reports each result and
+// exits with status 1 if any failed.
+func batch(inputs []string, dir, ext string, jobs int, convert func(in, out string) (string, error)) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal(err)
+	}
+	t0 := time.Now()
+	var mu sync.Mutex
+	failed := 0
+	sem := make(chan struct{}, max(jobs, 1))
+	var wg sync.WaitGroup
+	for _, in := range inputs {
+		out := filepath.Join(dir, strings.TrimSuffix(filepath.Base(in), filepath.Ext(in))+ext)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			msg, err := convert(in, out)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failed++
+				fmt.Fprintf(os.Stderr, "%s: error: %v\n", in, err)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "%s -> %s: %s\n", in, out, msg)
+		}()
+	}
+	wg.Wait()
+	el := time.Since(t0)
+	fmt.Fprintf(os.Stderr, "%d files in %v (%.1f files/s), %d failed\n", len(inputs), el.Round(time.Millisecond), float64(len(inputs))/el.Seconds(), failed)
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+// defaultJobs is the number of files converted at once in batch mode (each
+// conversion is parallel too).
+func defaultJobs() int { return min(4, runtime.NumCPU()) }
+
 func cmdDecode(args []string) {
 	fs := flag.NewFlagSet("decode", flag.ExitOnError)
 	bench := fs.Int("bench", 0, "decode N times and report speed")
 	depth := fs.Int("depth", 0, "output bit depth (16 forces 16-bit PNG)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	memprof := fs.String("memprofile", "", "write allocation profile to file")
-	quality := fs.Int("q", 90, "JPEG quality when the output is .jpg and no original JPEG is stored")
+	quality := fs.Int("q", 90, "JPEG quality when the output is JPEG and no original JPEG is stored")
+	outDir := fs.String("o", "", "batch mode: decode every input into this directory")
+	format := fs.String("format", "png", "output format when it does not follow from the name: png or jpg")
+	jobs := fs.Int("j", defaultJobs(), "batch mode: files decoded at once")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
 	}
-	data, err := os.ReadFile(fs.Arg(0))
-	if err != nil {
-		fatal(err)
+	if *format != "png" && *format != "jpg" {
+		fatal(fmt.Errorf("unknown format %q", *format))
 	}
 	if *cpuprof != "" {
 		pf, err := os.Create(*cpuprof)
@@ -103,49 +169,32 @@ func cmdDecode(args []string) {
 		pprof.StartCPUProfile(pf)
 		defer pprof.StopCPUProfile()
 	}
-	if fs.NArg() >= 2 {
-		ext := strings.ToLower(filepath.Ext(fs.Arg(1)))
-		if ext == ".jpg" || ext == ".jpeg" {
-			// JPEG output: restore the original JPEG when the file is a
-			// recompressed JPEG, otherwise encode the pixels.
-			t0 := time.Now()
-			var buf bytes.Buffer
-			if err := gojxl.ConvertToJPEG(&buf, data, *quality); err != nil {
-				fatal(err)
-			}
-			if err := os.WriteFile(fs.Arg(1), buf.Bytes(), 0o644); err != nil {
-				fatal(err)
-			}
-			what := "JPEG encoded"
-			if _, err := gojxl.ReconstructJPEG(data); err == nil {
-				what = "JPEG reconstructed"
-			}
-			fmt.Fprintf(os.Stderr, "%s: %d bytes, %v\n", what, buf.Len(), time.Since(t0))
-			return
-		}
-	}
 	opt := &gojxl.Options{Force16: *depth == 16}
+	convert := func(in, out string) (string, error) {
+		f := *format
+		if ext := strings.ToLower(filepath.Ext(out)); ext == ".jpg" || ext == ".jpeg" {
+			f = "jpg"
+		} else if ext == ".png" || ext == ".apng" {
+			f = "png"
+		}
+		return decodeOne(in, out, f, opt, *quality)
+	}
+	if *outDir != "" {
+		batch(fs.Args(), *outDir, "."+*format, *jobs, convert)
+		return
+	}
 	if fs.NArg() >= 2 && *bench == 0 && *memprof == "" {
-		// decode straight into the PNG writer (no intermediate image)
-		t0 := time.Now()
-		f, err := os.Create(fs.Arg(1))
+		msg, err := convert(fs.Arg(0), fs.Arg(1))
 		if err != nil {
 			fatal(err)
 		}
-		if err := gojxl.ConvertToPNG(f, data, opt); err != nil {
-			f.Close()
-			os.Remove(fs.Arg(1))
-			fatal(err)
-		}
-		if err := f.Close(); err != nil {
-			fatal(err)
-		}
-		el := time.Since(t0)
-		if info, err := gojxl.Stat(data); err == nil {
-			mp := float64(info.Width*info.Height) / 1e6
-			fmt.Fprintf(os.Stderr, "%dx%d, %.2f MP, %v (decode and PNG), %.2f MP/s\n", info.Width, info.Height, mp, el, mp/el.Seconds())
-		}
+		fmt.Fprintln(os.Stderr, msg)
 		return
+	}
+	// decode to an image (speed measurement, profiles), then write
+	data, err := readFile(fs.Arg(0))
+	if err != nil {
+		fatal(err)
 	}
 	t0 := time.Now()
 	img, err := gojxl.DecodeBytesOptions(data, opt)
@@ -179,10 +228,67 @@ func cmdDecode(args []string) {
 		if err := gojxl.ConvertToPNG(&buf, data, opt); err != nil {
 			fatal(err)
 		}
-		if err := os.WriteFile(fs.Arg(1), buf.Bytes(), 0o644); err != nil {
+		if err := writeFile(fs.Arg(1), buf.Bytes()); err != nil {
 			fatal(err)
 		}
 	}
+}
+
+// decodeOne converts the JPEG XL file in to out (format png or jpg) and
+// returns a summary.
+func decodeOne(in, out, format string, opt *gojxl.Options, quality int) (string, error) {
+	data, err := readFile(in)
+	if err != nil {
+		return "", err
+	}
+	t0 := time.Now()
+	if format == "jpg" {
+		// the original JPEG for a recompressed JPEG, else the pixels
+		var buf bytes.Buffer
+		if err := gojxl.ConvertToJPEG(&buf, data, quality); err != nil {
+			return "", err
+		}
+		if err := writeFile(out, buf.Bytes()); err != nil {
+			return "", err
+		}
+		what := "JPEG encoded"
+		if _, err := gojxl.ReconstructJPEG(data); err == nil {
+			what = "JPEG reconstructed"
+		}
+		return fmt.Sprintf("%s: %d bytes, %v", what, buf.Len(), time.Since(t0)), nil
+	}
+	// PNG: rows go straight into the file (no intermediate image)
+	var w io.Writer = os.Stdout
+	var f *os.File
+	if out != "-" {
+		if f, err = os.Create(out); err != nil {
+			return "", err
+		}
+		w = f
+	}
+	bw := bufio.NewWriterSize(w, 1<<20)
+	err = gojxl.ConvertToPNG(bw, data, opt)
+	if err == nil {
+		err = bw.Flush()
+	}
+	if f != nil {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(out)
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	el := time.Since(t0)
+	info, err := gojxl.Stat(data)
+	if err != nil {
+		return "", err
+	}
+	mp := float64(info.Width*info.Height) / 1e6
+	return fmt.Sprintf("%dx%d, %.2f MP, %v (decode and PNG), %.2f MP/s", info.Width, info.Height, mp, el, mp/el.Seconds()), nil
 }
 
 func cmdInfo(args []string) {
@@ -215,10 +321,16 @@ func cmdEncode(args []string) {
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
 	effort := fs.Int("e", 0, "effort: lossless 1-6 (default 4; 1-3: fixed context model, 4+: learned MA tree), lossy 1-7 (default 7; lower searches fewer transform shapes, and 1-4 skip adaptive quantisation and Gaborish)")
 	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
+	quality := fs.Float64("q", -1, "quality 0-100 instead of -d, as in cjxl (100 = lossless, 90 = d 1)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	memprof := fs.String("memprofile", "", "write allocation profile to file")
 	pixels := fs.Bool("pixels", false, "for JPEG input: encode decoded pixels instead of recompressing")
+	outDir := fs.String("o", "", "batch mode: encode every input into this directory")
+	jobs := fs.Int("j", defaultJobs(), "batch mode: files encoded at once")
 	fs.Parse(args)
+	if *quality >= 0 {
+		*dist = float64(gojxl.DistanceFromQuality(float32(*quality)))
+	}
 	if *cpuprof != "" {
 		pf, err := os.Create(*cpuprof)
 		if err != nil {
@@ -238,45 +350,64 @@ func cmdEncode(args []string) {
 			mf.Close()
 		}()
 	}
+	convert := func(in, out string) (string, error) {
+		return encodeOne(in, out, &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist), JPEGPixels: *pixels})
+	}
+	if *outDir != "" {
+		if fs.NArg() < 1 {
+			usage()
+		}
+		batch(fs.Args(), *outDir, ".jxl", *jobs, convert)
+		return
+	}
 	if fs.NArg() < 2 {
 		usage()
 	}
-	raw, err := os.ReadFile(fs.Arg(0))
+	msg, err := convert(fs.Arg(0), fs.Arg(1))
 	if err != nil {
 		fatal(err)
 	}
-	opt := &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist), JPEGPixels: *pixels}
-	if *dist == 0 && !*pixels && len(raw) > 2 && raw[0] == 0xff && raw[1] == 0xd8 {
+	fmt.Fprintln(os.Stderr, msg)
+}
+
+// encodeOne converts the image file in to JPEG XL in out and returns a
+// summary.
+func encodeOne(in, out string, opt *gojxl.EncodeOptions) (string, error) {
+	raw, err := readFile(in)
+	if err != nil {
+		return "", err
+	}
+	note := ""
+	if opt.Distance == 0 && !opt.JPEGPixels && len(raw) > 2 && raw[0] == 0xff && raw[1] == 0xd8 {
 		// JPEG input: lossless recompression of the DCT coefficients
 		t0 := time.Now()
 		data, err := gojxl.TranscodeJPEG(raw)
 		if err == nil {
 			el := time.Since(t0)
-			if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
-				fatal(err)
+			if err := writeFile(out, data); err != nil {
+				return "", err
 			}
-			fmt.Fprintf(os.Stderr, "JPEG recompressed: %d -> %d bytes (%.1f%%), %v\n", len(raw), len(data), 100*float64(len(data))/float64(len(raw)), el)
-			return
+			return fmt.Sprintf("JPEG recompressed: %d -> %d bytes (%.1f%%), %v", len(raw), len(data), 100*float64(len(data))/float64(len(raw)), el), nil
 		}
-		fmt.Fprintf(os.Stderr, "JPEG recompression not possible (%v); encoding pixels\n", err)
+		note = fmt.Sprintf(" (JPEG recompression not possible: %v; pixels encoded)", err)
 		opt.JPEGPixels = true
 	}
-	// any input: colour profile kept, animations as animations
+	// any input: colour profile and metadata kept, animations as animations
 	t0 := time.Now()
 	data, err := gojxl.ConvertToJXL(raw, opt)
 	if errors.Is(err, gojxl.ErrUnsupportedColour) {
-		fatal(fmt.Errorf("%w; lossless encoding (-d 0) keeps any profile", err))
+		return "", fmt.Errorf("%w; lossless encoding (-d 0) keeps any profile", err)
 	}
 	if err != nil {
-		fatal(err)
+		return "", err
 	}
 	el := time.Since(t0)
-	if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
-		fatal(err)
+	if err := writeFile(out, data); err != nil {
+		return "", err
 	}
 	info, err := gojxl.Stat(data)
 	if err != nil {
-		fatal(err)
+		return "", err
 	}
 	w, h := info.Width, info.Height
 	mp := float64(w*h) / 1e6
@@ -284,7 +415,7 @@ func cmdEncode(args []string) {
 	if info.Animated {
 		kind = ", animation"
 	}
-	fmt.Fprintf(os.Stderr, "%dx%d%s, %d bytes (%.3f bpp), %v, %.2f MP/s\n", w, h, kind, len(data), float64(len(data)*8)/float64(w*h), el, mp/el.Seconds())
+	return fmt.Sprintf("%dx%d%s, %d bytes (%.3f bpp), %v, %.2f MP/s%s", w, h, kind, len(data), float64(len(data)*8)/float64(w*h), el, mp/el.Seconds(), note), nil
 }
 
 // loadImage decodes a JPEG XL file or any registered image format.

@@ -66,6 +66,23 @@ func (h *histograms) add(ctx int, v uint32) {
 	c[tok]++
 }
 
+// mergeWorkerHists merges per-worker histograms into the first one
+// present: a worker may have got no work at all (when the others took it
+// all), worker 0 included. hs must not be all nil.
+func mergeWorkerHists(hs []*histograms) *histograms {
+	var hf *histograms
+	for _, h := range hs {
+		switch {
+		case h == nil:
+		case hf == nil:
+			hf = h
+		default:
+			hf.merge(h)
+		}
+	}
+	return hf
+}
+
 func (h *histograms) merge(o *histograms) {
 	for i, c := range o.counts {
 		d := h.counts[i]

@@ -136,6 +136,10 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
 ./gojxl encode -d 1 girdi.png cikti.jxl     # kayıplı (d≈1 görsel olarak kayıpsız)
 ./gojxl encode -e 3 -d 1 girdi.png cikti.jxl  # daha hızlı kayıplı
+./gojxl encode -q 90 girdi.png cikti.jxl    # cjxl gibi kalite (100 = kayıpsız, 90 = d 1)
+./gojxl encode -q 85 -o jxl/ *.png *.jpg    # toplu: dosyalar paralel (-j 4) jxl/ içine
+./gojxl decode -o png/ jxl/*.jxl            # toplu çözme (-format jpg ile JPEG)
+cat a.png | ./gojxl encode -d 1 - - | ./gojxl decode - b.png   # stdin/stdout
 ./gojxl info resim.jxl
 ```
 
