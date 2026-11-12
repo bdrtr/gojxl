@@ -37,17 +37,21 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - libjxl'in adaptif niceleme haritası, karo başına chroma-from-luma, ters
   Gaborish; LF ve alfa öğrenilmiş MA ağaçlarıyla
 - Aynı SSIMULACRA 2 puanında cjxl -e7'den %1–11 küçük (6 test görüntüsü)
-- Efor seviyeleri (`-e`, varsayılan 7): 5–6 32x16/16x32'yi, 3–4 tüm
-  dikdörtgenleri atlar, 1–2 yalnız DCT8 kullanır (~%50 daha az CPU).
-  5 MP fotoğrafta, d=1, tek çekirdek:
+- Efor seviyeleri (`-e`, varsayılan 7): 5–6 32x16/16x32'yi, 4 tüm
+  dikdörtgenleri, 3 ayrıca DCT32'yi atlar; 2 DCT8 dışında yalnız DCT16'yı,
+  1 yalnız DCT8'i dener. libjxl gibi 1–4 uyarlamalı niceleme ve Gaborish
+  kullanmaz (bunlar hızlı eforlarda SSIMULACRA 2'ye göre dosyayı %1–15
+  büyütüyordu). 5 MP fotoğrafta, d=1, tek çekirdek:
 
-  | | boyut | SSIMULACRA 2 | CPU | tepe bellek |
-  |---|---|---|---|---|
-  | gojxl -e7 | 589 KB | 84.06 | 1.47 s | 254 MB |
-  | gojxl -e3 | 686 KB | 83.65 | 1.20 s | 252 MB |
-  | gojxl -e1 | 767 KB | 82.34 | 0.72 s | 263 MB |
-  | cjxl -e7 | 679 KB | 83.94 | 1.32 s | 280 MB |
-  | cjxl -e3 | 854 KB | 82.83 | 0.22 s | 202 MB |
+  | | boyut | SSIMULACRA 2 | CPU |
+  |---|---|---|---|
+  | gojxl -e7 | 589 KB | 84.10 | 1.38 s |
+  | gojxl -e4 | 666 KB | 82.53 | 0.92 s |
+  | gojxl -e2 | 710 KB | 83.07 | 0.64 s |
+  | gojxl -e1 | 733 KB | 81.79 | 0.45 s |
+  | cjxl -e7 | 679 KB | 84.02 | 1.34 s |
+  | cjxl -e3 | 854 KB | 82.83 | 0.24 s |
+  | cjxl -e1 | 912 KB | 82.83 | 0.24 s |
 
 **JPEG → JXL kayıpsız dönüştürme**
 - Saf Go JPEG ayrıştırıcı (baseline, progressive, restart işaretleri,

@@ -200,9 +200,8 @@ func aqModulate(xyb [3][]float32, aq []float32, pw, ph int, d float32) []float32
 				o := (y0+dy)*pw + x0
 				for dx := 0; dx < 8; dx++ {
 					yEff := Y[o+dx] + offsetB + abs32(X[o+dx])
-					if b := B[o+dx]; b > yEff {
-						sumB += min(b-yEff, limitB)
-					}
+					// branch-free: max(., 0) adds +0 where B <= yEff
+					sumB += min(max(B[o+dx]-yEff, 0), limitB)
 				}
 			}
 			if sumB >= 32*limitB {

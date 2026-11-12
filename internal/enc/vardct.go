@@ -34,23 +34,30 @@ type LossyOptions struct {
 type candidates struct{ split, rect, dct16, dct32, rect32 bool }
 
 // selectionFor maps the effort to the candidate set. Selection costs CPU
-// in proportion to the coefficients evaluated (about three per pixel for
-// each of the 8x8, 16x16 and 32x32 levels); measured against effort 7:
+// in proportion to the coefficients evaluated. On a 5 MP photo at d=1, one
+// core (efforts 1-4 also skip adaptive quantisation and Gaborish; sizes as
+// BD-rate against effort 1 by SSIMULACRA 2 over five images):
 //
-//	effort 5-6: no 32x16/16x32        ~11% less CPU, smooth images +7%
-//	effort 3-4: no rectangular types  ~17% less CPU, smooth images +16%
-//	effort 1-2: DCT8 only             ~40% less CPU, +2..40%
-//
-// (photos lose little below effort 7: the split 8x8 types matter most).
+//	effort 1:   DCT8 only                    0.45 s
+//	effort 2:   + DCT16                      0.64 s  -2..-25% (smooth images most)
+//	effort 3:   + split 8x8 (4x8/8x4)        0.81 s  -4..-25% (photos -5%)
+//	effort 4:   + DCT32                      0.92 s  about effort 3
+//	effort 5-6: + 16x8/8x16, AQ, Gaborish    1.23 s
+//	effort 7:   + 32x16/16x32                1.38 s
 func selectionFor(opt LossyOptions) candidates {
 	e := opt.Effort
 	if e <= 0 {
 		e = 7
 	}
 	switch {
-	case opt.OnlyDCT8 || e <= 2:
+	case opt.OnlyDCT8 || e <= 1:
 		return candidates{}
-	case e <= 4:
+	case e == 2:
+		// one family: DCT16 gains most on smooth content
+		return candidates{dct16: true}
+	case e == 3:
+		return candidates{split: true, dct16: true}
+	case e == 4:
 		return candidates{split: true, dct16: true, dct32: true}
 	case e <= 6:
 		return candidates{split: true, rect: true, dct16: true, dct32: true}
@@ -58,17 +65,15 @@ func selectionFor(opt LossyOptions) candidates {
 	return candidates{true, true, true, true, true}
 }
 
-func abs32(v float32) float32 {
-	if v < 0 {
-		return -v
-	}
-	return v
-}
+// abs32 clears the sign bit (no branch: the sign is data-dependent).
+func abs32(v float32) float32 { return math.Float32frombits(math.Float32bits(v) &^ (1 << 31)) }
 
 // gaborishInverse sharpens a plane so that the decoder's Gaborish blur
 // approximately restores it, with libjxl's 5x5 kernel (enc_gaborish.cc:
 // tuned for rate-distortion rather than an exact inverse) and mirrored
-// borders.
+// borders. It works in place, in strips of rows: each strip first saves
+// the two rows above and below it (before any strip is written), and
+// writes a computed row back only when the rows below no longer need it.
 func gaborishInverse(p []float32, w, h int) {
 	kg := [5]float64{-0.09495815671340026, -0.041031725066768575, 0.013710004822696948,
 		0.006510206083837737, -0.0014789063378272242}
@@ -77,6 +82,8 @@ func gaborishInverse(p []float32, w, h int) {
 	r, R := float32(norm*kg[0]), float32(norm*kg[2]) // axis distance 1, 2
 	d, D := float32(norm*kg[1]), float32(norm*kg[4]) // diagonal (1,1), (2,2)
 	L := float32(norm * kg[3])                       // (1,2) and (2,1)
+	// row weights for vertical offsets 0, 1, 2: (centre, +-1, +-2)
+	wt := [3][3]float32{{c, r, R}, {r, d, L}, {R, L, D}}
 	mirror := func(v, n int) int {
 		for v < 0 || v >= n {
 			if v < 0 {
@@ -87,46 +94,83 @@ func gaborishInverse(p []float32, w, h int) {
 		}
 		return v
 	}
-	src := append([]float32(nil), p...)
-	// row weights for vertical offsets 0, 1, 2: (centre, +-1, +-2)
-	wt := [3][3]float32{{c, r, R}, {r, d, L}, {R, L, D}}
-	parallel(h, func(y int) {
-		var rows [5][]float32
-		for k := -2; k <= 2; k++ {
-			yy := mirror(y+k, h)
-			rows[k+2] = src[yy*w : yy*w+w]
-		}
-		out := p[y*w : y*w+w]
-		at := func(x, xm1, xp1, xm2, xp2 int) {
-			var sum float32
-			for k := -2; k <= 2; k++ {
-				row := rows[k+2]
-				kw := wt[max(k, -k)]
-				sum += kw[0]*row[x] + kw[1]*(row[xm1]+row[xp1]) + kw[2]*(row[xm2]+row[xp2])
+	sh := max(4, (h+4*runtime.GOMAXPROCS(0)-1)/(4*runtime.GOMAXPROCS(0)))
+	ns := (h + sh - 1) / sh
+	// original rows y0-2, y0-1 and y1, y1+1 of each strip
+	saved := make([][4][]float32, ns)
+	parallel(ns, func(s int) {
+		y0, y1 := s*sh, min(h, (s+1)*sh)
+		for i, yy := range [4]int{y0 - 2, y0 - 1, y1, y1 + 1} {
+			if yy >= 0 && yy < h {
+				saved[s][i] = append([]float32(nil), p[yy*w:yy*w+w]...)
 			}
-			out[x] = sum
-		}
-		for x := 0; x < w; x++ {
-			if x == 2 && w > 4 {
-				// interior: no mirroring (same arithmetic as at)
-				r0, r1, r2, r3, r4 := rows[0][:w], rows[1][:w], rows[2][:w], rows[3][:w], rows[4][:w]
-				w0, w1, w2 := wt[0], wt[1], wt[2]
-				for ; x < w-2; x++ {
-					var sum float32
-					sum += w2[0]*r0[x] + w2[1]*(r0[x-1]+r0[x+1]) + w2[2]*(r0[x-2]+r0[x+2])
-					sum += w1[0]*r1[x] + w1[1]*(r1[x-1]+r1[x+1]) + w1[2]*(r1[x-2]+r1[x+2])
-					sum += w0[0]*r2[x] + w0[1]*(r2[x-1]+r2[x+1]) + w0[2]*(r2[x-2]+r2[x+2])
-					sum += w1[0]*r3[x] + w1[1]*(r3[x-1]+r3[x+1]) + w1[2]*(r3[x-2]+r3[x+2])
-					sum += w2[0]*r4[x] + w2[1]*(r4[x-1]+r4[x+1]) + w2[2]*(r4[x-2]+r4[x+2])
-					out[x] = sum
-				}
-				if x >= w {
-					break
-				}
-			}
-			at(x, mirror(x-1, w), mirror(x+1, w), mirror(x-2, w), mirror(x+2, w))
 		}
 	})
+	parallel(ns, func(s int) {
+		y0, y1 := s*sh, min(h, (s+1)*sh)
+		rowAt := func(yy int) []float32 {
+			switch {
+			case yy < y0:
+				return saved[s][yy-(y0-2)]
+			case yy >= y1:
+				return saved[s][2+yy-y1]
+			}
+			return p[yy*w : yy*w+w]
+		}
+		var bufs [3][]float32
+		for i := range bufs {
+			bufs[i] = make([]float32, w)
+		}
+		for y := y0; y < y1; y++ {
+			var rows [5][]float32
+			for k := -2; k <= 2; k++ {
+				rows[k+2] = rowAt(mirror(y+k, h))
+			}
+			out := bufs[y%3]
+			gaborishInverseRow(out, &rows, &wt, w, mirror)
+			if y-2 >= y0 {
+				copy(p[(y-2)*w:(y-1)*w], bufs[(y-2)%3])
+			}
+		}
+		for y := max(y0, y1-2); y < y1; y++ {
+			copy(p[y*w:(y+1)*w], bufs[y%3])
+		}
+	})
+}
+
+// gaborishInverseRow computes one output row from the five input rows
+// around it.
+func gaborishInverseRow(out []float32, rows *[5][]float32, wt *[3][3]float32, w int, mirror func(v, n int) int) {
+	at := func(x, xm1, xp1, xm2, xp2 int) {
+		var sum float32
+		for k := -2; k <= 2; k++ {
+			row := rows[k+2]
+			kw := wt[max(k, -k)]
+			sum += kw[0]*row[x] + kw[1]*(row[xm1]+row[xp1]) + kw[2]*(row[xm2]+row[xp2])
+		}
+		out[x] = sum
+	}
+	for x := 0; x < w; x++ {
+		if x == 2 && w > 4 {
+			// interior: no mirroring (same arithmetic as at)
+			r0, r1, r2, r3, r4 := rows[0][:w], rows[1][:w], rows[2][:w], rows[3][:w], rows[4][:w]
+			w0, w1, w2 := wt[0], wt[1], wt[2]
+			o := out[:w]
+			for ; x < w-2; x++ {
+				var sum float32
+				sum += w2[0]*r0[x] + w2[1]*(r0[x-1]+r0[x+1]) + w2[2]*(r0[x-2]+r0[x+2])
+				sum += w1[0]*r1[x] + w1[1]*(r1[x-1]+r1[x+1]) + w1[2]*(r1[x-2]+r1[x+2])
+				sum += w0[0]*r2[x] + w0[1]*(r2[x-1]+r2[x+1]) + w0[2]*(r2[x-2]+r2[x+2])
+				sum += w1[0]*r3[x] + w1[1]*(r3[x-1]+r3[x+1]) + w1[2]*(r3[x-2]+r3[x+2])
+				sum += w2[0]*r4[x] + w2[1]*(r4[x-1]+r4[x+1]) + w2[2]*(r4[x-2]+r4[x+2])
+				o[x] = sum
+			}
+			if x >= w {
+				break
+			}
+		}
+		at(x, mirror(x-1, w), mirror(x+1, w), mirror(x-2, w), mirror(x+2, w))
+	}
 }
 
 const (
@@ -162,26 +206,27 @@ func toXYB(im *Image, pw, ph int) [3][]float32 {
 	maxv := float32(int(1)<<im.BitDepth - 1)
 	cb := float32(math.Cbrt(opsinBias))
 	ch := im.Chans
+	W, H := im.W, im.H
+	eight := im.BitDepth == 8
+	lin := &srgbToLinear8
 	parallel(ph, func(y int) {
-		sy := min(y, im.H-1)
+		// row slices in locals: through ch and out every sample would
+		// reload the slice headers
+		sy := min(y, H-1)
+		cr := ch[0][sy*W : sy*W+W]
+		cg, cbl := cr, cr
+		if !im.Grey {
+			cg, cbl = ch[1][sy*W:sy*W+W], ch[2][sy*W:sy*W+W]
+		}
+		o0, o1, o2 := out[0][y*pw:y*pw+pw], out[1][y*pw:y*pw+pw], out[2][y*pw:y*pw+pw]
 		for x := 0; x < pw; x++ {
-			sx := min(x, im.W-1)
-			i := sy*im.W + sx
+			sx := min(x, W-1)
 			var r, g, b float32
-			if im.BitDepth == 8 {
-				r = srgbToLinear8[ch[0][i]]
-				if im.Grey {
-					g, b = r, r
-				} else {
-					g, b = srgbToLinear8[ch[1][i]], srgbToLinear8[ch[2][i]]
-				}
+			if eight {
+				r, g, b = lin[cr[sx]&255], lin[cg[sx]&255], lin[cbl[sx]&255]
 			} else {
-				r = srgbToLinear(float32(ch[0][i]) / maxv)
-				if im.Grey {
-					g, b = r, r
-				} else {
-					g, b = srgbToLinear(float32(ch[1][i])/maxv), srgbToLinear(float32(ch[2][i])/maxv)
-				}
+				r = srgbToLinear(float32(cr[sx]) / maxv)
+				g, b = srgbToLinear(float32(cg[sx])/maxv), srgbToLinear(float32(cbl[sx])/maxv)
 			}
 			m0 := 0.30*r + 0.622*g + 0.078*b + opsinBias
 			m1 := 0.23*r + 0.692*g + 0.078*b + opsinBias
@@ -189,10 +234,9 @@ func toXYB(im *Image, pw, ph int) [3][]float32 {
 			m0 = float32(cbrtFast(float64(max(m0, 0)))) - cb
 			m1 = float32(cbrtFast(float64(max(m1, 0)))) - cb
 			m2 = float32(cbrtFast(float64(max(m2, 0)))) - cb
-			o := y*pw + x
-			out[0][o] = (m0 - m1) / 2
-			out[1][o] = (m0 + m1) / 2
-			out[2][o] = m2
+			o0[x] = (m0 - m1) / 2
+			o1[x] = (m0 + m1) / 2
+			o2[x] = m2
 		}
 	})
 	return out
@@ -560,11 +604,21 @@ type rowDCTCache struct {
 	h [3][4][32 * 32]float32 // [channel][log2(len/8), or 3 for 4][y*32 + x]
 }
 
-func (r *rowDCTCache) compute(c int, plane []float32, pw, ph, bx0, by0 int) {
+// rowLens returns which segment lengths (8, 16, 32, 4, as indexed in
+// rowDCTCache.h) the candidates read: 8 always (DCT8, 4x8 halves, 16x8),
+// 16 for DCT16, 8x16 and 32x16, 32 for DCT32 and 16x32, 4 for 8x4 halves.
+func (s candidates) rowLens() [4]bool {
+	return [4]bool{true, s.rect || s.dct16 || s.rect32, s.dct32 || s.rect32, s.split}
+}
+
+func (r *rowDCTCache) compute(c int, plane []float32, pw, ph, bx0, by0 int, need [4]bool) {
 	rows := min(32, ph-by0*8)
 	cols := min(32, pw-bx0*8)
 	var scr [64]float32
 	for li, L := range [4]int{8, 16, 32, 4} {
+		if !need[li] {
+			continue
+		}
 		h := &r.h[c][li]
 		for y := 0; y < rows; y++ {
 			src := plane[(by0*8+y)*pw+bx0*8:]
@@ -886,6 +940,13 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	if d <= 0 {
 		d = 1
 	}
+	// Like libjxl, efforts up to 4 use neither the inverse Gaborish filter
+	// (nor, then, the decoder's) nor adaptive quantisation: with the
+	// smaller transform sets both cost time and, measured with SSIMULACRA
+	// 2, made files 1-15% larger at equal quality.
+	if e := opt.Effort; e > 0 && e <= 4 {
+		opt.NoGaborish, opt.LibAQ, opt.AQ = true, false, 0
+	}
 	bw, bh := (im.W+7)/8, (im.H+7)/8
 	pw, ph := bw*8, bh*8
 	xyb := toXYB(im, pw, ph)
@@ -995,7 +1056,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			for cx := 0; cx < cw4; cx++ {
 				bx0, by0 := cx*4, cy*4
 				for c := 0; c < 3; c++ {
-					rc.compute(c, xyb[c], pw, ph, bx0, by0)
+					rc.compute(c, xyb[c], pw, ph, bx0, by0, sel.rowLens())
 				}
 				cost := func(ti, bx, by int) float64 {
 					vt := vtypes[ti]
@@ -1193,6 +1254,15 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	parallel(bh, func(by int) {
 		var coef, scratch [3][]float32
 		sums := make([]float64, 3*tw)
+		// the outputs of the varblocks starting in this row come from one
+		// slab each, not from three allocations per block
+		total := 0
+		for bx := 0; bx < bw; bx++ {
+			if b := by*bw + bx; first[b] {
+				total += vtypes[vtyp[b]].size()
+			}
+		}
+		qslab, cslab := make([]int32, 3*total), make([]float32, 2*total)
 		for bx := 0; bx < bw; bx++ {
 			b := by*bw + bx
 			if !first[b] {
@@ -1253,7 +1323,8 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					qdc[2][i] = int32(math.Round(float64((dcv[2][j] - float32(qy)*mulDC[1]) / mulDC[2])))
 				}
 			}
-			q := make([]int32, 3*nn)
+			q := qslab[: 3*nn : 3*nn]
+			qslab = qslab[3*nn:]
 			mY := tmul[ti][1]
 			t := bx / 8
 			for i := 0; i < nn; i++ {
@@ -1269,7 +1340,11 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 			vq[b] = q
 			// copies, so the (larger) cached block can be freed
-			vc[b] = [2][]float32{slices.Clone(coef[0]), slices.Clone(coef[2])}
+			xc, bc := cslab[:nn:nn], cslab[nn:2*nn:2*nn]
+			cslab = cslab[2*nn:]
+			copy(xc, coef[0])
+			copy(bc, coef[2])
+			vc[b] = [2][]float32{xc, bc}
 		}
 		rowSums[by] = sums
 	})

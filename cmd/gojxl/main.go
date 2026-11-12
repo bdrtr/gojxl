@@ -202,7 +202,7 @@ func cmdInfo(args []string) {
 
 func cmdEncode(args []string) {
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
-	effort := fs.Int("e", 0, "effort: lossless 1-6 (default 4; 1-3: fixed context model, 4+: learned MA tree), lossy 1-7 (default 7; lower searches fewer transform shapes)")
+	effort := fs.Int("e", 0, "effort: lossless 1-6 (default 4; 1-3: fixed context model, 4+: learned MA tree), lossy 1-7 (default 7; lower searches fewer transform shapes, and 1-4 skip adaptive quantisation and Gaborish)")
 	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	memprof := fs.String("memprofile", "", "write allocation profile to file")

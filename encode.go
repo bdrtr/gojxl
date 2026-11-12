@@ -21,8 +21,10 @@ type EncodeOptions struct {
 	// typically 5-40% smaller).
 	//
 	// Lossy (1-7, default 7): fewer transform shapes are searched at lower
-	// efforts: 5-6 skip 32x16/16x32, 3-4 all rectangular shapes, 1-2 use
-	// only 8x8 DCTs (about 40% less CPU, 2-40% larger at equal quality).
+	// efforts: 5-6 skip 32x16/16x32, 4 all rectangular shapes, 3 also
+	// DCT32, 2 tries only DCT16 besides DCT8 and 1 only 8x8 DCTs. Like
+	// libjxl, efforts 1-4 use no adaptive quantisation or Gaborish. On a
+	// 5 MP photo effort 1 takes a third of the CPU time of effort 7.
 	Effort int
 	// Distance > 0 selects lossy (VarDCT) encoding with the given
 	// perceptual distance (1.0 ~ visually lossless). 0 means lossless.
