@@ -1126,12 +1126,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		return nil, err
 	}
 	xyb := toXYB(im, pw, ph, model)
-	// patches (effort 7, as libjxl): repeated text-like components go to a
-	// reference frame and are subtracted before everything else
-	var patches *patchPlan
-	if e := opt.Effort; (e <= 0 || e >= 7) && !opt.NoPatches && !im.Alpha && opt.Frame.Anim == nil {
-		patches = planPatches(xyb, im.W, im.H, pw, d)
-	}
 	// keep only the alpha plane of the input, so the colour planes can be
 	// freed while encoding (when the caller drops its reference)
 	{
@@ -1141,6 +1135,19 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			rest.Chans = [][]int32{im.Chans[len(im.Chans)-1]}
 		}
 		im = &rest
+	}
+	// large images: collect now, so the heap goal follows what stays (the
+	// last cycle ran while the input planes were still live; the big
+	// buffers hold no pointers, so a cycle is cheap)
+	bigImage := pw*ph >= 1<<22
+	if bigImage {
+		runtime.GC()
+	}
+	// patches (effort 7, as libjxl): repeated text-like components go to a
+	// reference frame and are subtracted before everything else
+	var patches *patchPlan
+	if e := opt.Effort; (e <= 0 || e >= 7) && !opt.NoPatches && !im.Alpha && opt.Frame.Anim == nil {
+		patches = planPatches(xyb, im.W, im.H, pw, d)
 	}
 	var aqMap []float32 // per-block quantisation multipliers (libjxl AQ)
 	var aqMed float32
@@ -1463,6 +1470,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		}
 		if all {
 			xyb = [3][]float32{}
+			if bigImage {
+				runtime.GC()
+			}
 		}
 	}
 
