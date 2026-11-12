@@ -36,7 +36,9 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   bölünmüş DCT4x8/8x4 varblokları, hız-bozulma (RD) maliyetiyle seçilir
 - libjxl'in adaptif niceleme haritası, karo başına chroma-from-luma, ters
   Gaborish; LF ve alfa öğrenilmiş MA ağaçlarıyla
-- Aynı SSIMULACRA 2 puanında cjxl -e7'den %1–11 küçük (6 test görüntüsü)
+- Aynı kalitede cjxl -e7'den küçük: 15 fotoğraf/görselde BD-rate SSIMULACRA 2'ye
+  göre ortalama %−7,8 (puan ≥ 85 yüksek kalite bölgesinde %−10,6), PSNR'ye göre
+  %−15,8; geride kaldığı tek sahne yoğun dokulu "cafe" (%+2..3)
 - Efor seviyeleri (`-e`, varsayılan 7): 5–6 32x16/16x32'yi, 4 tüm
   dikdörtgenleri, 3 ayrıca DCT32'yi atlar; 2 DCT8 dışında yalnız DCT16'yı,
   1 yalnız DCT8'i dener. libjxl gibi 1–4 uyarlamalı niceleme ve Gaborish
