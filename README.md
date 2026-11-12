@@ -137,6 +137,10 @@ jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → or
 - CMYK (SWOP profili): lcms perceptual dönüşümüyle 69 dB, djxl ile 46 dB.
 - Kodlayıcının ürettiği dosyalar djxl ile bit-birebir çözülür; round-trip
   testleri (`go test ./...`) 1×1'den çok gruplu görüntülere kadar kapsar.
+- Bozuk girdiler: JXL çözücü, PNG okuyucu ve JPEG ayrıştırıcı için fuzz
+  hedefleri var (`go test -run x -fuzz FuzzDecode .`); bulunan askılar,
+  dev ayırmalar ve karesel yavaşlıklar düzeltildi, girdileri
+  `testdata/fuzz` altında gerileme testi olarak duruyor.
 
 ## Performans (Ryzen 7 8845HS, yük altındaki dizüstü)
 
@@ -160,6 +164,10 @@ libjxl AVX2 SIMD kullanır; gojxl skaler saf Go'dur ve yalnız çözmede tek
 çekirdekte ~1.2–1.8× geridedir, PNG yazımı da paralel olduğundan çok
 çekirdekli dönüştürmede öndedir. WASM derlemeleri çoğunlukla tek thread
 çalışır ve native'in kabaca yarısı hızındadır.
+
+Çözücü filtreleri (Gaborish, EPF) düzlemleri yerinde işler ve tek geçişli
+karelerde katsayılar grup grup piksele çevrilir: 4K VarDCT → PNG
+dönüştürmede tepe bellek ~210 MB (djxl ~100 MB).
 
 Kayıpsız sıkıştırma (bayt, düşük iyi; cjxl v0.12):
 
