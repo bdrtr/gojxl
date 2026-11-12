@@ -14,6 +14,18 @@ func InsertICC(png []byte, icc []byte) []byte {
 	if len(icc) == 0 || len(png) < 33 {
 		return png
 	}
+	c := ICCChunk(icc)
+	chunk := makeChunk(c.Type, c.Data)
+	// signature (8) + IHDR chunk (4+4+13+4 = 25)
+	out := make([]byte, 0, len(png)+len(chunk))
+	out = append(out, png[:33]...)
+	out = append(out, chunk...)
+	out = append(out, png[33:]...)
+	return out
+}
+
+// ICCChunk returns the iCCP chunk of a colour profile.
+func ICCChunk(icc []byte) Chunk {
 	var z bytes.Buffer
 	w, _ := zlib.NewWriterLevel(&z, zlib.BestCompression)
 	w.Write(icc)
@@ -23,13 +35,12 @@ func InsertICC(png []byte, icc []byte) []byte {
 	data.WriteByte(0) // null separator
 	data.WriteByte(0) // compression method
 	data.Write(z.Bytes())
-	chunk := makeChunk("iCCP", data.Bytes())
-	// signature (8) + IHDR chunk (4+4+13+4 = 25)
-	out := make([]byte, 0, len(png)+len(chunk))
-	out = append(out, png[:33]...)
-	out = append(out, chunk...)
-	out = append(out, png[33:]...)
-	return out
+	return Chunk{"iCCP", data.Bytes()}
+}
+
+// CICPChunk returns the cICP chunk of H.273 code points (RGB, full range).
+func CICPChunk(primaries, transfer byte) Chunk {
+	return Chunk{"cICP", []byte{primaries, transfer, 0, 1}}
 }
 
 func makeChunk(typ string, data []byte) []byte {
@@ -49,7 +60,8 @@ func InsertCICP(png []byte, primaries, transfer byte) []byte {
 	if len(png) < 33 {
 		return png
 	}
-	chunk := makeChunk("cICP", []byte{primaries, transfer, 0, 1})
+	c := CICPChunk(primaries, transfer)
+	chunk := makeChunk(c.Type, c.Data)
 	out := make([]byte, 0, len(png)+len(chunk))
 	out = append(out, png[:33]...)
 	out = append(out, chunk...)

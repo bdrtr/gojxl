@@ -85,21 +85,34 @@ func (c *xybConv) row(x, y, b, r, g, bo []float32) {
 // from a (nil: opaque). tmp must hold 3*Width floats. Deferred XYB frames
 // go from linear values to 8-bit codes with one table lookup per sample.
 func (f *Frame) RGBA8Row(yy int, tmp, a []float32, dst []byte) {
+	f.RGB8Row(yy, tmp, a, dst, 4)
+}
+
+// RGB8Row is RGBA8Row with stride bytes per pixel: 4 (RGBA, alpha from a
+// or opaque) or 3 (RGB, a unused). tmp is only needed for frames whose
+// colour is converted without the 8-bit table (it may be nil otherwise).
+func (f *Frame) RGB8Row(yy int, tmp, a []float32, dst []byte, stride int) {
 	w := f.Width
-	dst = dst[:4*w]
+	dst = dst[:stride*w]
 	c := f.conv
 	if c != nil && !f.grey && !c.linear && c.hlgExp == 0 {
 		c.tf8Once.Do(func() { c.tf8 = buildTF8(c.f) })
 	}
 	if c != nil && c.tf8 != nil && !f.grey && !c.linear && c.hlgExp == 0 {
-		xybTo8(c, f.Color[0].Row(yy)[:w], f.Color[1].Row(yy)[:w], f.Color[2].Row(yy)[:w], dst)
+		xybTo8(c, f.Color[0].Row(yy)[:w], f.Color[1].Row(yy)[:w], f.Color[2].Row(yy)[:w], dst, stride)
 	} else {
+		if tmp == nil && c != nil {
+			tmp = make([]float32, 3*w)
+		}
 		r, g, b := f.RGBRow(yy, tmp)
 		r, g, b = r[:w], g[:w], b[:w]
 		for x := range r {
-			o := dst[4*x : 4*x+3 : 4*x+3]
+			o := dst[stride*x : stride*x+3 : stride*x+3]
 			o[0], o[1], o[2] = q8(r[x]), q8(g[x]), q8(b[x])
 		}
+	}
+	if stride != 4 {
+		return
 	}
 	if a != nil {
 		a = a[:w]
@@ -204,8 +217,9 @@ func (t *tf8) get(v float32) uint8 {
 	return q8(t.f(v))
 }
 
-// xybTo8 converts XYB rows to 8-bit RGB (dst holds RGBA, alpha untouched).
-func xybTo8(c *xybConv, x, y, b []float32, dst []byte) {
+// xybTo8 converts XYB rows to 8-bit RGB, stride bytes per pixel in dst
+// (the fourth, alpha, byte of RGBA is left untouched).
+func xybTo8(c *xybConv, x, y, b []float32, dst []byte, stride int) {
 	t := c.tf8
 	thr, code := t.thr[:tf8Mask+1], t.code[:tf8Mask+1]
 	sb := t.slowBelow
@@ -213,7 +227,7 @@ func xybTo8(c *xybConv, x, y, b []float32, dst []byte) {
 	cb0, cb1, cb2 := c.cbrtBias[0], c.cbrtBias[1], c.cbrtBias[2]
 	b0, b1, b2 := c.bias[0], c.bias[1], c.bias[2]
 	y, b = y[:len(x)], b[:len(x)]
-	dst = dst[:4*len(x)]
+	dst = dst[:stride*len(x)]
 	for i, X := range x {
 		Y, B := y[i], b[i]
 		gr := Y + X - cb0
@@ -225,7 +239,7 @@ func xybTo8(c *xybConv, x, y, b []float32, dst []byte) {
 		vr := m0*mr + m1*mg + m2*mb
 		vg := m3*mr + m4*mg + m5*mb
 		vb := m6*mr + m7*mg + m8*mb
-		o := dst[4*i : 4*i+3 : 4*i+3]
+		o := dst[stride*i : stride*i+3 : stride*i+3]
 		if vr >= sb && vg >= sb && vb >= sb {
 			// +1 when v >= thr: the sign bit of v-thr (exact for close
 			// values, -Inf for thr = +Inf) is clear

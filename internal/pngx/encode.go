@@ -36,6 +36,88 @@ func Encode(w io.Writer, img image.Image, level int) error {
 	return err
 }
 
+// EncodeRows writes a width x height PNG whose rows row fills in PNG
+// layout (ctype 0 grey, 2 RGB or 6 RGBA; depth 8 or 16 bits per sample,
+// big endian), so images need not exist in memory as a whole. row is
+// called concurrently for different rows.
+//
+// The extra chunks follow IHDR. The file goes to w chunk by chunk, the
+// compressed strips without being joined first.
+func EncodeRows(w io.Writer, width, height, ctype, depth int, row func(y int, dst []byte), level int, extra ...Chunk) error {
+	if width <= 0 || height <= 0 {
+		return errors.New("png: empty image")
+	}
+	ch := map[int]int{0: 1, 2: 3, 6: 4}[ctype]
+	if ch == 0 || (depth != 8 && depth != 16) {
+		return errors.New("png: unsupported row format")
+	}
+	l := layout{w: width, h: height, ctype: ctype, depth: depth, bpp: ch * depth / 8, row: row}
+	zp, err := compressParts(l, level)
+	if err != nil {
+		return err
+	}
+	head := &bytes.Buffer{}
+	writeHeader(head, l)
+	for _, c := range extra {
+		writeChunk(head, c.Type, c.Data)
+	}
+	if _, err := w.Write(head.Bytes()); err != nil {
+		return err
+	}
+	if err := writeDataTo(w, "IDAT", zp.size(), zp.pieces()); err != nil {
+		return err
+	}
+	return writeChunkTo(w, "IEND")
+}
+
+// Chunk is an extra PNG chunk.
+type Chunk struct {
+	Type string
+	Data []byte
+}
+
+// writeDataTo writes n bytes of zlib data, given as consecutive pieces,
+// as typ chunks of at most 1 MiB (as writeData does).
+func writeDataTo(w io.Writer, typ string, n int, pieces [][]byte) error {
+	const maxChunk = 1 << 20
+	for n > 0 {
+		cn := min(n, maxChunk)
+		var hdr [8]byte
+		binary.BigEndian.PutUint32(hdr[:], uint32(cn))
+		copy(hdr[4:], typ)
+		if _, err := w.Write(hdr[:]); err != nil {
+			return err
+		}
+		crc := crc32.Update(0, crc32.IEEETable, hdr[4:])
+		for left := cn; left > 0; {
+			p := pieces[0]
+			k := min(left, len(p))
+			if _, err := w.Write(p[:k]); err != nil {
+				return err
+			}
+			crc = crc32.Update(crc, crc32.IEEETable, p[:k])
+			left -= k
+			if pieces[0] = p[k:]; len(pieces[0]) == 0 {
+				pieces = pieces[1:]
+			}
+		}
+		var tail [4]byte
+		binary.BigEndian.PutUint32(tail[:], crc)
+		if _, err := w.Write(tail[:]); err != nil {
+			return err
+		}
+		n -= cn
+	}
+	return nil
+}
+
+func writeChunkTo(w io.Writer, typ string) error {
+	b := &bytes.Buffer{}
+	writeChunk(b, typ, nil)
+	_, err := w.Write(b.Bytes())
+	return err
+}
+
 // EncodeAPNG writes an animated PNG: frames (all of the same size and
 // type) shown for delays[i] seconds each, looping loops times (0 =
 // forever). The first frame is also the default image.
@@ -197,9 +279,45 @@ func writeData(out *bytes.Buffer, typ string, seq int64, z []byte) uint32 {
 	return uint32(seq)
 }
 
+// zparts is a zlib stream in pieces: the header, the deflate data of each
+// strip, and the Adler-32 trailer.
+type zparts struct {
+	strips [][]byte
+	adler  uint32
+}
+
+func (z *zparts) size() int {
+	n := 2 + 4
+	for _, s := range z.strips {
+		n += len(s)
+	}
+	return n
+}
+
+// pieces returns the stream as consecutive byte slices.
+func (z *zparts) pieces() [][]byte {
+	var tail [4]byte
+	binary.BigEndian.PutUint32(tail[:], z.adler)
+	ps := append([][]byte{{0x78, 0x01}}, z.strips...)
+	return append(ps, tail[:])
+}
+
 // compress filters and deflates the image into a zlib stream, strips of
 // rows in parallel.
 func compress(l layout, level int) ([]byte, error) {
+	zp, err := compressParts(l, level)
+	if err != nil {
+		return nil, err
+	}
+	z := make([]byte, 0, zp.size())
+	for _, p := range zp.pieces() {
+		z = append(z, p...)
+	}
+	return z, nil
+}
+
+// compressParts is compress without joining the strips.
+func compressParts(l layout, level int) (*zparts, error) {
 	W, H, bpp, row := l.w, l.h, l.bpp, l.row
 	rowLen := W * bpp
 	stripRows := max(16, (1<<18)/(rowLen+1))
@@ -265,18 +383,12 @@ func compress(l layout, level int) ([]byte, error) {
 	if werr != nil {
 		return nil, werr
 	}
-	n := 2 + 4
+	zp := &zparts{adler: 1}
 	for _, s := range strips {
-		n += len(s.data)
+		zp.strips = append(zp.strips, s.data)
+		zp.adler = adler32Combine(zp.adler, s.adler, s.rawLen)
 	}
-	z := make([]byte, 0, n)
-	z = append(z, 0x78, 0x01)
-	ad := uint32(1)
-	for _, s := range strips {
-		z = append(z, s.data...)
-		ad = adler32Combine(ad, s.adler, s.rawLen)
-	}
-	return binary.BigEndian.AppendUint32(z, ad), nil
+	return zp, nil
 }
 
 func writeChunk(out *bytes.Buffer, typ string, data []byte) {

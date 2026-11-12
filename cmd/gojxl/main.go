@@ -3,7 +3,6 @@ package main
 
 import (
 	"bytes"
-	"compress/flate"
 	"errors"
 	"flag"
 	"fmt"
@@ -111,8 +110,30 @@ func cmdDecode(args []string) {
 			return
 		}
 	}
-	t0 := time.Now()
 	opt := &gojxl.Options{Force16: *depth == 16}
+	if fs.NArg() >= 2 && *bench == 0 && *memprof == "" {
+		// decode straight into the PNG writer (no intermediate image)
+		t0 := time.Now()
+		f, err := os.Create(fs.Arg(1))
+		if err != nil {
+			fatal(err)
+		}
+		if err := gojxl.ConvertToPNG(f, data, opt); err != nil {
+			f.Close()
+			os.Remove(fs.Arg(1))
+			fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			fatal(err)
+		}
+		el := time.Since(t0)
+		if info, err := gojxl.Stat(data); err == nil {
+			mp := float64(info.Width*info.Height) / 1e6
+			fmt.Fprintf(os.Stderr, "%dx%d, %.2f MP, %v (decode and PNG), %.2f MP/s\n", info.Width, info.Height, mp, el, mp/el.Seconds())
+		}
+		return
+	}
+	t0 := time.Now()
 	img, err := gojxl.DecodeBytesOptions(data, opt)
 	if err != nil {
 		fatal(err)
@@ -140,45 +161,13 @@ func cmdDecode(args []string) {
 	mp := float64(b.Dx()*b.Dy()) / 1e6
 	fmt.Fprintf(os.Stderr, "%dx%d, %.2f MP, %v, %.2f MP/s\n", b.Dx(), b.Dy(), mp, el, mp/el.Seconds())
 	if fs.NArg() >= 2 {
-		f, err := os.Create(fs.Arg(1))
-		if err != nil {
-			fatal(err)
-		}
 		var buf bytes.Buffer
-		info, ierr := gojxl.Stat(data)
-		var anim *gojxl.Animation
-		if ierr == nil && info.Animated {
-			if anim, err = gojxl.DecodeAll(data); err != nil {
-				fatal(err)
-			}
-		}
-		if anim != nil && len(anim.Frames) > 1 {
-			// animation: APNG with all displayed frames
-			frames := make([]image.Image, len(anim.Frames))
-			delays := make([]float64, len(anim.Frames))
-			for i, fr := range anim.Frames {
-				frames[i], delays[i] = fr.Image, fr.Duration
-			}
-			if err := pngx.EncodeAPNG(&buf, frames, delays, anim.NumLoops, flate.BestSpeed); err != nil {
-				fatal(err)
-			}
-			fmt.Fprintf(os.Stderr, "APNG: %d frames\n", len(frames))
-		} else if err := pngx.Encode(&buf, img, flate.BestSpeed); err != nil {
+		if err := gojxl.ConvertToPNG(&buf, data, opt); err != nil {
 			fatal(err)
 		}
-		out := buf.Bytes()
-		if ierr == nil {
-			if info.OutputICC != nil {
-				out = pngx.InsertICC(out, info.OutputICC)
-			}
-			if info.CICP != nil {
-				out = pngx.InsertCICP(out, info.CICP[0], info.CICP[1])
-			}
-		}
-		if _, err := f.Write(out); err != nil {
+		if err := os.WriteFile(fs.Arg(1), buf.Bytes(), 0o644); err != nil {
 			fatal(err)
 		}
-		f.Close()
 	}
 }
 

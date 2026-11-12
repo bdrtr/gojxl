@@ -52,6 +52,6 @@ func BenchmarkXYBTo8(b *testing.B) {
 	dst := make([]byte, 4*w)
 	b.SetBytes(w)
 	for i := 0; i < b.N; i++ {
-		xybTo8(c, x, y, bb, dst)
+		xybTo8(c, x, y, bb, dst, 4)
 	}
 }
