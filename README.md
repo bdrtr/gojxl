@@ -176,6 +176,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl encode girdi.ppm cikti.jxl          # PGM/PPM/PAM (P2/P3/P5/P6/P7), kendi bit derinliğinde (ör. 10-bit)
 ./gojxl encode foto.webp foto.jxl           # WebP (kayıpsız/kayıplı, alfa, animasyon) → JXL
 ./gojxl encode tarama.tif tarama.jxl        # TIFF (8/16-bit, LZW/Deflate/PackBits, karolar) → kayıpsız JXL
+./gojxl encode ekran.bmp ekran.jxl          # BMP (1–32 bit, RLE, bit alanları)
 ./gojxl compare orijinal.png bozuk.jxl      # SSIMULACRA 2 + PSNR (PNG/JPEG/GIF/JXL)
 ./gojxl encode foto.jpg foto.jxl            # JPEG → JXL kayıpsız yeniden sıkıştırma (~%15-30 küçük)
 ./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
@@ -199,7 +200,7 @@ anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{ICC: profil})     // pikseller profil uzayında
-jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG/WebP/TIFF/PNM → JXL, renk korunur
+jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG/WebP/TIFF/BMP/PNM → JXL
 jxlData, err := gojxl.TranscodeJPEG(jpegBytes)                     // JPEG → JXL
 err = gojxl.ConvertToPNG(w, jxlData, nil)                          // JXL → PNG (akışlı)
 err = gojxl.ConvertToJPEG(w, jxlData, 90, nil)                     // JXL → JPEG (orijinal varsa o)

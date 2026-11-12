@@ -33,7 +33,7 @@ Usage:
   gojxl decode [-format png|jpg|pnm|pfm] -o outdir input.jxl|dir...
   gojxl encode [-e effort] [-d distance | -q quality] input output.jxl
   gojxl encode [-e effort] [-d distance | -q quality] -o outdir input|dir...
-      input: PNG/APNG, GIF, WebP (still/animated), TIFF, JPEG (recompressed losslessly at d=0),
+      input: PNG/APNG, GIF, WebP (still/animated), TIFF, BMP, JPEG (recompressed losslessly at d=0),
       PGM/PPM/PAM (at their bit depth); the
       colour profile and Exif/XMP metadata of the input are kept;
       d=0 (q=100) is lossless; "-" reads stdin / writes stdout
@@ -199,7 +199,7 @@ func batch(inputs []string, dir, ext string, exts []string, jobs int, convert fu
 // encodeExts and decodeExts are the file kinds batch mode takes from
 // directories.
 var (
-	encodeExts = []string{".png", ".apng", ".gif", ".jpg", ".jpeg", ".jfif", ".webp", ".tif", ".tiff", ".pgm", ".ppm", ".pam", ".pnm"}
+	encodeExts = []string{".png", ".apng", ".gif", ".jpg", ".jpeg", ".jfif", ".webp", ".tif", ".tiff", ".bmp", ".pgm", ".ppm", ".pam", ".pnm"}
 	decodeExts = []string{".jxl"}
 )
 

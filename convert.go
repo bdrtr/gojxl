@@ -9,6 +9,7 @@ import (
 	"io"
 	"sync"
 
+	"gojxl/internal/bmp"
 	"gojxl/internal/exif"
 	ijpeg "gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
@@ -19,7 +20,7 @@ import (
 )
 
 // ConvertToJXL encodes an image file as JPEG XL: PNG or APNG, GIF, JPEG,
-// WebP (still or animated), TIFF, PGM/PPM/PAM, or any other format
+// WebP (still or animated), TIFF, BMP, PGM/PPM/PAM, or any other format
 // registered with package image. The colour space of
 // the input is kept (PNG cICP, iCCP, sRGB and gAMA/cHRM chunks, JPEG ICC
 // profiles; opt.ICC overrides them), as are its Exif and XMP metadata
@@ -99,8 +100,8 @@ func outputColour(data []byte, opt *Options) (icc, cicp []byte) {
 }
 
 // DecodeInput decodes an image file of a format ConvertToJXL takes (the
-// first frame of an animation): PNG, JPEG, GIF, WebP, TIFF, PGM, PPM, PAM
-// or any other format registered with package image.
+// first frame of an animation): PNG, JPEG, GIF, WebP, TIFF, BMP, PGM, PPM,
+// PAM or any other format registered with package image.
 func DecodeInput(data []byte) (img image.Image, err error) {
 	defer recoverErr(&err)
 	return decodeInput(data)
@@ -135,6 +136,9 @@ func decodeInput(data []byte) (image.Image, error) {
 			return nil, err
 		}
 		return pnmImage(tiffAsPNM(t)), nil
+	}
+	if bmp.Is(data) {
+		return bmp.Decode(data)
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	return img, err
