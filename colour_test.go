@@ -254,3 +254,52 @@ func TestAnimationColour(t *testing.T) {
 		}
 	}
 }
+
+// iccWithChannelCurves returns a P3 profile whose green and blue tone
+// curves are pure gammas (1.8, 2.6) unlike the red one (sRGB).
+func iccWithChannelCurves() []byte {
+	icc := append([]byte(nil), jxl.SynthesizeICC(&encP3)...)
+	n := int(binary.BigEndian.Uint32(icc[128:]))
+	for i := 0; i < n; i++ {
+		var g float64
+		switch string(icc[132+12*i : 136+12*i]) {
+		case "gTRC":
+			g = 1.8
+		case "bTRC":
+			g = 2.6
+		default:
+			continue
+		}
+		for len(icc)%4 != 0 {
+			icc = append(icc, 0)
+		}
+		off := len(icc)
+		icc = append(icc, "para\x00\x00\x00\x00\x00\x00\x00\x00"...)
+		icc = binary.BigEndian.AppendUint32(icc, uint32(int32(math.Round(g*65536))))
+		binary.BigEndian.PutUint32(icc[136+12*i:], uint32(off))
+		binary.BigEndian.PutUint32(icc[140+12*i:], 16)
+	}
+	binary.BigEndian.PutUint32(icc, uint32(len(icc)))
+	return icc
+}
+
+// Lossy images tagged with a profile whose channel curves differ decode
+// back into that space channel by channel.
+func TestChannelCurvesProfile(t *testing.T) {
+	src := colourTestImage()
+	icc := iccWithChannelCurves()
+	data, err := EncodeBytes(src, &EncodeOptions{ICC: icc, Distance: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := headerOf(t, data); !d.Header.Colour.WantICC {
+		t.Fatal("profile not stored as ICC")
+	}
+	img, err := DecodeBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := psnr8(src, img); p < 34 {
+		t.Errorf("PSNR %.2f", p)
+	}
+}

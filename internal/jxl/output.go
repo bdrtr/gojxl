@@ -14,9 +14,12 @@ type xybConv struct {
 	cbrtBias [3]float32
 	lut      *tfLUT
 	f        func(float32) float32
-	linear   bool
-	hlgExp   float32
-	lum      [3]float32
+	// per channel curves (ICC profiles whose channels differ), else nil
+	f3     [3]func(float32) float32
+	lut3   [3]*tfLUT
+	linear bool
+	hlgExp float32
+	lum    [3]float32
 
 	tf8Once sync.Once
 	tf8     *tf8 // 8-bit output table (built on first use)
@@ -43,6 +46,12 @@ func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 	if t != nil && !t.srgb {
 		c.f = t.enc
 		c.hlgExp, c.lum = t.hlgExp, t.lum
+		if t.enc3[0] != nil {
+			c.f3 = t.enc3
+			for i, f := range t.enc3 {
+				c.lut3[i] = buildTFLUT(f)
+			}
+		}
 	} else {
 		tf := xybOutputTF(ih)
 		if tf == TFLinear {
@@ -74,7 +83,13 @@ func (c *xybConv) row(x, y, b, r, g, bo []float32) {
 			bo[i] *= s
 		}
 	}
-	if !c.linear {
+	switch {
+	case c.linear:
+	case c.lut3[0] != nil:
+		c.lut3[0].apply(r, c.f3[0])
+		c.lut3[1].apply(g, c.f3[1])
+		c.lut3[2].apply(bo, c.f3[2])
+	default:
 		c.lut.apply(r, c.f)
 		c.lut.apply(g, c.f)
 		c.lut.apply(bo, c.f)
@@ -95,7 +110,7 @@ func (f *Frame) RGB8Row(yy int, tmp, a []float32, dst []byte, stride int) {
 	w := f.Width
 	dst = dst[:stride*w]
 	c := f.conv
-	if c != nil && !f.grey && !c.linear && c.hlgExp == 0 {
+	if c != nil && !f.grey && !c.linear && c.hlgExp == 0 && c.lut3[0] == nil {
 		c.tf8Once.Do(func() { c.tf8 = buildTF8(c.f) })
 	}
 	if c != nil && c.tf8 != nil && !f.grey && !c.linear && c.hlgExp == 0 {

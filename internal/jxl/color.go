@@ -476,13 +476,26 @@ func invertCurve(f func(float64) float64) func(float32) float32 {
 	}
 }
 
+// sameCurve reports whether two tone curves agree (to float32 precision).
+func sameCurve(f, g func(float64) float64) bool {
+	for i := 0; i <= 1024; i++ {
+		x := float64(i) / 1024
+		if math.Abs(f(x)-g(x)) > 1e-7 {
+			return false
+		}
+	}
+	return true
+}
+
 // outputTarget describes the space XYB frames are converted to.
 type outputTarget struct {
 	srgb bool
 	m    mat3 // linear sRGB -> target linear RGB
 	grey bool
 	enc  func(float32) float32 // linear -> encoded
-	icc  []byte                // profile tagging the output (nil = sRGB)
+	// enc3 are per channel curves when an ICC profile's differ (else nil)
+	enc3 [3]func(float32) float32
+	icc  []byte // profile tagging the output (nil = sRGB)
 	// HLG inverse OOTF (display -> scene light): rgb *= Y^hlgExp.
 	hlgExp float32
 	lum    [3]float32
@@ -506,6 +519,9 @@ func xybTarget(ih *ImageHeader, icc []byte) *outputTarget {
 			t.m = p.m.inv().mul(toD50)
 		}
 		t.enc = invertCurve(p.trc[0])
+		if !p.grey && (!sameCurve(p.trc[0], p.trc[1]) || !sameCurve(p.trc[0], p.trc[2])) {
+			t.enc3 = [3]func(float32) float32{t.enc, invertCurve(p.trc[1]), invertCurve(p.trc[2])}
+		}
 		return t
 	}
 	if c.isSRGB() || c.ColourSpace == CSXYB || c.ColourSpace == CSUnknown {
