@@ -1113,7 +1113,14 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	}
 	epfIters := opt.EPFIters
 	if epfIters < 0 {
+		// libjxl's rule: one iteration from d 0.7, two from 1.5, three
+		// from 4 (BD-rate: text screenshot -2.7%, photos +0.1..0.3%)
 		epfIters = 0
+		for _, t := range []float32{0.7, 1.5, 4} {
+			if d >= t {
+				epfIters++
+			}
+		}
 	}
 	sharp := opt.Sharpness
 	if sharp < 0 {
