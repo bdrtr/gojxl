@@ -15,6 +15,11 @@ func (c uintCfg) encode(v uint32) (tok uint32, nb uint, bv uint32) {
 	if v < 1<<c.se {
 		return v, 0, 0
 	}
+	return c.encodeLarge(v)
+}
+
+// encodeLarge is encode for v >= 2^se (kept apart so encode inlines).
+func (c uintCfg) encodeLarge(v uint32) (tok uint32, nb uint, bv uint32) {
 	n := uint32(bits.Len32(v) - 1)
 	m := v - (1 << n)
 	tok = (1 << c.se) + ((n - c.se) << (c.msb + c.lsb)) + ((m >> (n - c.msb)) << c.lsb) + (m & (1<<c.lsb - 1))

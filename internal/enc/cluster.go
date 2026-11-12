@@ -21,7 +21,27 @@ func nlog2n(n uint64) float64 {
 		return nlogTab[n]
 	}
 	f := float64(n)
-	return f * math.Log2(f)
+	return f * fastLog2(f)
+}
+
+// log2 of 1+i/256 and 1/(1+i/256), for fastLog2
+var lgTab, lgInv = func() (t, inv [256]float64) {
+	for i := range t {
+		m := 1 + float64(i)/256
+		t[i], inv[i] = math.Log2(m), 1/m
+	}
+	return
+}()
+
+// fastLog2 is log2(x) for normal positive x, to about 1e-10: the exponent,
+// a table entry for the top 8 mantissa bits and a cubic in the rest.
+func fastLog2(x float64) float64 {
+	const c1, c2, c3 = 1 / math.Ln2, -1 / (2 * math.Ln2), 1 / (3 * math.Ln2)
+	b := math.Float64bits(x)
+	e := float64(int(b>>52) - 1023)
+	i := b >> 44 & 0xff
+	u := float64(b&(1<<44-1)) * 0x1p-52 * lgInv[i]
+	return e + lgTab[i] + u*(c1+u*(c2+u*c3))
 }
 
 // histCost is the ideal coded size (bits) of a histogram.

@@ -955,7 +955,11 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		// two-visit writer is used (walking the tree twice would be slow)
 		writeStream := func(w *bitio.Writer, dc *ansCode, i, n int) {
 			if caches != nil {
-				ansWriteVisit(w, dc, n, func(fn func(ctx int, v uint32)) { visit(i, fn) })
+				if lz == nil { // visit replays the cache unchanged
+					ansWriteCache(w, dc, &caches[i])
+				} else {
+					ansWriteVisit(w, dc, n, func(fn func(ctx int, v uint32)) { visit(i, fn) })
+				}
 				return
 			}
 			st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}

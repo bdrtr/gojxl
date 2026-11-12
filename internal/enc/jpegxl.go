@@ -200,26 +200,28 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		}
 	}
 	// acBlock returns the AC coefficients of a block of channel c (in
-	// channel block coordinates) in the decoder's transposed layout, with
-	// chroma from luma removed.
+	// channel block coordinates) in the JPEG's row-major layout (the
+	// decoder's is transposed: orders are mapped instead), with chroma from
+	// luma removed.
 	acBlock := func(c, bx, by int, q *[64]int32) {
-		src := block(c, bx, by)
+		src := (*[64]int16)(block(c, bx, by))
 		if !cfl || c == 1 || cmap[c][(by/8)*tw+bx/8] == 0 {
-			for y := 0; y < 8; y++ {
-				for x := 0; x < 8; x++ {
-					q[x*8+y] = int32(src[y*8+x])
-				}
+			for n, v := range src {
+				q[n] = int32(v)
 			}
 			return
 		}
 		scale := cmap[c][(by/8)*tw+bx/8] * (1 << 11) / 84
-		ys := block(1, bx, by)
-		for n := 0; n < 64; n++ {
+		ys := (*[64]int16)(block(1, bx, by))
+		for n := range 64 {
 			cs := (scale*sq[c][n] + 1<<10) >> 11
 			f := (int32(ys[n])*cs + 1<<10) >> 11
-			q[(n%8)*8+n/8] = int32(src[n]) - f
+			q[n] = int32(src[n]) - f
 		}
 	}
+	// tr maps a position of the decoder's transposed layout to the JPEG's
+	// (and back)
+	tr := func(k int32) int32 { return k%8*8 + k/8 }
 
 	// dcValue is the quantised DC as stored in the LF image.
 	dcValue := func(c, bx, by int) int32 {
@@ -299,6 +301,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	// Coefficient order per channel: positions sorted by how often they
 	// are non-zero (the DC position stays first).
 	var orders [3][]int32
+	var ordersJ [3][64]int32 // orders in the JPEG layout
 	{
 		var nzc [3][64]int
 		// rows of blocks in parallel (16-row bands), counts merged
@@ -326,7 +329,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		})
 		for i, bd := range bands {
 			for k, n := range parts[i] {
-				nzc[bd.c][k] += n
+				nzc[bd.c][tr(int32(k))] += n
 			}
 		}
 		for c := 0; c < 3; c++ {
@@ -334,6 +337,9 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 			cnt := nzc[c]
 			sort.SliceStable(o[1:], func(a, b int) bool { return cnt[o[1+a]] > cnt[o[1+b]] })
 			orders[c] = o
+			for k, p := range o {
+				ordersJ[c][k] = tr(p)
+			}
 		}
 	}
 
@@ -384,7 +390,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 						pidx = 4 + pred/2
 					}
 					nz := int32(0)
-					order := orders[c]
+					order := &ordersJ[c]
 					for k := 1; k < 64; k++ {
 						v := q[order[k]]
 						nz += int32(uint32(v|-v) >> 31) // no branch: v != 0
@@ -497,7 +503,9 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 			}
 			lf = append(lf, ch)
 		}
-		writeModularLocalOpts(w, lf, 4, true)
+		// a third of a 4:2:0 LF group's samples: twice as fast as
+		// 1<<16 for +0.01-0.1% in size
+		writeModularLocalSamples(w, lf, 4, true, 1<<15)
 		count := cw * chh
 		w.Write(uint(ceilLog2(cw*chh)), uint64(count-1))
 		acs := channel{w: count, h: 2, pix: make([]int32, 2*count)} // DCT8, quant field 1
@@ -544,7 +552,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		return writeANSCodeTuned(w, ngroups, replay, hf.counts)
 	}
 	writeGroup := func(w *bitio.Writer, g int, hc *ansCode) {
-		ansWriteVisit(w, hc, len(caches[g].p), func(fn func(ctx int, v uint32)) { replay(g, fn) })
+		ansWriteCache(w, hc, &caches[g])
 	}
 
 	// --- headers

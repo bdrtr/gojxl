@@ -120,6 +120,17 @@ func normalize(freq []uint64) []uint16 {
 type ansTable struct {
 	freq  []uint16
 	slots [][]uint16
+	ifreq []uint64 // ceil(2^44 / freq): x/freq = x*ifreq >> 44 for x < freq<<20
+}
+
+func newANSTable(full []uint16, alpha int, logAlpha uint) *ansTable {
+	t := &ansTable{freq: full, slots: entropy.ANSEncodeSlots(full, alpha, logAlpha), ifreq: make([]uint64, len(full))}
+	for i, f := range full {
+		if f != 0 {
+			t.ifreq[i] = (1<<44 + uint64(f) - 1) / uint64(f)
+		}
+	}
+	return t
 }
 
 // writeANSHistogram writes counts (summing to 4096) and returns the table.
@@ -142,7 +153,7 @@ func writeANSHistogram(w *bitio.Writer, counts []uint16, logAlpha uint) *ansTabl
 		alpha = last + 1
 		full := make([]uint16, 1<<logAlpha)
 		full[last] = ansTab
-		return &ansTable{freq: full, slots: entropy.ANSEncodeSlots(full, alpha, logAlpha)}
+		return newANSTable(full, alpha, logAlpha)
 	}
 	alpha = max(last+1, 3)
 	w.WriteBool(false) // not simple
@@ -177,7 +188,7 @@ func writeANSHistogram(w *bitio.Writer, counts []uint16, logAlpha uint) *ansTabl
 	}
 	full := make([]uint16, 1<<logAlpha)
 	copy(full, counts)
-	return &ansTable{freq: full, slots: entropy.ANSEncodeSlots(full, alpha, logAlpha)}
+	return newANSTable(full, alpha, logAlpha)
 }
 
 // ansCode is an ANS data code.
@@ -401,4 +412,83 @@ func ansWriteVisit(w *bitio.Writer, c *ansCode, sizeHint int, visit func(fn func
 		}
 		w.Write(nb, uint64(bv))
 	})
+}
+
+// ansWriteCache is ansWriteVisit for a residCache, with the passes written
+// out: the backward ANS pass derives the tokens itself (the cache can be
+// read backwards), divides by multiplying with reciprocals and
+// renormalises without branches; the forward pass writes a
+// renormalisation word together with the extra bits of its token.
+func ansWriteCache(w *bitio.Writer, c *ansCode, rc *residCache) {
+	if len(c.tables) > 256 || c.lz != nil {
+		ansWriteVisit(w, c, len(rc.p), rc.visit)
+		return
+	}
+	p, ov := rc.p, rc.ov
+	if len(p) == 0 {
+		return
+	}
+	cm, cfgs, tables := c.cm, c.cfgs, c.tables
+	sc := ansScratchPool.Get().(*ansScratch)
+	defer ansScratchPool.Put(sc)
+	// words[1:nw+1] are the renormalisation words, last token first;
+	// words[0] is a dummy so the forward pass may always read words[k]
+	words := growSlice(&sc.words, len(p)+1)
+	mark := growSlice(&sc.mark, (len(p)+63)/64)
+	clear(mark)
+	nw := 0
+	x := uint32(0x130000)
+	j := len(ov)
+	for i := len(p) - 1; i >= 0; i-- {
+		e := p[i]
+		v := e & 0xffff
+		if v == 0xffff {
+			j--
+			v = ov[j]
+		}
+		ctx := e >> 16
+		if cm != nil {
+			ctx = uint32(cm[ctx])
+		}
+		t, _, _ := cfgs[ctx].encode(v)
+		tb := tables[ctx]
+		f := uint32(tb.freq[t])
+		r := uint32(0)
+		if uint64(x) >= uint64(f)<<20 {
+			r = 1
+		}
+		words[nw+1] = uint16(x)
+		nw += int(r)
+		mark[i>>6] |= uint64(r) << (i & 63)
+		x >>= r << 4
+		q := uint32(uint64(x) * tb.ifreq[t] >> 44)
+		x = q<<12 | uint32(tb.slots[t][x-q*f])
+	}
+	w.Write(32, uint64(x))
+	fw := w.Fast()
+	k := nw
+	j = 0
+	for i, e := range p {
+		v := e & 0xffff
+		if v == 0xffff {
+			v = ov[j]
+			j++
+		}
+		ctx := e >> 16
+		if cm != nil {
+			ctx = uint32(cm[ctx])
+		}
+		_, nb, bv := cfgs[ctx].encode(v)
+		m := mark[i>>6] >> (i & 63) & 1
+		val := uint64(bv)<<(m<<4) | uint64(words[k])&-m
+		n := nb + uint(m<<4)
+		k -= int(m)
+		if n > 32 {
+			fw.Put(16, val&0xffff)
+			fw.Put(n-16, val>>16)
+			continue
+		}
+		fw.Put(n, val)
+	}
+	w.SetFast(fw)
 }

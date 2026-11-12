@@ -1045,23 +1045,42 @@ func writeModularLocalSamples(w *bitio.Writer, chs []channel, effort int, noWP b
 	treeTokens(nodes, treeH.add)
 	tc := writeCode(w, treeH)
 	treeTokens(nodes, func(ctx int, v uint32) { tc.write(w, ctx, v) })
+	walk := func(fn func(ctx int, v uint32)) { walkStream(chs, s, root, fn) }
 	data := newHistograms(nleaves, defaultCfg)
+	if allZero {
+		// the single leaf predicts 0 exactly: no need to walk the pixels
+		walk = func(fn func(ctx int, v uint32)) {
+			for range n {
+				fn(0, 0)
+			}
+		}
+	}
 	var dc *ansCode
 	if effort >= 4 {
 		var cache residCache
-		walkStream(chs, s, root, func(ctx int, v uint32) {
+		walk(func(ctx int, v uint32) {
 			cache.add(ctx, v)
 			data.add(ctx, v)
 		})
 		visit := func(_ int, fn func(ctx int, v uint32)) { cache.visit(fn) }
 		dc = writeANSCodeTuned(w, 1, visit, data.counts)
-		ansWriteVisit(w, dc, n, func(fn func(ctx int, v uint32)) { visit(0, fn) })
+		ansWriteCache(w, dc, &cache)
 		return
 	}
-	walkStream(chs, s, root, data.add)
+	if allZero {
+		data.counts[0][0] = uint64(n) // n zero tokens
+	} else {
+		walk(data.add)
+	}
 	dc = writeANSCode(w, data)
+	if allZero && dc.tables[0].freq[0] == ansTab {
+		// one symbol of probability 1: the state never changes and no
+		// bits follow it
+		w.Write(32, 0x130000)
+		return
+	}
 	st := &ansStream{c: dc, toks: make([]ansToken, 0, n)}
-	walkStream(chs, s, root, st.add)
+	walk(st.add)
 	st.flush(w)
 }
 
@@ -1772,7 +1791,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	}
 	writeGroup := func(w *bitio.Writer, g int, hc *ansCode) {
 		c := &hfToks[g]
-		ansWriteVisit(w, hc, len(c.p), c.visit)
+		ansWriteCache(w, hc, c)
 		hfToks[g] = residCache{}
 		if alpha != nil {
 			alpha.writeGroup(w, g)
