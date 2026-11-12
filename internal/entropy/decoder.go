@@ -497,19 +497,54 @@ func ReadPermutation(br *bitio.Reader, d *Decoder, size, skip int) ([]int, error
 		lehmer[i] = v
 		prev = v
 	}
-	// decode Lehmer code
-	temp := make([]int, size)
-	for i := range temp {
-		temp[i] = i
+	return decodeLehmer(lehmer, skip+end), nil
+}
+
+// decodeLehmer turns a Lehmer code (entry i: index of the value among the
+// unused ones, in increasing order) into the permutation. Only the first m
+// entries may be nonzero: they are found with a Fenwick tree of unused
+// counts (O(m log n); removing from a list costs O(n) each, quadratic for
+// the 65536-entry orders of large transforms), the rest take the unused
+// values in order.
+func decodeLehmer(lehmer []uint32, m int) []int {
+	n := len(lehmer)
+	perm := make([]int, n)
+	bit := make([]int32, n+1)
+	for i := 1; i <= n; i++ {
+		bit[i]++
+		if j := i + i&-i; j <= n {
+			bit[j] += bit[i]
+		}
 	}
-	perm := make([]int, size)
-	for i := 0; i < size; i++ {
-		idx := int(lehmer[i])
-		perm[i] = temp[idx]
-		copy(temp[idx:], temp[idx+1:])
-		temp = temp[:len(temp)-1]
+	top := 1
+	for top*2 <= n {
+		top *= 2
 	}
-	return perm, nil
+	used := make([]bool, n)
+	for i := 0; i < m; i++ {
+		k := int32(lehmer[i]) + 1 // k-th unused value
+		pos := 0
+		for step := top; step > 0; step >>= 1 {
+			if p := pos + step; p <= n && bit[p] < k {
+				pos = p
+				k -= bit[p]
+			}
+		}
+		perm[i] = pos
+		used[pos] = true
+		for j := pos + 1; j <= n; j += j & -j {
+			bit[j]--
+		}
+	}
+	v := 0
+	for i := m; i < n; i++ {
+		for used[v] {
+			v++
+		}
+		perm[i] = v
+		v++
+	}
+	return perm
 }
 
 func coeffOrderCtx(x uint32) int {

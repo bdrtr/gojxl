@@ -281,6 +281,11 @@ func readFrameHeader(br *bitio.Reader, ih *ImageHeader) (*FrameHeader, error) {
 		return nil, bitio.ErrEOF
 	}
 	f.computeDims(ih)
+	// the same area limit as for the image (frames may be cropped to
+	// any size, and their group count sizes the table of contents)
+	if uint64(f.Width)*uint64(f.Height) > MaxPixels || uint64(f.XSize)*uint64(f.YSize) > MaxPixels {
+		return nil, unsupported("frame too large")
+	}
 	return f, nil
 }
 
@@ -402,6 +407,11 @@ func readTOC(br *bitio.Reader, f *FrameHeader) (*TOC, error) {
 	single := f.NumGroups == 1 && f.Passes.NumPasses == 1
 	if !single {
 		n = 1 + f.NumLFGroups + 1 + f.NumGroups*int(f.Passes.NumPasses)
+	}
+	// every entry takes at least 12 bits: a count the remaining data
+	// cannot hold is corrupt (and must not size allocations)
+	if rem := len(br.Data())*8 - br.BitsRead(); n > rem/12+1 {
+		return nil, bitio.ErrEOF
 	}
 	var perm []int
 	if br.Bool() {

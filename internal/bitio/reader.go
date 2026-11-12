@@ -137,13 +137,23 @@ func (r *Reader) ZeroPadToByte() error {
 	return nil
 }
 
-// SkipBits skips n bits.
+// SkipBits skips n bits in constant time; skipping past the end of the
+// data leaves the reader overflowed (reading zeros).
 func (r *Reader) SkipBits(n uint64) {
-	for n > 32 {
-		r.Read(32)
-		n -= 32
+	if n <= uint64(r.nbits) {
+		r.Consume(uint(n))
+		return
 	}
-	r.Read(uint(n))
+	n -= uint64(r.nbits)
+	r.buf, r.nbits = 0, 0
+	if n/8 > uint64(max(0, len(r.data)-r.pos))+8 {
+		r.pos = max(r.pos, len(r.data)) + 8
+		r.over += 8
+		return
+	}
+	r.pos += int(n / 8)
+	r.refill()
+	r.Consume(uint(n % 8))
 }
 
 // BytePos returns the byte offset (must be byte aligned).

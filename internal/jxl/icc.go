@@ -39,6 +39,26 @@ func iccByteKind2(b byte) int {
 	return 4
 }
 
+const iccPreambleSize = 20 // enough for the output and command sizes
+
+// checkICCPreamble checks the sizes at the start of an encoded profile
+// of encSize bytes (libjxl's CheckPreamble).
+func checkICCPreamble(pre []byte, encSize uint64) error {
+	pos := 0
+	osize, err := iccVarint(pre, &pos, len(pre))
+	if err != nil {
+		return err
+	}
+	csize, err := iccVarint(pre, &pos, len(pre))
+	if err != nil {
+		return err
+	}
+	if osize > 1<<28 || csize > encSize-uint64(pos) || osize+65536 < encSize {
+		return invalid("ICC sizes")
+	}
+	return nil
+}
+
 // readEncodedICC reads the entropy coded (but still "predicted") ICC stream.
 func readEncodedICC(br *bitio.Reader) ([]byte, error) {
 	size := br.U64()
@@ -70,6 +90,14 @@ func readEncodedICC(br *bitio.Reader) ([]byte, error) {
 		out[i] = byte(v)
 		if i&4095 == 0 && br.Overflowed() {
 			return nil, bitio.ErrEOF
+		}
+		if i == iccPreambleSize-1 && size > iccPreambleSize {
+			// as libjxl: once the two size varints are in, reject sizes
+			// the profile cannot have (the encoding never exceeds the
+			// output by more than 64 KiB), before decoding the rest
+			if err := checkICCPreamble(out[:iccPreambleSize], size); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := d.Finish(); err != nil {
