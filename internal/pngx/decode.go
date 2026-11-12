@@ -72,6 +72,11 @@ func decodeFast(data []byte) (image.Image, bool, error) {
 	}
 	bpp := nc * depth / 8
 	stride := w * bpp
+	// deflate expands at most ~1032:1: a header promising more than the
+	// data can hold is corrupt (and must not size the buffers)
+	if uint64(h)*uint64(stride+1) > 1040*uint64(total)+1<<16 {
+		return nil, true, errInflate
+	}
 	src := idat[0]
 	if len(idat) > 1 {
 		src = make([]byte, 0, total)
