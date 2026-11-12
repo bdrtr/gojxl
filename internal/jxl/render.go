@@ -415,6 +415,14 @@ func cropPlane(p *Plane, w, h int) *Plane {
 	if p.W == w && p.H == h {
 		return p
 	}
+	if w <= p.W && h <= p.H {
+		// in place: rows move to the front (memmove handles the overlap)
+		for y := 1; y < h; y++ {
+			copy(p.Pix[y*w:(y+1)*w], p.Pix[y*p.W:y*p.W+w])
+		}
+		p.W, p.H, p.Pix = w, h, p.Pix[:w*h]
+		return p
+	}
 	out := newPlane(w, h)
 	for y := 0; y < h && y < p.H; y++ {
 		copy(out.Row(y), p.Row(y)[:min(w, p.W)])

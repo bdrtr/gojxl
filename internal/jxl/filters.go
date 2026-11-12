@@ -35,33 +35,81 @@ func (fd *frameDecoder) applyGaborish() {
 		w1 /= div
 		w2 /= div
 		W, H := p.W, p.H
-		out := getPlane(W, H)
-		parallelRows(H, func(lo, hi int) {
-			for y := lo; y < hi; y++ {
-				t := p.Row(mirror(y-1, H))
-				m := p.Row(y)
-				b := p.Row(mirror(y+1, H))
-				o := out.Row(y)
-				px := func(x int) float32 {
-					xl, xr := mirror(x-1, W), mirror(x+1, W)
-					sum1 := (m[xl] + m[xr]) + (t[x] + b[x])
-					sum2 := (t[xl] + t[xr]) + (b[xl] + b[xr])
-					return sum2*w2 + (sum1*w1 + m[x]*w0)
-				}
-				if W < 3 {
-					for x := 0; x < W; x++ {
-						o[x] = px(x)
-					}
-					continue
-				}
-				o[0] = px(0)
-				gabRow(o, t, m, b, w0, w1, w2)
-				o[W-1] = px(W - 1)
+		inPlaceRows(p, 1, func(rowAt func(y int) []float32, y int, o []float32) {
+			t := rowAt(mirror(y-1, H))
+			m := rowAt(y)
+			b := rowAt(mirror(y+1, H))
+			px := func(x int) float32 {
+				xl, xr := mirror(x-1, W), mirror(x+1, W)
+				sum1 := (m[xl] + m[xr]) + (t[x] + b[x])
+				sum2 := (t[xl] + t[xr]) + (b[xl] + b[xr])
+				return sum2*w2 + (sum1*w1 + m[x]*w0)
 			}
+			if W < 3 {
+				for x := 0; x < W; x++ {
+					o[x] = px(x)
+				}
+				return
+			}
+			o[0] = px(0)
+			gabRow(o, t, m, b, w0, w1, w2)
+			o[W-1] = px(W - 1)
 		})
-		putPlane(p)
-		fd.color[c] = out
 	}
+}
+
+// inPlaceRows runs a vertical filter of radius r over plane p in place:
+// fn computes output row y into o, reading input rows through rowAt (at
+// most r rows away, mirrored at the edges). Chunks of rows run in
+// parallel; each first saves the r original rows on each side of it, and
+// a row's output is written back only after the r rows below it are
+// computed, so every read sees original values.
+func inPlaceRows(p *Plane, r int, fn func(rowAt func(y int) []float32, y int, o []float32)) {
+	W, H := p.W, p.H
+	nch := min(2*numWorkers(), max(1, H/(4*r+4)))
+	per := (H + nch - 1) / nch
+	nch = (H + per - 1) / per
+	type border struct{ above, below [][]float32 }
+	saved := make([]border, nch)
+	_ = parallelFor(nch, func(ci int) error {
+		y0, y1 := ci*per, min(H, (ci+1)*per)
+		for y := y0 - r; y < y0; y++ {
+			if y >= 0 {
+				saved[ci].above = append(saved[ci].above, append([]float32(nil), p.Row(y)...))
+			}
+		}
+		for y := y1; y < y1+r && y < H; y++ {
+			saved[ci].below = append(saved[ci].below, append([]float32(nil), p.Row(y)...))
+		}
+		return nil
+	})
+	_ = parallelFor(nch, func(ci int) error {
+		y0, y1 := ci*per, min(H, (ci+1)*per)
+		above, below := saved[ci].above, saved[ci].below
+		rowAt := func(y int) []float32 {
+			switch {
+			case y < y0:
+				return above[y-(y0-len(above))]
+			case y >= y1:
+				return below[y-y1]
+			}
+			return p.Row(y)
+		}
+		bufs := make([][]float32, r+1)
+		for i := range bufs {
+			bufs[i] = make([]float32, W)
+		}
+		for y := y0; y < y1; y++ {
+			fn(rowAt, y, bufs[y%(r+1)])
+			if y-r >= y0 {
+				copy(p.Row(y-r), bufs[(y-r)%(r+1)])
+			}
+		}
+		for y := max(y0, y1-r); y < y1; y++ {
+			copy(p.Row(y), bufs[y%(r+1)])
+		}
+		return nil
+	})
 }
 
 const (
@@ -140,11 +188,7 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 	f := &fd.fh.Filter
 	W, H := fd.color[0].W, fd.color[0].H
 	const B = 5 // border
-	in := fd.color
-	var outPlanes [3]*Plane
-	for c := 0; c < 3; c++ {
-		outPlanes[c] = getPlane(W, H)
-	}
+	planes := fd.color
 	var sm float32
 	switch step {
 	case 0:
@@ -168,16 +212,13 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 	const band = 16
 	const tileW = 256
 	nby := (H + band - 1) / band
-	nbx := (W + tileW - 1) / tileW
-	outs := [3][]float32{outPlanes[0].Pix, outPlanes[1].Pix, outPlanes[2].Pix}
 	nw := numWorkers()
 	scratch := make([][]float32, nw)
 	s0, s1, s2 := sc[0], sc[1], sc[2]
-	_ = parallelForW(nby*nbx, func(wk, ti int) error {
-		y0 := (ti / nbx) * band
-		y1 := min(H, y0+band)
-		tx0 := (ti % nbx) * tileW
-		tx1 := min(W, tx0+tileW)
+	// tile writes the output of rows [y0, y1) x [tx0, tx1) to out (band
+	// buffers, row y at (y-y0)*W), reading input rows through rowAt; it
+	// copies its whole input (with a border of B) before writing.
+	tile := func(wk, y0, y1, tx0, tx1 int, rowAt func(c, y int) []float32, out *[3][]float32) {
 		tw := tx1 - tx0
 		ybase := y0 - B
 		prow := (y1 + B) - ybase
@@ -193,9 +234,8 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 		var pads [3][]float32
 		for c := 0; c < 3; c++ {
 			pads[c] = buf[c*prow*pw : (c+1)*prow*pw]
-			src := in[c]
 			for r := 0; r < prow; r++ {
-				srow := src.Row(mirror(ybase+r, H))
+				srow := rowAt(c, mirror(ybase+r, H))
 				dst := pads[c][r*pw : (r+1)*pw]
 				if tx0-B >= 0 && tx1+B <= W {
 					copy(dst, srow[tx0-B:tx1+B])
@@ -256,9 +296,10 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 			}
 			srow := sig[(y/8)*sbw:]
 			r := y - ry0
-			o0 := outs[0][y*W+tx0 : y*W+tx1]
-			o1 := outs[1][y*W+tx0 : y*W+tx1]
-			o2 := outs[2][y*W+tx0 : y*W+tx1]
+			ob := (y - y0) * W
+			o0 := out[0][ob+tx0 : ob+tx1]
+			o1 := out[1][ob+tx0 : ob+tx1]
+			o2 := out[2][ob+tx0 : ob+tx1]
 			base := (y-ybase)*pw + B
 			c0, c1, c2 := p0[base:base+tw], p1[base:base+tw], p2[base:base+tw]
 			if no == 2 {
@@ -312,12 +353,68 @@ func (fd *frameDecoder) epfStep(step int, sig []float32, sbw int) {
 				o0[lx], o1[lx], o2[lx] = ax*iw, ay*iw, ab*iw
 			}
 		}
+	}
+	// In place: chunks of bands run in parallel, the bands of a chunk in
+	// order. A band's output waits in a buffer until the next band, which
+	// reads up to B rows into it, is done, so the rows a band reads from
+	// the planes are unfiltered; rows outside the chunk come from copies
+	// taken before any chunk writes.
+	nch := min(2*nw, nby)
+	per := (nby + nch - 1) / nch
+	nch = (nby + per - 1) / per
+	type border struct{ above, below [3][][]float32 }
+	saved := make([]border, nch)
+	_ = parallelFor(nch, func(ci int) error {
+		Y0, Y1 := ci*per*band, min(H, (ci+1)*per*band)
+		for c := 0; c < 3; c++ {
+			for y := max(0, Y0-B); y < Y0; y++ {
+				saved[ci].above[c] = append(saved[ci].above[c], append([]float32(nil), planes[c].Row(y)...))
+			}
+			for y := Y1; y < min(H, Y1+B); y++ {
+				saved[ci].below[c] = append(saved[ci].below[c], append([]float32(nil), planes[c].Row(y)...))
+			}
+		}
 		return nil
 	})
-	for c := 0; c < 3; c++ {
-		putPlane(fd.color[c])
-		fd.color[c] = outPlanes[c]
-	}
+	bandBufs := make([][2][3][]float32, nw)
+	_ = parallelForW(nch, func(wk, ci int) error {
+		Y0, Y1 := ci*per*band, min(H, (ci+1)*per*band)
+		above, below := &saved[ci].above, &saved[ci].below
+		rowAt := func(c, y int) []float32 {
+			switch {
+			case y < Y0:
+				return above[c][y-(Y0-len(above[c]))]
+			case y >= Y1:
+				return below[c][y-Y1]
+			}
+			return planes[c].Row(y)
+		}
+		bb := &bandBufs[wk]
+		for i := range bb {
+			for c := range bb[i] {
+				if len(bb[i][c]) < band*W {
+					bb[i][c] = make([]float32, band*W)
+				}
+			}
+		}
+		flush := func(i, y0, y1 int) {
+			for c := 0; c < 3; c++ {
+				copy(planes[c].Pix[y0*W:y1*W], bb[i][c][:(y1-y0)*W])
+			}
+		}
+		for y0 := Y0; y0 < Y1; y0 += band {
+			cur := (y0 / band) & 1
+			for tx0 := 0; tx0 < W; tx0 += tileW {
+				tile(wk, y0, min(Y1, y0+band), tx0, min(W, tx0+tileW), rowAt, &bb[cur])
+			}
+			if y0 > Y0 {
+				flush(cur^1, y0-band, y0)
+			}
+		}
+		last := (Y1 - 1) / band
+		flush(last&1, last*band, Y1)
+		return nil
+	})
 }
 
 func abs32(v float32) float32 { return math.Float32frombits(math.Float32bits(v) &^ 0x80000000) }

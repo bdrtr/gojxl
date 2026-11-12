@@ -701,6 +701,9 @@ func (v *vardctState) reconGroup(wk, g int) {
 			transformToPixels(t, coef[c], op.Pix[sby*8*op.W+sbx*8:], op.W, scratch)
 		}
 	}
+	if gc.pooled != nil {
+		v.coefPool.Put(gc.pooled)
+	}
 	v.groups[g] = nil // coefficients are no longer needed
 }
 

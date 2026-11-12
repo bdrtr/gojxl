@@ -130,9 +130,10 @@ type varblock struct {
 }
 
 type groupCoeffs struct {
-	vbs  []varblock
-	size [3]int32
-	coef [3][]int32 // allocated when the group's first pass is decoded
+	vbs    []varblock
+	size   [3]int32
+	coef   [3][]int32 // allocated when the group's first pass is decoded
+	pooled *[3][]int32
 }
 
 type vardctState struct {
@@ -171,6 +172,7 @@ type vardctState struct {
 	usedACS  uint32
 	rc       *recon // reconstruction state (prepareRecon)
 	streamed bool   // groups were reconstructed as they were decoded
+	coefPool sync.Pool
 	acsMu    sync.Mutex
 	groups   []*groupCoeffs
 	out      [3]*Plane
@@ -700,9 +702,25 @@ var coeffNumNonzeroCtx = [63]uint16{
 func (v *vardctState) decodePassGroup(br *bitio.Reader, pass, g int) error {
 	fh := v.fh
 	gc := v.groups[g]
-	for c := range gc.coef {
-		if gc.coef[c] == nil {
-			gc.coef[c] = make([]int32, gc.size[c])
+	if gc.coef[0] == nil && gc.coef[1] == nil && gc.coef[2] == nil {
+		if v.streamed {
+			// reconstructed and released right after: reuse buffers
+			bufs, _ := v.coefPool.Get().(*[3][]int32)
+			if bufs == nil {
+				bufs = new([3][]int32)
+			}
+			for c := range bufs {
+				if cap(bufs[c]) < int(gc.size[c]) {
+					bufs[c] = make([]int32, gc.size[c])
+				}
+				bufs[c] = bufs[c][:gc.size[c]]
+				clear(bufs[c])
+			}
+			gc.coef, gc.pooled = *bufs, bufs
+		} else {
+			for c := range gc.coef {
+				gc.coef[c] = make([]int32, gc.size[c])
+			}
 		}
 	}
 	p := &v.passes[pass]
