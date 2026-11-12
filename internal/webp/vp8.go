@@ -73,6 +73,38 @@ func (b *boolDec) bit(prob uint8) bool {
 	return one
 }
 
+// fill loads more bits when the window ran out (call before bitFast).
+func (b *boolDec) fill() {
+	if b.bits < 0 {
+		b.load()
+	}
+}
+
+// bitFast is bit when at least 8 bits are known to be loaded.
+func (b *boolDec) bitFast(prob uint8) bool {
+	split := b.rng * uint32(prob) >> 8
+	r := split + 1
+	one := uint32(b.value>>uint(b.bits)) > split
+	if one {
+		r = b.rng - split
+		b.value -= uint64(split+1) << uint(b.bits)
+	}
+	t := renorm[uint8(r)]
+	b.rng = uint32(t & 0xff)
+	b.bits -= int(t >> 8)
+	return one
+}
+
+// renorm[r] is the shift that brings range r (1..254) to [128, 255],
+// and the new range - 1: shift<<8 | (r<<shift - 1).
+var renorm = func() (t [256]uint16) {
+	for r := 1; r < 256; r++ {
+		s := bits.LeadingZeros8(uint8(r))
+		t[r] = uint16(s)<<8 | uint16(r<<s-1)
+	}
+	return
+}()
+
 func (b *boolDec) literal(n int) int {
 	v := 0
 	for ; n > 0; n-- {
@@ -475,10 +507,10 @@ func (d *vp8) coeffs(br *boolDec, typ, ctx int, dq [2]int32, n int, out []int16)
 	bands := &d.coef[typ]
 	p := &bands[bandOf[n]][ctx]
 	for ; n < 16; n++ {
-		if !br.bit(p[0]) {
+		if br.fill(); !br.bitFast(p[0]) {
 			return n
 		}
-		for !br.bit(p[1]) {
+		for br.fill(); !br.bitFast(p[1]); br.fill() {
 			n++
 			if n == 16 {
 				return 16
@@ -487,14 +519,14 @@ func (d *vp8) coeffs(br *boolDec, typ, ctx int, dq [2]int32, n int, out []int16)
 		}
 		var v int
 		next := &bands[bandOf[n+1]]
-		if !br.bit(p[2]) {
+		if br.fill(); !br.bitFast(p[2]) {
 			v = 1
 			p = &next[1]
 		} else {
 			v = largeValue(br, p)
 			p = &next[2]
 		}
-		if br.bit(128) {
+		if br.fill(); br.bitFast(128) {
 			v = -v
 		}
 		f := dq[1]
@@ -507,46 +539,46 @@ func (d *vp8) coeffs(br *boolDec, typ, ctx int, dq [2]int32, n int, out []int16)
 }
 
 func largeValue(br *boolDec, p *[11]uint8) int {
-	if !br.bit(p[3]) {
-		if !br.bit(p[4]) {
+	if br.fill(); !br.bitFast(p[3]) {
+		if br.fill(); !br.bitFast(p[4]) {
 			return 2
 		}
 		v := 3
-		if br.bit(p[5]) {
+		if br.fill(); br.bitFast(p[5]) {
 			v++
 		}
 		return v
 	}
-	if !br.bit(p[6]) {
-		if !br.bit(p[7]) {
+	if br.fill(); !br.bitFast(p[6]) {
+		if br.fill(); !br.bitFast(p[7]) {
 			v := 5
-			if br.bit(159) {
+			if br.fill(); br.bitFast(159) {
 				v++
 			}
 			return v
 		}
 		v := 7
-		if br.bit(165) {
+		if br.fill(); br.bitFast(165) {
 			v += 2
 		}
-		if br.bit(145) {
+		if br.fill(); br.bitFast(145) {
 			v++
 		}
 		return v
 	}
 	b1 := 0
-	if br.bit(p[8]) {
+	if br.fill(); br.bitFast(p[8]) {
 		b1 = 1
 	}
 	b0 := 0
-	if br.bit(p[9+b1]) {
+	if br.fill(); br.bitFast(p[9+b1]) {
 		b0 = 1
 	}
 	cat := 2*b1 + b0
 	v := 0
 	for _, pr := range cat3456[cat] {
 		v += v
-		if br.bit(pr) {
+		if br.fill(); br.bitFast(pr) {
 			v++
 		}
 	}
