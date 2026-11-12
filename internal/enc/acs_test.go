@@ -69,7 +69,9 @@ func TestVarblockTypes(t *testing.T) {
 		}
 		n, psnr := lossyPSNR(t, im, opt)
 		t.Logf("type %d (acs %d): %d bytes, PSNR %.2f", ft, vtypes[ft].acs, n, psnr)
-		if psnr < 34 {
+		// IDENTITY (pixel differences) suits sharp detail, not this
+		// smooth image
+		if min := map[bool]float64{true: 32, false: 34}[vtypes[ft].acs == 1]; psnr < min {
 			t.Errorf("type %d (acs %d): PSNR %.2f", ft, vtypes[ft].acs, psnr)
 		}
 	}

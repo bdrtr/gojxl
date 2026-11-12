@@ -52,6 +52,12 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   | cjxl -e7 | 679 KB | 84.02 | 1.34 s |
   | cjxl -e3 | 854 KB | 82.83 | 0.24 s |
   | cjxl -e1 | 912 KB | 82.83 | 0.24 s |
+- Efor 7 DCT2X2'yi de dener (metin/ekran görüntülerinde %−2,7, bike'ta %−1,2,
+  fotoğraflarda ±0,2 BD-rate). IDENTITY, DCT4X4 ve AFV kodlanabiliyor
+  (djxl ile doğrulandı) ama mevcut maliyet modeliyle dosyaları %1–3
+  büyüttüğü için kapalı. Beş görüntüde e7, cjxl e7'ye göre: fotoğraflarda
+  %−10..+1,5; gri metin ekran görüntüsünde hâlâ %+18 (cjxl DCT64 ve
+  algısal kayıp ölçüsü kullanıyor)
 
 **JPEG → JXL kayıpsız dönüştürme**
 - Saf Go JPEG ayrıştırıcı (baseline, progressive, restart işaretleri,

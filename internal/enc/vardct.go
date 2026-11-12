@@ -22,6 +22,14 @@ type LossyOptions struct {
 	AQ         float64 // adaptive quantisation strength (0 = off)
 	NoCfL      bool    // disable per-tile chroma-from-luma
 	OnlyDCT8   bool    // disable larger transforms
+	NoSmall    bool    // disable the 8x8 types IDENTITY, DCT2X2, DCT4X4, AFV
+	// Tuning of the 8x8 type choice: SmallMask enables the families
+	// IDENTITY (1), DCT2X2 (2), DCT4X4 (4), AFV (8) (0: DCT2X2 only, the
+	// one that measured better); SmallMul and SplitMul scale the costs of
+	// those families and of DCT4x8/8x4 (0: 1.2, as tuned).
+	SmallMask int
+	SmallMul  [4]float64
+	SplitMul  float64
 	// Effort (1-7, 0 = 7) trades AC strategy search for speed.
 	Effort    int
 	RDMu      float64 // rate weight in AC strategy decisions
@@ -35,7 +43,7 @@ type LossyOptions struct {
 var TuneLossy func(*LossyOptions)
 
 // candidates are the transform families tried by AC strategy selection.
-type candidates struct{ split, rect, dct16, dct32, rect32 bool }
+type candidates struct{ split, rect, dct16, dct32, rect32, small bool }
 
 // selectionFor maps the effort to the candidate set. Selection costs CPU
 // in proportion to the coefficients evaluated. On a 5 MP photo at d=1, one
@@ -47,7 +55,14 @@ type candidates struct{ split, rect, dct16, dct32, rect32 bool }
 //	effort 3:   + split 8x8 (4x8/8x4)        0.81 s  -4..-25% (photos -5%)
 //	effort 4:   + DCT32                      0.92 s  about effort 3
 //	effort 5-6: + 16x8/8x16, AQ, Gaborish    1.23 s
-//	effort 7:   + 32x16/16x32                1.38 s
+//	effort 7:   + 32x16/16x32, DCT2X2        1.38 s
+//
+// DCT2X2 (and the DCT4x8/8x4 costs, scaled by their true pixel energy
+// and 1.2) gave -0.7% BD-rate on five images at effort 7: -2.7% on a
+// greyscale text screenshot, -1.2% on bike, photos +-0.2%. IDENTITY,
+// DCT4X4 and AFV are supported but off: with this cost model (MSE and an
+// estimated rate) they made files 1-3% larger, as did choosing 8x8 types
+// by a pixel-domain 8-norm like libjxl's (+3.6%).
 func selectionFor(opt LossyOptions) candidates {
 	e := opt.Effort
 	if e <= 0 {
@@ -66,7 +81,7 @@ func selectionFor(opt LossyOptions) candidates {
 	case e <= 6:
 		return candidates{split: true, rect: true, dct16: true, dct32: true}
 	}
-	return candidates{true, true, true, true, true}
+	return candidates{split: true, rect: true, dct16: true, dct32: true, rect32: true, small: !opt.NoSmall}
 }
 
 // abs32 clears the sign bit (no branch: the sign is data-dependent).
@@ -398,17 +413,24 @@ func (t vtype) isLLF(idx int) bool {
 }
 
 // vtypes are the supported varblock types: DCT8, DCT16, DCT32, then the
-// rectangular DCT16x8 (tall), DCT8x16 (wide), DCT32x16 (tall), DCT16x32.
-var vtypes = [9]vtype{
+// rectangular DCT16x8 (tall), DCT8x16 (wide), DCT32x16 (tall), DCT16x32,
+// then the 8x8 types made of smaller transforms ("split": computed from
+// pixels by fdct8Kind): DCT4x8, DCT8x4, IDENTITY, DCT2X2, DCT4X4 and the
+// four AFV corners. A placement packs the index in 4 bits: at most 16.
+var vtypes = [16]vtype{
 	{0, 1, 1, 0, 0, false}, {4, 2, 2, 4, 2, false}, {5, 4, 4, 5, 3, false},
 	{6, 1, 2, 6, 4, false}, {7, 2, 1, 6, 4, false}, {10, 2, 4, 8, 6, false}, {11, 4, 2, 8, 6, false},
 	{12, 1, 1, 9, 1, true}, {13, 1, 1, 9, 1, true},
+	{1, 1, 1, 1, 1, true}, {2, 1, 1, 2, 1, true}, {3, 1, 1, 3, 1, true},
+	{14, 1, 1, 10, 1, true}, {15, 1, 1, 10, 1, true}, {16, 1, 1, 10, 1, true}, {17, 1, 1, 10, 1, true},
 }
 
 // Indices of the split 8x8 types in vtypes.
 const (
 	vtDCT4x8 = 7 // acs 12: two 4x8 (rows x cols) halves, top and bottom
 	vtDCT8x4 = 8 // acs 13: two 8x4 halves, left and right
+	vtIdent  = 9 // acs 1, then DCT2X2, DCT4X4, AFV0-3 up to vtAFV3
+	vtAFV3   = 15
 )
 
 var chanScale = [3]float32{0.8, 1, 1} // x_qm_scale 3, b_qm_scale 2
@@ -865,40 +887,82 @@ var log2Tab = func() (t [256]float64) {
 }()
 
 // rdCostPre is rdCost with precomputed quantisation steps (st) and their
-// inverses (inv) per coefficient.
+// inverses (inv) per coefficient. The distortion is in pixel energy: a
+// DCT's coefficient errors count size() times (Parseval for the scaled
+// DCT); types made of smaller transforms weigh each coefficient by the
+// pixel energy of its unit error (pixelWeights).
 func rdCostPre(coef, st, inv []float32, order []int32, t vtype, step float32, cw float64) (float64, float64) {
 	nllf, sz := t.cx*t.cy, t.size()
+	var w []float32
+	if t.split {
+		w = pixelWeights(t.acs)
+	}
 	var r, d float64
 	last := nllf
 	for i := nllf; i < sz; i++ {
 		p := order[i]
 		v := coef[p]
 		x := v * inv[p]
+		var e float64
 		if x < 0.6 && x > -0.6 {
-			d += float64(v * v)
-			continue
-		}
-		// sign-symmetric: work on magnitudes (same result as
-		// math.Round and dequantAC on the signed values)
-		if x < 0 {
-			x, v = -x, -v
-		}
-		q := int32(float64(x) + 0.5)
-		if q < 256 {
-			e := float64(v - dqTab[q]*st[p])
-			d += e * e
-			r += log2Tab[q]
+			if w == nil {
+				d += float64(v * v)
+				continue
+			}
+			e = float64(v)
 		} else {
-			e := float64(v - dequantAC(q, st[p], 0.95, 0.145))
-			d += e * e
-			r += 3.5 + 2*math.Log2(float64(q))
+			// sign-symmetric: work on magnitudes (same result as
+			// math.Round and dequantAC on the signed values)
+			if x < 0 {
+				x, v = -x, -v
+			}
+			q := int32(float64(x) + 0.5)
+			if q < 256 {
+				e = float64(v - dqTab[q]*st[p])
+				r += log2Tab[q]
+			} else {
+				e = float64(v - dequantAC(q, st[p], 0.95, 0.145))
+				r += 3.5 + 2*math.Log2(float64(q))
+			}
+			last = i + 1
 		}
-		last = i + 1
+		if w != nil {
+			d += e * e * float64(w[p]) / float64(sz)
+		} else {
+			d += e * e
+		}
 	}
 	r += 0.35*float64(last-nllf) + 5
 	ref := float64(step) * refMult
 	return d * float64(sz) * cw / (ref * ref), r
 }
+
+// splitWeights holds pixelWeights per AC strategy.
+var splitWeights = func() (t [18][]float32) {
+	for _, vt := range vtypes {
+		if !vt.split {
+			continue
+		}
+		w := make([]float32, 64)
+		var c, px [64]float32
+		for p := range w {
+			c[p] = 1
+			jxl.InverseTransform(vt.acs, c[:], px[:], 8)
+			c[p] = 0
+			var e float64
+			for _, v := range px {
+				e += float64(v) * float64(v)
+			}
+			w[p] = float32(e)
+		}
+		t[vt.acs] = w
+	}
+	return
+}()
+
+// pixelWeights returns the pixel energy of a unit error in each
+// coefficient of an 8x8 block of a split type (64 for all of DCT8's).
+func pixelWeights(acs int) []float32 { return splitWeights[acs] }
 
 // writeModularLocal writes a self-contained modular stream (own tree).
 func writeModularLocal(w *bitio.Writer, chs []channel) {
@@ -1088,6 +1152,21 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 		}
 	} else if sel := selectionFor(opt); sel != (candidates{}) {
+		smallMask := opt.SmallMask
+		if smallMask == 0 {
+			smallMask = 2
+		}
+		var smallMul [4]float64
+		for i, m := range opt.SmallMul {
+			smallMul[i] = m
+			if m == 0 {
+				smallMul[i] = 1.2
+			}
+		}
+		splitMul := opt.SplitMul
+		if splitMul == 0 {
+			splitMul = 1.2
+		}
 		selCoef = make([][]float32, nb)
 		var selSt, selInv [len(vtypes)][3][]float32
 		for ti := range vtypes {
@@ -1121,7 +1200,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					}
 					var j float64
 					for c := 0; c < 3; c++ {
-						if vt.split {
+						if ti >= vtIdent {
+							fdct8Kind(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, buf[:sz])
+						} else if vt.split {
 							rc.coefSplit(c, vt.acs, (bx-bx0)*8, (by-by0)*8, buf[:sz])
 						} else {
 							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
@@ -1173,11 +1254,23 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 						return plan{}
 					}
 					p := plan{cost: cost(0, x, y)}
-					if !sel.split {
-						return p
+					if sel.split {
+						for _, ti := range [2]int{vtDCT4x8, vtDCT8x4} {
+							q := one(ti, x, y)
+							q.cost *= splitMul
+							p = better(p, q)
+						}
 					}
-					p = better(p, one(vtDCT4x8, x, y))
-					return better(p, one(vtDCT8x4, x, y))
+					if sel.small {
+						for ti := vtIdent; ti <= vtAFV3; ti++ {
+							if fam := min(ti-vtIdent, 3); smallMask&(1<<fam) != 0 {
+								q := one(ti, x, y)
+								q.cost *= smallMul[fam]
+								p = better(p, q)
+							}
+						}
+					}
+					return p
 				}
 				quad := func(sx, sy int) plan {
 					if sx >= bw || sy >= bh {
@@ -1218,7 +1311,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 					cc := make([]float32, 3*sz)
 					for c := 0; c < 3; c++ {
 						o := cc[c*sz : (c+1)*sz]
-						if vt.split {
+						if ti >= vtIdent {
+							fdct8Kind(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, o)
+						} else if vt.split {
 							rc.coefSplit(c, vt.acs, (bx-bx0)*8, (by-by0)*8, o)
 						} else {
 							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, o)
@@ -1292,7 +1387,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			}
 			out[c] = scratch[c][:sz]
 			if vt.split {
-				fdctSplit(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, out[c])
+				fdct8Kind(vt.acs, xyb[c][(by*8)*pw+bx*8:], pw, out[c])
 			} else {
 				fdctRect(xyb[c][(by*8)*pw+bx*8:], pw, vt.rows(), vt.cols(), out[c])
 			}

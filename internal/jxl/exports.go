@@ -50,3 +50,14 @@ func ReadICC(br *bitio.Reader) ([]byte, error) {
 	}
 	return unpredictICC(enc)
 }
+
+// InverseTransform converts the coefficients of an 8x8-sized varblock of
+// AC strategy acs (libjxl layout, DC at index 0) to pixels (for encoder
+// tests).
+func InverseTransform(acs int, c []float32, out []float32, stride int) {
+	cc := append([]float32(nil), c...)
+	transformToPixels(acs, cc, out, stride, make([]float32, 4096))
+}
+
+// AFVBasis is the orthonormal basis of the AFV corner transform.
+func AFVBasis() *[16][16]float32 { return &afvBasis }

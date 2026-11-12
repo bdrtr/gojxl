@@ -54,6 +54,20 @@ func tuneFromEnv(lo *enc.LossyOptions) {
 	lo.NoCfL = lo.NoCfL || os.Getenv("GOJXL_NOCFL") != ""
 	lo.LibAQ = lo.LibAQ && os.Getenv("GOJXL_NOLAQ") == ""
 	lo.OnlyDCT8 = lo.OnlyDCT8 || os.Getenv("GOJXL_DCT8") != ""
+	lo.NoSmall = lo.NoSmall || os.Getenv("GOJXL_NOSMALL") != ""
+	if v := os.Getenv("GOJXL_SMALLMASK"); v != "" {
+		lo.SmallMask, _ = strconv.Atoi(v)
+	}
+	if v := os.Getenv("GOJXL_SMALLMUL"); v != "" {
+		for i, f := range strings.Split(v, ",") {
+			if i < 4 {
+				lo.SmallMul[i], _ = strconv.ParseFloat(f, 64)
+			}
+		}
+	}
+	if v := os.Getenv("GOJXL_SPLITMUL"); v != "" {
+		lo.SplitMul, _ = strconv.ParseFloat(v, 64)
+	}
 	if v := os.Getenv("GOJXL_MU"); v != "" {
 		lo.RDMu, _ = strconv.ParseFloat(v, 64)
 	}
