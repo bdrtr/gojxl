@@ -38,16 +38,16 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
   Gaborish; LF ve alfa öğrenilmiş MA ağaçlarıyla
 - Aynı SSIMULACRA 2 puanında cjxl -e7'den %1–11 küçük (6 test görüntüsü)
 - Efor seviyeleri (`-e`, varsayılan 7): 5–6 32x16/16x32'yi, 3–4 tüm
-  dikdörtgenleri atlar, 1–2 yalnız DCT8 kullanır (~%40 daha az CPU).
+  dikdörtgenleri atlar, 1–2 yalnız DCT8 kullanır (~%50 daha az CPU).
   5 MP fotoğrafta, d=1, tek çekirdek:
 
-  | | boyut | SSIMULACRA 2 | CPU |
-  |---|---|---|---|
-  | gojxl -e7 | 589 KB | 84.06 | 1.8 s |
-  | gojxl -e3 | 686 KB | 83.65 | 1.6 s |
-  | gojxl -e1 | 765 KB | 82.32 | 1.1 s |
-  | cjxl -e7 | 679 KB | 83.94 | 1.5 s |
-  | cjxl -e3 | 854 KB | 82.83 | 0.8 s |
+  | | boyut | SSIMULACRA 2 | CPU | tepe bellek |
+  |---|---|---|---|---|
+  | gojxl -e7 | 589 KB | 84.06 | 1.47 s | 254 MB |
+  | gojxl -e3 | 686 KB | 83.65 | 1.20 s | 252 MB |
+  | gojxl -e1 | 767 KB | 82.34 | 0.72 s | 263 MB |
+  | cjxl -e7 | 679 KB | 83.94 | 1.32 s | 280 MB |
+  | cjxl -e3 | 854 KB | 82.83 | 0.22 s | 202 MB |
 
 **JPEG → JXL kayıpsız dönüştürme**
 - Saf Go JPEG ayrıştırıcı (baseline, progressive, restart işaretleri,
