@@ -102,10 +102,11 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 	// (computed over the context's non-zero symbols only).
 	// clNl[k][t] caches nlog2n(cl[k][t])
 	var clNl [][]float64
+	var clTotNl []float64 // nlog2n(clTot[k]): the same for every context tried
 	addCost := func(k int, e *ent) float64 {
 		h, nl := cl[k], clNl[k]
 		c := counts[e.i]
-		d := nlog2n(clTot[k]+e.tot) - nlog2n(clTot[k])
+		d := nlog2n(clTot[k]+e.tot) - clTotNl[k]
 		for _, t := range e.nz {
 			d -= nlog2n(h[t]+c[t]) - nl[t]
 		}
@@ -115,7 +116,7 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 	remCost := func(k int, e *ent) float64 {
 		h, nl := cl[k], clNl[k]
 		c := counts[e.i]
-		d := nlog2n(clTot[k]) - nlog2n(clTot[k]-e.tot)
+		d := clTotNl[k] - nlog2n(clTot[k]-e.tot)
 		for _, t := range e.nz {
 			d -= nl[t] - nlog2n(h[t]-c[t])
 		}
@@ -137,6 +138,7 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 		} else {
 			clTot[k] -= e.tot
 		}
+		clTotNl[k] = nlog2n(clTot[k])
 	}
 	for ei := range es {
 		e := &es[ei]
@@ -152,6 +154,7 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 			cl = append(cl, make([]uint64, alpha))
 			clNl = append(clNl, make([]float64, alpha))
 			clTot = append(clTot, 0)
+			clTotNl = append(clTotNl, 0)
 			best = len(cl) - 1
 		}
 		move(e, best, 1)
