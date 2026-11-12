@@ -119,6 +119,7 @@ anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 jxlData, err := gojxl.TranscodeJPEG(jpegBytes)                     // JPEG → JXL
+err = gojxl.ConvertToPNG(w, jxlData, nil)                          // JXL → PNG (akışlı)
 jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → orijinal JPEG
 ```
 
@@ -165,9 +166,11 @@ libjxl AVX2 SIMD kullanır; gojxl skaler saf Go'dur ve yalnız çözmede tek
 çekirdekli dönüştürmede öndedir. WASM derlemeleri çoğunlukla tek thread
 çalışır ve native'in kabaca yarısı hızındadır.
 
-Çözücü filtreleri (Gaborish, EPF) düzlemleri yerinde işler ve tek geçişli
-karelerde katsayılar grup grup piksele çevrilir: 4K VarDCT → PNG
-dönüştürmede tepe bellek ~210 MB (djxl ~100 MB).
+Çözücü filtreleri (Gaborish, EPF) düzlemleri yerinde işler, tek geçişli
+karelerde katsayılar grup grup piksele çevrilir ve `ConvertToPNG` satırları
+ara görüntü olmadan PNG yazıcısına verir. Tepe bellek (4 çekirdek): 4K
+VarDCT → PNG ~140 MB (djxl ~100 MB), 5 MP kayıplı 86 MB (djxl 67 MB),
+5 MP kayıpsız ~97 MB (djxl 73 MB).
 
 Kayıpsız sıkıştırma (bayt, düşük iyi; cjxl v0.12):
 
