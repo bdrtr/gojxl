@@ -126,7 +126,8 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 				outs[i], errs[i] = enc.EncodeVarDCT(j.im, lo)
 				return
 			}
-			outs[i], errs[i] = enc.EncodeLossless(j.im, enc.Options{Effort: effort, FrameOpts: fo})
+			// frames are converted copies, compared before encoding starts
+			outs[i], errs[i] = enc.EncodeLossless(j.im, enc.Options{Effort: effort, Consume: true, FrameOpts: fo})
 		}()
 	}
 	wg.Wait()

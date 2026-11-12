@@ -27,6 +27,9 @@ type Image struct {
 type Options struct {
 	// Effort selects the context model (1 = fastest; 4+ = learned MA tree).
 	Effort int
+	// Consume lets the encoder transform the image's channels in place and
+	// release them early; the caller must not use the image afterwards.
+	Consume bool
 	FrameOpts
 }
 
@@ -643,8 +646,11 @@ func forwardRCT(r, g, b []int32, id int) {
 	perm, typ := id/7, id%7
 	orig := [3][]int32{r, g, b}
 	in0, in1, in2 := orig[perm%3], orig[(perm+1+perm/3)%3], orig[(perm+2-perm/3)%3]
+	// in place: each output sample depends only on the inputs at the same
+	// position, which are read first
 	n := len(r)
-	o0, o1, o2 := make([]int32, n), make([]int32, n), make([]int32, n)
+	o0, o1, o2 := r[:n], g[:n], b[:n]
+	in0, in1, in2 = in0[:n], in1[:n], in2[:n]
 	for i := 0; i < n; i++ {
 		a, B, C := in0[i], in1[i], in2[i]
 		if typ == 6 {
@@ -666,9 +672,6 @@ func forwardRCT(r, g, b []int32, id int) {
 		}
 		o0[i], o1[i], o2[i] = a, bb, c
 	}
-	copy(r, o0)
-	copy(g, o1)
-	copy(b, o2)
 }
 
 // forwardYCoCg applies the lossless RCT type 6.
@@ -714,8 +717,17 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	nc := len(im.Chans)
 	src := make([][]int32, nc)
 	for i := range src {
-		src[i] = append([]int32(nil), im.Chans[i]...)
+		if opt.Consume {
+			src[i] = im.Chans[i]
+		} else {
+			src[i] = append([]int32(nil), im.Chans[i]...)
+		}
 	}
+	// from here on the planes are only reachable through src and chs, so
+	// they can be released as soon as they are no longer needed
+	hdr := *im
+	hdr.Chans = nil
+	im = &hdr
 	if b := reducedBitDepth(src, im.BitDepth); b < im.BitDepth {
 		// samples are exact expansions of b-bit values: code those
 		shrinkBitDepth(src, im.BitDepth, b)
@@ -833,8 +845,9 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 			}
 		}
 	}
-	if opt.Effort >= 4 {
-		parallel(len(groups), func(i int) { localizeGroup(chs, &groups[i]) })
+	if opt.Effort >= 4 && len(groups) > 0 {
+		tileGroups(chs, groups, firstGroupCh)
+		src = nil
 	}
 	all := append([]stream{global}, groups...)
 
@@ -854,37 +867,45 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	}
 	visit := func(i int, fn func(ctx int, v uint32)) {
 		if caches != nil {
-			c := &caches[i]
-			for k, v := range c.v {
-				fn(int(c.ctx[k]), v)
-			}
+			caches[i].visit(fn)
 			return
 		}
 		walkStream(chs, all[i], root, fn)
 	}
 
-	// pass 1: histograms
-	hs := make([]*histograms, len(all))
-	parallel(len(all), func(i int) {
-		h := newHistograms(nleaves, defaultCfg)
+	// pass 1: histograms (per worker)
+	nw := min(runtime.GOMAXPROCS(0), len(all))
+	hs := make([]*histograms, nw)
+	for k := range hs {
+		hs[k] = newHistograms(nleaves, defaultCfg)
+	}
+	parallelWorkers(len(all), nw, func(k, i int) {
+		h := hs[k]
 		if caches != nil {
 			c := &caches[i]
-			n := streamSamples(chs, all[i])
-			c.ctx, c.v = make([]uint16, 0, n), make([]uint32, 0, n)
+			c.p = make([]uint32, 0, streamSamples(chs, all[i]))
 			walkStream(chs, all[i], root, func(ctx int, v uint32) {
-				c.ctx = append(c.ctx, uint16(ctx))
-				c.v = append(c.v, v)
+				c.add(ctx, v)
 				h.add(ctx, v)
 			})
+			// the residuals are all later passes need: release the pixels
+			for j := range all[i].local {
+				all[i].local[j].pix = nil
+			}
 		} else {
 			walkStream(chs, all[i], root, h.add)
 		}
-		hs[i] = h
 	})
-	data := newHistograms(nleaves, defaultCfg)
-	for _, h := range hs {
+	if caches != nil {
+		for i := range chs {
+			chs[i].pix = nil
+		}
+	}
+	data := hs[0]
+	for _, h := range hs[1:] {
 		data.merge(h)
 	}
+	hs = nil
 	if os.Getenv("GOJXL_STATS") != "" {
 		var bitsIdeal float64
 		var nsamp uint64
@@ -974,6 +995,11 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		for _, s := range secs {
 			sizes = append(sizes, len(s))
 		}
+		total := 0
+		for _, s := range sizes {
+			total += s
+		}
+		out.Grow(total + 8*len(sizes) + 16)
 		out.WriteBool(false)
 		out.ZeroPadToByte()
 		for _, s := range sizes {
@@ -1106,10 +1132,53 @@ func channelPalette(c []int32) ([]int32, []int32, bool) {
 	return vals, idx, true
 }
 
-// residCache holds the (context, residual) sequence of a stream.
+// residCache holds the (context, residual) sequence of a stream, packed
+// as ctx<<16 | v; residuals >= 0xffff are stored separately in order.
 type residCache struct {
-	ctx []uint16
-	v   []uint32
+	p  []uint32
+	ov []uint32
+}
+
+func (c *residCache) add(ctx int, v uint32) {
+	if v >= 0xffff {
+		c.ov = append(c.ov, v)
+		v = 0xffff
+	}
+	c.p = append(c.p, uint32(ctx)<<16|v)
+}
+
+func (c *residCache) visit(fn func(ctx int, v uint32)) {
+	j := 0
+	for _, x := range c.p {
+		v := x & 0xffff
+		if v == 0xffff {
+			v = c.ov[j]
+			j++
+		}
+		fn(int(x>>16), v)
+	}
+}
+
+// values returns the residuals of c[lo:hi] (into buf).
+func (c *residCache) values(lo, hi int, buf []uint32) []uint32 {
+	buf = buf[:0]
+	j := 0
+	if c.ov != nil {
+		for _, x := range c.p[:lo] {
+			if x&0xffff == 0xffff {
+				j++
+			}
+		}
+	}
+	for _, x := range c.p[lo:hi] {
+		v := x & 0xffff
+		if v == 0xffff {
+			v = c.ov[j]
+			j++
+		}
+		buf = append(buf, v)
+	}
+	return buf
 }
 
 // paletteTransform returns a writer for a single-channel palette transform.
@@ -1124,25 +1193,45 @@ func paletteTransform(begin, nb int) func(w *bitio.Writer) {
 	}
 }
 
-// localizeGroup copies the group's channels and applies group-local
-// channel palettes where a channel uses few of its values in the group.
-func localizeGroup(chs []channel, g *stream) {
-	var data []channel
-	for _, ci := range g.chans {
+// tileGroups gives every group stream its own copy of its channels, one
+// channel at a time so the image-wide planes (released here) and the tiles
+// do not all coexist, and applies group-local channel palettes where they
+// pay off.
+func tileGroups(chs []channel, groups []stream, first int) {
+	for ci := first; ci < len(chs); ci++ {
 		c := chs[ci]
-		sw, sh := min(g.w, c.w-g.x0), min(g.h, c.h-g.y0)
-		if sw <= 0 || sh <= 0 {
-			return // keep the shared layout
-		}
-		pix := make([]int32, sw*sh)
-		for y := 0; y < sh; y++ {
-			copy(pix[y*sw:(y+1)*sw], c.pix[(g.y0+y)*c.w+g.x0:])
-		}
-		data = append(data, channel{w: sw, h: sh, pix: pix})
+		parallel(len(groups), func(i int) {
+			g := &groups[i]
+			sw, sh := max(0, min(g.w, c.w-g.x0)), max(0, min(g.h, c.h-g.y0))
+			pix := make([]int32, sw*sh)
+			for y := 0; y < sh; y++ {
+				copy(pix[y*sw:(y+1)*sw], c.pix[(g.y0+y)*c.w+g.x0:])
+			}
+			g.local = append(g.local, channel{w: sw, h: sh, pix: pix})
+		})
+		chs[ci].pix = nil
 	}
+	parallel(len(groups), func(i int) {
+		g := &groups[i]
+		g.chans, g.ctxIdx = make([]int, len(g.local)), make([]int, len(g.local))
+		for k := range g.local {
+			g.chans[k], g.ctxIdx[k] = k, k
+		}
+		g.x0, g.y0, g.w, g.h = 0, 0, 1<<30, 1<<30
+		localPalettes(g)
+	})
+}
+
+// localPalettes applies channel palettes to a tiled group's channels where
+// the estimated cost drops.
+func localPalettes(g *stream) {
+	data := g.local
 	var metas []channel
 	var tws []func(w *bitio.Writer)
 	for k := range data {
+		if data[k].w <= 0 || data[k].h <= 0 {
+			continue
+		}
 		vals, idx, ok := channelPalette(data[k].pix)
 		if !ok {
 			continue
@@ -1169,7 +1258,6 @@ func localizeGroup(chs []channel, g *stream) {
 	for i := range local {
 		g.chans[i], g.ctxIdx[i] = i, i
 	}
-	g.x0, g.y0, g.w, g.h = 0, 0, 1<<30, 1<<30
 }
 
 // estChannelCost estimates the coded size (bits) of a channel: gradient

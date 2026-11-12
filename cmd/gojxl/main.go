@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"strings"
 	"time"
@@ -203,6 +204,7 @@ func cmdEncode(args []string) {
 	effort := fs.Int("e", 0, "effort: lossless 1-6 (default 4; 1-3: fixed context model, 4+: learned MA tree), lossy 1-7 (default 7; lower searches fewer transform shapes)")
 	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
+	memprof := fs.String("memprofile", "", "write allocation profile to file")
 	pixels := fs.Bool("pixels", false, "for JPEG input: encode decoded pixels instead of recompressing")
 	fs.Parse(args)
 	if *cpuprof != "" {
@@ -212,6 +214,17 @@ func cmdEncode(args []string) {
 		}
 		pprof.StartCPUProfile(pf)
 		defer pprof.StopCPUProfile()
+	}
+	if *memprof != "" {
+		defer func() {
+			mf, err := os.Create(*memprof)
+			if err != nil {
+				fatal(err)
+			}
+			runtime.GC() // the profile covers allocations up to the last GC
+			pprof.Lookup("allocs").WriteTo(mf, 0)
+			mf.Close()
+		}()
 	}
 	if fs.NArg() < 2 {
 		usage()

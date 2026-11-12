@@ -41,7 +41,7 @@ func Encode(w io.Writer, img image.Image, opt *EncodeOptions) error {
 
 // EncodeBytes encodes img losslessly and returns the JPEG XL bytes.
 func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
-	o := enc.Options{Effort: 4}
+	o := enc.Options{Effort: 4, Consume: true} // the planar copy is ours
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}

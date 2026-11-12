@@ -862,15 +862,10 @@ func writeModularLocalSamples(w *bitio.Writer, chs []channel, effort int, noWP b
 	if effort >= 4 {
 		var cache residCache
 		walkStream(chs, s, root, func(ctx int, v uint32) {
-			cache.ctx = append(cache.ctx, uint16(ctx))
-			cache.v = append(cache.v, v)
+			cache.add(ctx, v)
 			data.add(ctx, v)
 		})
-		visit := func(_ int, fn func(ctx int, v uint32)) {
-			for k, v := range cache.v {
-				fn(int(cache.ctx[k]), v)
-			}
-		}
+		visit := func(_ int, fn func(ctx int, v uint32)) { cache.visit(fn) }
 		dc = writeANSCodeTuned(w, 1, visit, data.counts)
 		ansWriteVisit(w, dc, n, func(fn func(ctx int, v uint32)) { visit(0, fn) })
 		return

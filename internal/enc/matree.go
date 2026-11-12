@@ -361,6 +361,15 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 	useWP := slices.Contains(lp.preds, 6)
 	parallel(len(streams), func(i int) {
 		pt := part{props: make([][]int32, np), tok: make([][]uint8, npred)}
+		// room for the expected number of samples plus a few deviations
+		exp := keep * float64(streamSamples(chs, streams[i]))
+		size := int(exp + 4*math.Sqrt(exp) + 16)
+		for j := range pt.props {
+			pt.props[j] = make([]int32, 0, size)
+		}
+		for j := range pt.tok {
+			pt.tok[j] = make([]uint8, 0, size)
+		}
 		var smp *sampler
 		if keep < 1 {
 			smp = &sampler{rng: uint64(i)*0x9E3779B97F4A7C15 + 1, thr: thr}
@@ -377,15 +386,26 @@ func collectSamples(chs []channel, streams []stream, lp learnParams) *treeSample
 		parts[i] = pt
 	})
 	ts := &treeSamples{preds: lp.preds, scale: 1 / keep, props: lpProps}
-	props := make([][]int32, np)
-	ts.tok = make([][]uint8, npred)
+	n := 0
 	for _, pt := range parts {
+		n += len(pt.props[0])
+	}
+	props := make([][]int32, np)
+	for j := range props {
+		props[j] = make([]int32, 0, n)
+	}
+	ts.tok = make([][]uint8, npred)
+	for j := range ts.tok {
+		ts.tok[j] = make([]uint8, 0, n)
+	}
+	for i, pt := range parts {
 		for j := range props {
 			props[j] = append(props[j], pt.props[j]...)
 		}
 		for j := range ts.tok {
 			ts.tok[j] = append(ts.tok[j], pt.tok[j]...)
 		}
+		parts[i] = part{}
 	}
 	ts.n = len(props[0])
 	for _, t := range ts.tok {

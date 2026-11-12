@@ -46,6 +46,15 @@ func (w *Writer) Bytes() []byte {
 	return w.buf
 }
 
+// Grow makes room for n more bytes.
+func (w *Writer) Grow(n int) {
+	if cap(w.buf)-len(w.buf) < n {
+		nb := make([]byte, len(w.buf), len(w.buf)+n)
+		copy(nb, w.buf)
+		w.buf = nb
+	}
+}
+
 // AppendBytes appends byte-aligned data (the writer must be byte aligned).
 func (w *Writer) AppendBytes(b []byte) {
 	if w.n != 0 {

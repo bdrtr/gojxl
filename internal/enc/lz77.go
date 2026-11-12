@@ -3,6 +3,7 @@ package enc
 import (
 	"math"
 	"math/bits"
+	"sync"
 
 	"gojxl/internal/bitio"
 )
@@ -222,24 +223,48 @@ func (d *lzDistCoder) symbol(dist int) uint32 {
 	return uint32(dist + 119)
 }
 
+// lzScratch holds lzMatchesCost's working buffers for reuse.
+type lzScratch struct {
+	pre         []float64
+	head, prev  []int32
+	run1, runUp []int32
+	vals        []uint32
+	lc          []float32
+}
+
+var lzScratchPool = sync.Pool{New: func() any { return &lzScratch{} }}
+
+// growSlice returns (*buf)[:n], reallocating when the capacity is short.
+func growSlice[T any](buf *[]T, n int) []T {
+	if cap(*buf) < n {
+		*buf = make([]T, n)
+	}
+	*buf = (*buf)[:n]
+	return *buf
+}
+
 // lzMatchesCost finds copies in a symbol stream whose estimated cost is
 // below that of the literals they replace (litCost[i] is the cost in bits
 // of symbol i coded as a literal). Besides hash-chain candidates, it always
 // tries distance 1 (runs) and the row above (mult).
-func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int) ([]lzItem, float64) {
+func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int, sc *lzScratch) ([]lzItem, float64) {
 	n := len(vals)
 	if n < 2*lzMinLen {
 		return nil, 0
 	}
-	pre := make([]float64, n+1)
+	if sc == nil {
+		sc = &lzScratch{}
+	}
+	pre := growSlice(&sc.pre, n+1)
+	pre[0] = 0
 	for i, c := range litCost {
 		pre[i+1] = pre[i] + float64(c)
 	}
-	head := make([]int32, 1<<lzHashLog)
+	head := growSlice(&sc.head, 1<<lzHashLog)
 	for i := range head {
 		head[i] = -1
 	}
-	prev := make([]int32, n)
+	prev := growSlice(&sc.prev, n) // read only where written
 	hash := func(i int) uint32 {
 		h := vals[i]*0x9E3779B1 ^ vals[i+1]*0x85EBCA77 ^ vals[i+2]*0xC2B2AE3D
 		return (h * 0x27D4EB2F) >> (32 - lzHashLog)
@@ -270,8 +295,9 @@ func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int)
 	}
 	// run lengths of copies at distance 1 and at the row above, so these
 	// are found in O(1) per position (long runs are common in residuals)
-	runLen := func(d int) []int32 {
-		r := make([]int32, n+1)
+	runLen := func(d int, buf *[]int32) []int32 {
+		r := growSlice(buf, n+1)
+		clear(r)
 		if d < 1 || d >= n {
 			return r
 		}
@@ -282,10 +308,10 @@ func lzMatchesCost(vals []uint32, litCost []float32, dc *lzDistCoder, chain int)
 		}
 		return r
 	}
-	run1 := runLen(1)
+	run1 := runLen(1, &sc.run1)
 	var runUp []int32
 	if dc.mult > 1 {
-		runUp = runLen(dc.mult)
+		runUp = runLen(dc.mult, &sc.runUp)
 	}
 	const chainMaxLen = 512
 	var out []lzItem
@@ -366,7 +392,7 @@ func streamDistMult(chs []channel, s stream) int {
 // symbol streams and their histograms (nleaves+1 contexts).
 func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]uint64, nleaves int) (func(i int, fn func(ctx int, v uint32)), [][]uint64) {
 	for i := range caches {
-		for _, v := range caches[i].v {
+		for _, v := range caches[i].ov {
 			if v&lzLenFlag != 0 {
 				return nil, nil
 			}
@@ -384,16 +410,14 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 			costs[c][t] = float32(math.Log2(float64(tot+1) / float64(n+1)))
 		}
 	}
-	lcs := make([][]float32, len(all))
-	dcs := make([]*lzDistCoder, len(all))
-	sgain := make([]float64, len(all))
-	stot := make([]float64, len(all))
-	parallel(len(all), func(i int) {
-		c := &caches[i]
-		lc := make([]float32, len(c.v))
-		for k, v := range c.v {
+	// litCosts returns the residuals of c[lo:hi] and their literal costs
+	litCosts := func(c *residCache, lo, hi int, sc *lzScratch) ([]uint32, []float32) {
+		vals := c.values(lo, hi, sc.vals)
+		sc.vals = vals
+		lc := growSlice(&sc.lc, len(vals))
+		for k, v := range vals {
 			t, nb, _ := defaultCfg.encode(v)
-			cc := costs[c.ctx[k]]
+			cc := costs[c.p[lo+k]>>16]
 			x := float32(nb)
 			if int(t) < len(cc) {
 				x += cc[t]
@@ -402,10 +426,18 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 			}
 			lc[k] = x
 		}
-		lcs[i] = lc
+		return vals, lc
+	}
+	dcs := make([]*lzDistCoder, len(all))
+	sgain := make([]float64, len(all))
+	stot := make([]float64, len(all))
+	parallel(len(all), func(i int) {
+		c := &caches[i]
+		sc := lzScratchPool.Get().(*lzScratch)
+		defer lzScratchPool.Put(sc)
 		dcs[i] = newLZDistCoder(streamDistMult(chs, all[i]))
 		// cheap check on 8 evenly spaced chunks (about 1/8 of the stream)
-		n := len(c.v)
+		n := len(c.p)
 		cl := max(n/64, 4*dcs[i].mult, 4096)
 		for k := 0; k < 8; k++ {
 			a := k * n / 8
@@ -413,9 +445,10 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 			if a >= b {
 				continue
 			}
-			_, g := lzMatchesCost(c.v[a:b], lc[a:b], dcs[i], 16)
+			vals, lc := litCosts(c, a, b, sc)
+			_, g := lzMatchesCost(vals, lc, dcs[i], 16, sc)
 			sgain[i] += g
-			for _, x := range lc[a:b] {
+			for _, x := range lc {
 				stot[i] += float64(x)
 			}
 		}
@@ -430,8 +463,10 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 	}
 	items := make([][]lzItem, len(all))
 	parallel(len(all), func(i int) {
-		items[i], _ = lzMatchesCost(caches[i].v, lcs[i], dcs[i], 16)
-		lcs[i] = nil
+		sc := lzScratchPool.Get().(*lzScratch)
+		defer lzScratchPool.Put(sc)
+		vals, lc := litCosts(&caches[i], 0, len(caches[i].p), sc)
+		items[i], _ = lzMatchesCost(vals, lc, dcs[i], 16, sc)
 	})
 	n := 0
 	for _, it := range items {
@@ -442,18 +477,33 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 	}
 	visit := func(i int, fn func(ctx int, v uint32)) {
 		c := &caches[i]
-		p := 0
-		for _, it := range items[i] {
-			for ; p < int(it.pos); p++ {
-				fn(int(c.ctx[p]), c.v[p])
+		p, j := 0, 0 // j: next overflow residual
+		lit := func(end int) {
+			for ; p < end; p++ {
+				x := c.p[p]
+				v := x & 0xffff
+				if v == 0xffff {
+					v = c.ov[j]
+					j++
+				}
+				fn(int(x>>16), v)
 			}
-			fn(int(c.ctx[p]), lzLenFlag|uint32(it.length-lzMinLen))
+		}
+		for _, it := range items[i] {
+			lit(int(it.pos))
+			fn(int(c.p[p]>>16), lzLenFlag|uint32(it.length-lzMinLen))
 			fn(nleaves, dcs[i].symbol(int(it.dist)))
-			p += int(it.length)
+			end := p + int(it.length)
+			if c.ov != nil {
+				for ; p < end; p++ {
+					if c.p[p]&0xffff == 0xffff {
+						j++
+					}
+				}
+			}
+			p = end
 		}
-		for ; p < len(c.v); p++ {
-			fn(int(c.ctx[p]), c.v[p])
-		}
+		lit(len(c.p))
 	}
 	lzc := make([][]uint64, nleaves+1)
 	for i := range lzc {
@@ -461,10 +511,10 @@ func modularLZ77(chs []channel, all []stream, caches []residCache, counts [][]ui
 	}
 	var oldExtra, newExtra uint64
 	for i := range all {
-		for _, v := range caches[i].v {
+		caches[i].visit(func(_ int, v uint32) {
 			_, nb, _ := defaultCfg.encode(v)
 			oldExtra += uint64(nb)
-		}
+		})
 		visit(i, func(ctx int, v uint32) {
 			var t uint32
 			var nb uint

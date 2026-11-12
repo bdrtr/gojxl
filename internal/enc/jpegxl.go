@@ -386,17 +386,11 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	parallelWorkers(ngroups, nw, func(k, g int) {
 		h, c := hs2[k], &caches[g]
 		emitGroup(g, func(ctx int, v uint32) {
-			c.ctx = append(c.ctx, uint16(ctx))
-			c.v = append(c.v, v)
+			c.add(ctx, v)
 			h.add(ctx, v)
 		})
 	})
-	replay := func(g int, fn func(ctx int, v uint32)) {
-		c := &caches[g]
-		for k, v := range c.v {
-			fn(int(c.ctx[k]), v)
-		}
-	}
+	replay := func(g int, fn func(ctx int, v uint32)) { caches[g].visit(fn) }
 	hf := newHistograms(nctx, defaultCfg)
 	for _, h := range hs2 {
 		hf.merge(h)
@@ -499,7 +493,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		return writeANSCodeTuned(w, ngroups, replay, hf.counts)
 	}
 	writeGroup := func(w *bitio.Writer, g int, hc *ansCode) {
-		ansWriteVisit(w, hc, len(caches[g].v), func(fn func(ctx int, v uint32)) { replay(g, fn) })
+		ansWriteVisit(w, hc, len(caches[g].p), func(fn func(ctx int, v uint32)) { replay(g, fn) })
 	}
 
 	// --- headers
