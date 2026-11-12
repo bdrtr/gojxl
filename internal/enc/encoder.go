@@ -858,7 +858,10 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		}
 	}
 	if opt.Effort >= 4 && len(groups) > 0 {
-		tileGroups(chs, groups, firstGroupCh)
+		// large images: collect after each plane is tiled, so the heap
+		// goal follows what stays (the big buffers hold no pointers, so a
+		// cycle is cheap)
+		tileGroups(chs, groups, firstGroupCh, im.W*im.H >= 1<<22)
 		src = nil
 	}
 	all := append([]stream{global}, groups...)
@@ -1217,7 +1220,7 @@ func paletteTransform(begin, nb int) func(w *bitio.Writer) {
 // channel at a time so the image-wide planes (released here) and the tiles
 // do not all coexist, and applies group-local channel palettes where they
 // pay off.
-func tileGroups(chs []channel, groups []stream, first int) {
+func tileGroups(chs []channel, groups []stream, first int, collect bool) {
 	for ci := first; ci < len(chs); ci++ {
 		c := chs[ci]
 		parallel(len(groups), func(i int) {
@@ -1230,6 +1233,12 @@ func tileGroups(chs []channel, groups []stream, first int) {
 			g.local = append(g.local, channel{w: sw, h: sh, pix: pix})
 		})
 		chs[ci].pix = nil
+		c.pix = nil
+		if collect {
+			// keep the heap near the planes left plus the tiles made: the
+			// goal set while all planes were live would let it double
+			runtime.GC()
+		}
 	}
 	parallel(len(groups), func(i int) {
 		g := &groups[i]
