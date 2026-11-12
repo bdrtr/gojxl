@@ -205,22 +205,28 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	// acBlock returns the AC coefficients of a block of channel c (in
 	// channel block coordinates) in the JPEG's row-major layout (the
 	// decoder's is transposed: orders are mapped instead), with chroma from
-	// luma removed.
-	acBlock := func(c, bx, by int, q *[64]int32) {
+	// luma removed, and the number of non-zero ones (AC only: q[0] is the
+	// DC, in the same place in both layouts).
+	acBlock := func(c, bx, by int, q *[64]int32) int32 {
 		src := (*[64]int16)(block(c, bx, by))
+		nz := int32(0)
 		if !cfl || c == 1 || cmap[c][(by/8)*tw+bx/8] == 0 {
 			for n, v := range src {
 				q[n] = int32(v)
+				nz += int32(uint16(v|-v) >> 15) // no branch: v != 0
 			}
-			return
+			return nz - int32(uint16(src[0]|-src[0])>>15)
 		}
 		scale := cmap[c][(by/8)*tw+bx/8] * (1 << 11) / 84
 		ys := (*[64]int16)(block(1, bx, by))
 		for n := range 64 {
 			cs := (scale*sq[c][n] + 1<<10) >> 11
 			f := (int32(ys[n])*cs + 1<<10) >> 11
-			q[n] = int32(src[n]) - f
+			v := int32(src[n]) - f
+			q[n] = v
+			nz += int32(uint32(v|-v) >> 31)
 		}
+		return nz - int32(uint32(q[0]|-q[0])>>31)
 	}
 	// tr maps a position of the decoder's transposed layout to the JPEG's
 	// (and back)
@@ -374,7 +380,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 					if (lx>>hs[c])<<hs[c] != lx || (ly>>vs[c])<<vs[c] != ly {
 						continue
 					}
-					acBlock(c, bx>>hs[c], by>>vs[c], &q)
+					nz := acBlock(c, bx>>hs[c], by>>vs[c], &q)
 					bctx := int(ctxMap[i*13*numDC+dcIdx(bx, by)])
 					sx, sy := lx>>hs[c], ly>>vs[c]
 					var pred int32
@@ -392,12 +398,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 					if pred >= 8 {
 						pidx = 4 + pred/2
 					}
-					nz := int32(0)
 					order := &ordersJ[c]
-					for k := 1; k < 64; k++ {
-						v := q[order[k]]
-						nz += int32(uint32(v|-v) >> 31) // no branch: v != 0
-					}
 					emit(bctx+int(pidx)*numCtx, uint32(nz))
 					nzRow[c][sx] = nz
 					if nz == 0 {
