@@ -209,7 +209,7 @@ func xybToLinearSRGB(p [3]*Plane, o *OpsinInverse, intensity float32) {
 	}
 	X, Y, B := p[0].Pix, p[1].Pix, p[2].Pix
 	n := len(X)
-	parallelRows(n, func(lo, hi int) {
+	parallelSamples(n, func(lo, hi int) {
 		for i := lo; i < hi; i++ {
 			x, y, b := X[i], Y[i], B[i]
 			gr := y + x - cbrtBias[0]
@@ -226,7 +226,24 @@ func xybToLinearSRGB(p [3]*Plane, o *OpsinInverse, intensity float32) {
 }
 
 // parallelRows splits [0,n) into chunks processed concurrently.
+// parallelRows runs fn over row ranges of [0, n) in parallel (a few
+// bands per worker).
 func parallelRows(n int, fn func(lo, hi int)) {
+	w := numWorkers()
+	if w <= 1 || n < 16 {
+		fn(0, n)
+		return
+	}
+	band := max(8, (n+4*w-1)/(4*w))
+	k := (n + band - 1) / band
+	_ = parallelFor(k, func(i int) error {
+		fn(i*band, min(n, (i+1)*band))
+		return nil
+	})
+}
+
+// parallelSamples runs fn over [0, n) in parallel chunks of samples.
+func parallelSamples(n int, fn func(lo, hi int)) {
 	const chunk = 1 << 15
 	if n <= chunk {
 		fn(0, n)
@@ -316,7 +333,7 @@ func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity fl
 		}
 		done[pl] = true
 		px := pl.Pix
-		parallelRows(len(px), func(lo, hi int) {
+		parallelSamples(len(px), func(lo, hi int) {
 			lut.apply(px[lo:hi], f)
 		})
 	}

@@ -157,7 +157,7 @@ func (fd *frameDecoder) renderNoise() {
 		ytox, ytob = fd.vd.baseX, fd.vd.baseB
 	}
 	X, Y, B := fd.color[0].Pix, fd.color[1].Pix, fd.color[2].Pix
-	parallelRows(W*H, func(lo, hi int) {
+	parallelSamples(W*H, func(lo, hi int) {
 		for i := lo; i < hi; i++ {
 			x, y := X[i], Y[i]
 			sg := strength((y - x) * 0.5)
