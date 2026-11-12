@@ -11,6 +11,7 @@ import (
 	"gojxl/internal/enc"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pnm"
+	"gojxl/internal/tiff"
 )
 
 // errPFMInput reports float anymap input, which the encoder cannot take.
@@ -247,4 +248,9 @@ func ConvertToPFM(w io.Writer, data []byte, opt *Options) (err error) {
 		bw.Write(out)
 	}
 	return bw.Flush()
+}
+
+// tiffAsPNM views decoded TIFF samples as an anymap (same layout).
+func tiffAsPNM(t *tiff.Image) *pnm.Image {
+	return &pnm.Image{W: t.W, H: t.H, Channels: t.Channels, MaxVal: 1<<t.BitDepth - 1, Samples: t.Samples}
 }

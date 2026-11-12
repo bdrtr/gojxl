@@ -406,3 +406,7 @@ func readDynamic(b *bitReader, lit, dist *huffTable) error {
 	}
 	return dist.build(lens[nlit:nlit+ndist], distBits, distEntry)
 }
+
+// InflateZlib decompresses a zlib stream into dst, which must have exactly
+// the decompressed size (other packages' entry to the fast inflater).
+func InflateZlib(src, dst []byte) error { return inflateZlib(src, dst, nil) }

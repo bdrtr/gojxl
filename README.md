@@ -73,6 +73,13 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - Kayıpsız WebP → kayıpsız JXL tipik olarak %10–25 daha küçük; animasyonlu
   WebP, kareleri ve süreleriyle JXL animasyonuna dönüşür
 
+**TIFF girdisi (`internal/tiff`)**
+- 1/2/4/8/16-bit gri, palet ve RGB, alfa (ilişkisiz), şerit ve karo,
+  düzlemsel/iç içe, sıkıştırmasız/LZW/Deflate/PackBits, yatay tahminci,
+  her iki bayt sırası; ICC, XMP ve yönlendirme etiketi korunur
+- libtiff ile birebir (22 ImageMagick varyantında); 16-bit ana kopyalar
+  kayıpsız JXL'e kendi bit derinliğinde girer (cjxl TIFF okumaz)
+
 **JPEG → JXL kayıpsız dönüştürme**
 - Saf Go JPEG ayrıştırıcı (baseline, progressive, restart işaretleri,
   4:4:4/4:2:2/4:2:0, gri, Adobe RGB JPEG), DCT katsayıları korunur
@@ -168,6 +175,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl encode anim.gif cikti.jxl           # GIF/APNG animasyonu → JXL animasyonu
 ./gojxl encode girdi.ppm cikti.jxl          # PGM/PPM/PAM (P2/P3/P5/P6/P7), kendi bit derinliğinde (ör. 10-bit)
 ./gojxl encode foto.webp foto.jxl           # WebP (kayıpsız/kayıplı, alfa, animasyon) → JXL
+./gojxl encode tarama.tif tarama.jxl        # TIFF (8/16-bit, LZW/Deflate/PackBits, karolar) → kayıpsız JXL
 ./gojxl compare orijinal.png bozuk.jxl      # SSIMULACRA 2 + PSNR (PNG/JPEG/GIF/JXL)
 ./gojxl encode foto.jpg foto.jxl            # JPEG → JXL kayıpsız yeniden sıkıştırma (~%15-30 küçük)
 ./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
@@ -191,7 +199,7 @@ anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{ICC: profil})     // pikseller profil uzayında
-jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG/WebP/PNM → JXL, renk korunur
+jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG/WebP/TIFF/PNM → JXL, renk korunur
 jxlData, err := gojxl.TranscodeJPEG(jpegBytes)                     // JPEG → JXL
 err = gojxl.ConvertToPNG(w, jxlData, nil)                          // JXL → PNG (akışlı)
 err = gojxl.ConvertToJPEG(w, jxlData, 90, nil)                     // JXL → JPEG (orijinal varsa o)
@@ -215,7 +223,7 @@ jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → or
 - CMYK (SWOP profili): lcms perceptual dönüşümüyle 69 dB, djxl ile 46 dB.
 - Kodlayıcının ürettiği dosyalar djxl ile bit-birebir çözülür; round-trip
   testleri (`go test ./...`) 1×1'den çok gruplu görüntülere kadar kapsar.
-- Bozuk girdiler: JXL çözücü, PNG okuyucu, JPEG, WebP ve PNM ayrıştırıcıları için fuzz
+- Bozuk girdiler: JXL çözücü, PNG okuyucu, JPEG, WebP, TIFF ve PNM ayrıştırıcıları için fuzz
   hedefleri var (`go test -run x -fuzz FuzzDecode .`); bulunan askılar,
   dev ayırmalar ve karesel yavaşlıklar düzeltildi, girdileri
   `testdata/fuzz` altında gerileme testi olarak duruyor.

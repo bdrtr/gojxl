@@ -14,12 +14,13 @@ import (
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
 	"gojxl/internal/pnm"
+	"gojxl/internal/tiff"
 	"gojxl/internal/webp"
 )
 
 // ConvertToJXL encodes an image file as JPEG XL: PNG or APNG, GIF, JPEG,
-// WebP (still or animated), PGM/PPM/PAM, or any other format registered
-// with package image. The colour space of
+// WebP (still or animated), TIFF, PGM/PPM/PAM, or any other format
+// registered with package image. The colour space of
 // the input is kept (PNG cICP, iCCP, sRGB and gAMA/cHRM chunks, JPEG ICC
 // profiles; opt.ICC overrides them), as are its Exif and XMP metadata
 // (the Exif orientation becomes the image's). With Distance 0, JPEG files are
@@ -61,6 +62,18 @@ func ConvertToJXL(data []byte, opt *EncodeOptions) (out []byte, err error) {
 		}
 		return encodePlanar(pnmPlanar(p), &o, col, meta)
 	}
+	if tiff.Is(data) {
+		t, err := tiff.Decode(data)
+		if err != nil {
+			return nil, err
+		}
+		im := pnmPlanar(tiffAsPNM(t))
+		meta.apply(im) // Exif orientation, when any
+		if t.Orientation >= 1 && t.Orientation <= 8 {
+			im.Orientation = t.Orientation
+		}
+		return encodePlanarOriented(im, &o, col, meta)
+	}
 	anim, err := DecodeAnimatedInput(data)
 	if err != nil {
 		return nil, err
@@ -86,8 +99,8 @@ func outputColour(data []byte, opt *Options) (icc, cicp []byte) {
 }
 
 // DecodeInput decodes an image file of a format ConvertToJXL takes (the
-// first frame of an animation): PNG, JPEG, GIF, WebP, PGM, PPM, PAM or any
-// other format registered with package image.
+// first frame of an animation): PNG, JPEG, GIF, WebP, TIFF, PGM, PPM, PAM
+// or any other format registered with package image.
 func DecodeInput(data []byte) (img image.Image, err error) {
 	defer recoverErr(&err)
 	return decodeInput(data)
@@ -115,6 +128,13 @@ func decodeInput(data []byte) (image.Image, error) {
 			return nil, err
 		}
 		return w.Canvases()[0], nil
+	}
+	if tiff.Is(data) {
+		t, err := tiff.Decode(data)
+		if err != nil {
+			return nil, err
+		}
+		return pnmImage(tiffAsPNM(t)), nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	return img, err

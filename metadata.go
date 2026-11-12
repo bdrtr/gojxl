@@ -9,6 +9,7 @@ import (
 	"gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
+	"gojxl/internal/tiff"
 	"gojxl/internal/webp"
 )
 
@@ -30,6 +31,10 @@ func readInput(data []byte) (colourSpec, metadata) {
 		icc, ex, xmp := webp.Metadata(data)
 		s, _ := specFromICC(icc)
 		return s, metadata{ex, xmp}
+	case tiff.Is(data):
+		icc, xmp := tiff.Metadata(data)
+		s, _ := specFromICC(icc)
+		return s, metadata{nil, xmp}
 	}
 	return colourSpec{}, metadata{}
 }

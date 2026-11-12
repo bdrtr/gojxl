@@ -90,14 +90,20 @@ func encodeImage(img image.Image, opt *EncodeOptions, col colourSpec, meta metad
 	return encodePlanar(toPlanar(img), opt, col, meta)
 }
 
-// encodePlanar encodes im (which it may consume).
+// encodePlanar encodes im (which it may consume), oriented as the Exif
+// metadata says.
 func encodePlanar(im *enc.Image, opt *EncodeOptions, col colourSpec, meta metadata) ([]byte, error) {
+	meta.apply(im)
+	return encodePlanarOriented(im, opt, col, meta)
+}
+
+// encodePlanarOriented is encodePlanar with im.Orientation already set.
+func encodePlanarOriented(im *enc.Image, opt *EncodeOptions, col colourSpec, meta metadata) ([]byte, error) {
 	o := enc.Options{Effort: 4, Consume: true} // the planar copy is ours
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}
 	col.apply(im)
-	meta.apply(im)
 	var cs []byte
 	var err error
 	if opt != nil && opt.Distance > 0 {
