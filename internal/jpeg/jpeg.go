@@ -133,6 +133,10 @@ type huffTable struct {
 	defined bool
 	// lut[next 9 bits] = length<<16 | value for codes of at most 9 bits
 	lut [1 << lutBits]uint32
+	// ac[next 9 bits]: for AC symbols with s > 0 whose code and s extra
+	// bits fit in 9 bits, value<<16 | s<<12 | run<<8 | total length
+	// (0 if not)
+	ac [1 << lutBits]int32
 }
 
 const lutBits = 9
@@ -160,6 +164,11 @@ func buildTable(h *HuffCode) huffTable {
 			sh := lutBits - l
 			for k := int32(0); k < 1<<sh; k++ {
 				t.lut[c<<sh|k] = uint32(l)<<16 | uint32(v)
+				if r, sz := int32(v>>4), int32(v&15); v < 256 && sz > 0 && int(l)+int(sz) <= lutBits {
+					x := int(k >> (sh - int(sz)) & (1<<sz - 1))
+					val := int32(extend(x, int(sz)))
+					t.ac[c<<sh|k] = val<<16 | sz<<12 | r<<8 | int32(l) + sz
+				}
 			}
 		}
 	}
@@ -809,6 +818,20 @@ func (p *parser) decodeBlock(br *bitReader, dct, act *huffTable, Ss, Se, Al int,
 	}
 	*nzr = 0
 	for k := Ss; k <= Se; k++ {
+		// fast path: symbol and value from one lookup
+		br.fill()
+		if e := act.ac[int32(br.val>>(br.bitsLeft-lutBits))&(1<<lutBits-1)]; e != 0 {
+			if s := int(e >> 12 & 15); s+Al < 12 {
+				k += int(e >> 8 & 15)
+				if k > Se {
+					return errors.New("jpeg: out-of-band coefficient")
+				}
+				br.bitsLeft -= int(e & 0xff)
+				coef[NaturalOrder[k]] = int16(int(e>>16) << Al)
+				*nzr = 0
+				continue
+			}
+		}
 		sr := br.symbol(act)
 		if sr >= 256 {
 			return errors.New("jpeg: invalid AC symbol")

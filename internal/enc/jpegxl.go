@@ -55,6 +55,15 @@ func jpegUpsamplingCode(h, v int) uint64 {
 }
 
 // EncodeJPEG recompresses a parsed JPEG into a JPEG XL codestream.
+// hfTokLUT holds the default-config token of the values below 4096.
+var hfTokLUT = func() (t [4096]uint8) {
+	for v := range t {
+		tok, _, _ := defaultCfg.encode(uint32(v))
+		t[v] = uint8(tok)
+	}
+	return
+}()
+
 func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	grey := len(j.Comps) == 1
 	if !grey && len(j.Comps) != 3 {
@@ -153,8 +162,14 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 									from = max(from, 0)
 									to = min(to, 255)
 									if from <= to {
-										dz[int(math.Ceil(float64(from)))]++
-										dz[int(math.Floor(float64(to+1)))]--
+										// ceil and floor by conversion (0 <= from <= to <= 255;
+										// math.Ceil/Floor are calls without SSE4.1)
+										lo := int(from)
+										if float32(lo) < from {
+											lo++
+										}
+										dz[lo]++
+										dz[int(to+1)]--
 									}
 								}
 							}
@@ -285,20 +300,34 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	var orders [3][]int32
 	{
 		var nzc [3][64]int
-		parallel(3, func(c int) {
+		// rows of blocks in parallel (16-row bands), counts merged
+		type band struct{ c, y0, y1 int }
+		var bands []band
+		for c := 0; c < 3; c++ {
 			cbh := bh >> vs[c]
-			for by := 0; by < cbh; by++ {
-				for bx := 0; bx < cbw[c]; bx++ {
-					var q [64]int32
-					acBlock(c, bx, by, &q)
+			for y := 0; y < cbh; y += 16 {
+				bands = append(bands, band{c, y, min(cbh, y+16)})
+			}
+		}
+		parts := make([][64]int, len(bands))
+		parallel(len(bands), func(i int) {
+			bd := bands[i]
+			cnt := &parts[i]
+			var q [64]int32
+			for by := bd.y0; by < bd.y1; by++ {
+				for bx := 0; bx < cbw[bd.c]; bx++ {
+					acBlock(bd.c, bx, by, &q)
 					for k, v := range q {
-						if v != 0 {
-							nzc[c][k]++
-						}
+						cnt[k] += int(uint32(v|-v) >> 31) // v != 0, no branch
 					}
 				}
 			}
 		})
+		for i, bd := range bands {
+			for k, n := range parts[i] {
+				nzc[bd.c][k] += n
+			}
+		}
 		for c := 0; c < 3; c++ {
 			o := append([]int32(nil), nat...)
 			cnt := nzc[c]
@@ -307,7 +336,19 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		}
 	}
 
-	emitGroup := func(g int, emit func(ctx int, v uint32)) {
+	// emitGroup tokenises group g into its cache c, counting the tokens in
+	// flat (by ctx*64 + default-config token, for values below 4096: all
+	// AC values of 8-bit JPEGs) or else in h; written out rather than via
+	// a callback, which cannot be inlined
+	emitGroup := func(g int, c *residCache, flat []uint32, h *histograms) {
+		emit := func(ctx int, v uint32) {
+			c.add(ctx, v)
+			if v < uint32(len(hfTokLUT)) {
+				flat[ctx<<6|int(hfTokLUT[v])]++
+			} else {
+				h.add(ctx, v)
+			}
+		}
 		gx, gy := g%xg, g/xg
 		bx0, by0 := gx*gd, gy*gd
 		bx1, by1 := min(bx0+gd, bw), min(by0+gd, bh)
@@ -344,9 +385,8 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 					nz := int32(0)
 					order := orders[c]
 					for k := 1; k < 64; k++ {
-						if q[order[k]] != 0 {
-							nz++
-						}
+						v := q[order[k]]
+						nz += int32(uint32(v|-v) >> 31) // no branch: v != 0
 					}
 					emit(bctx+int(pidx)*numCtx, uint32(nz))
 					nzRow[c][sx] = nz
@@ -362,12 +402,8 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 						v := q[order[k]]
 						ctx := base + (int(nzCtx[nz-1])+int(freqCtx[k-1]))*2 + prev
 						emit(ctx, bitio.PackSigned(v))
-						if v != 0 {
-							nz--
-							prev = 1
-						} else {
-							prev = 0
-						}
+						prev = int(uint32(v|-v) >> 31) // 1 if v != 0
+						nz -= int32(prev)
 					}
 				}
 			}
@@ -379,22 +415,36 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	// large: hundreds of contexts per block context)
 	nw := min(runtime.GOMAXPROCS(0), ngroups)
 	hs2 := make([]*histograms, nw)
+	flats := make([][]uint32, nw)
 	caches := make([]residCache, ngroups)
 	for k := range hs2 {
 		hs2[k] = newHistograms(nctx, defaultCfg)
+		flats[k] = make([]uint32, nctx<<6)
 	}
 	parallelWorkers(ngroups, nw, func(k, g int) {
-		h, c := hs2[k], &caches[g]
-		emitGroup(g, func(ctx int, v uint32) {
-			c.add(ctx, v)
-			h.add(ctx, v)
-		})
+		emitGroup(g, &caches[g], flats[k], hs2[k])
 	})
 	replay := func(g int, fn func(ctx int, v uint32)) { caches[g].visit(fn) }
 	hf := newHistograms(nctx, defaultCfg)
 	for _, h := range hs2 {
 		hf.merge(h)
 	}
+	parallel(nctx, func(ctx int) {
+		for _, fl := range flats {
+			for t, n := range fl[ctx<<6 : ctx<<6+64] {
+				if n == 0 {
+					continue
+				}
+				cs := hf.counts[ctx]
+				if t >= len(cs) {
+					cs = append(cs, make([]uint64, t+16-len(cs))...)
+					hf.counts[ctx] = cs
+				}
+				cs[t] += uint64(n)
+			}
+		}
+	})
+	flats = nil
 
 	// dequantisation: DC from the first quantiser entry, AC as a RAW table
 	var dcq [3]float32
