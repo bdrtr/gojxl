@@ -107,6 +107,12 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		}
 		t.apply(cv.color[0], cv.color[1], cv.color[2], cv.ec[t.black])
 	}
+	if sc := d.SRGBConverter(); d.ForceSRGB && sc != nil && cv.color[0] != nil {
+		if cv == d.canvas && !fh.IsLast {
+			cv = d.canvas.clone()
+		}
+		sc.apply(cv.color)
+	}
 	f.Color = cv.color
 	f.EC = cv.ec
 	if deferCT {

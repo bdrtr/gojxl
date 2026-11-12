@@ -41,7 +41,13 @@ type Decoder struct {
 	targetDone bool
 	cmyk       *cmykTransform
 	cmykDone   bool
-	capture    *JPEGCoeffs
+	srgb       *srgbConv
+	srgbDone   bool
+	// ForceSRGB renders the output in sRGB (set before decoding frames):
+	// XYB images directly, others by converting their samples; PQ and HLG
+	// images keep their space.
+	ForceSRGB bool
+	capture   *JPEGCoeffs
 }
 
 // CMYK returns the CMYK -> sRGB transform, or nil for non-CMYK images (or
@@ -56,6 +62,9 @@ func (d *Decoder) CMYK() *cmykTransform {
 
 // OutputTarget returns the colour space XYB images are rendered to.
 func (d *Decoder) OutputTarget() *outputTarget {
+	if d.ForceSRGB && d.Header.XYBEncoded && !d.hdr() {
+		return &outputTarget{srgb: true}
+	}
 	if !d.targetDone {
 		d.target = xybTarget(d.Header, d.ICC)
 		d.targetDone = true
@@ -94,9 +103,18 @@ func (d *Decoder) OutputCICP() (primaries, transfer byte, ok bool) {
 	return primaries, transfer, true
 }
 
+// hdr reports a PQ or HLG enum encoding.
+func (d *Decoder) hdr() bool {
+	c := &d.Header.Colour
+	return !c.WantICC && (c.TransferFunction == TFPQ || c.TransferFunction == TFHLG)
+}
+
 // OutputICC returns the ICC profile describing decoded pixels, or nil when
 // they are plain sRGB.
 func (d *Decoder) OutputICC() []byte {
+	if d.ForceSRGB && (d.Header.XYBEncoded && !d.hdr() || d.SRGBConverter() != nil) {
+		return nil
+	}
 	if d.Header.XYBEncoded {
 		return d.OutputTarget().icc
 	}

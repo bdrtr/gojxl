@@ -216,7 +216,7 @@ func TestJPEGColour(t *testing.T) {
 	}
 	// back to JPEG: the decoded pixels' profile goes into the file
 	var out bytes.Buffer
-	if err := ConvertToJPEG(&out, data, 90); err != nil {
+	if err := ConvertToJPEG(&out, data, 90, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e := jxl.EncodingFromICC(ijpeg.ICCProfile(out.Bytes())); e == nil || !sameEncoding(*e, encP3) {
@@ -228,7 +228,7 @@ func TestJPEGColour(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := ConvertToJPEG(&out, data, 90); err != nil || !bytes.Equal(out.Bytes(), file) {
+	if err := ConvertToJPEG(&out, data, 90, nil); err != nil || !bytes.Equal(out.Bytes(), file) {
 		t.Errorf("JPEG not restored (%v)", err)
 	}
 }
@@ -301,5 +301,57 @@ func TestChannelCurvesProfile(t *testing.T) {
 	}
 	if p := psnr8(src, img); p < 34 {
 		t.Errorf("PSNR %.2f", p)
+	}
+}
+
+// toSRGB8 converts 8-bit samples of a colour space to sRGB.
+func toSRGB8(src *image.NRGBA, c *jxl.ColourEncoding) *image.NRGBA {
+	m := jxl.ModelFromEncoding(c)
+	oetf := func(v float64) uint8 {
+		v = math.Min(math.Max(v, 0), 1)
+		if v <= 0.0031308 {
+			v *= 12.92
+		} else {
+			v = 1.055*math.Pow(v, 1/2.4) - 0.055
+		}
+		return uint8(math.Round(v * 255))
+	}
+	out := image.NewNRGBA(src.Rect)
+	for i := 0; i < len(src.Pix); i += 4 {
+		var l [3]float64
+		for k := 0; k < 3; k++ {
+			l[k] = m.Curves[k](float64(src.Pix[i+k]) / 255)
+		}
+		for k := 0; k < 3; k++ {
+			out.Pix[i+k] = oetf(m.M[3*k]*l[0] + m.M[3*k+1]*l[1] + m.M[3*k+2]*l[2])
+		}
+		out.Pix[i+3] = src.Pix[i+3]
+	}
+	return out
+}
+
+// Options.SRGB renders both XYB and stored-space images to sRGB, untagged.
+func TestDecodeToSRGB(t *testing.T) {
+	src := colourTestImage()
+	want := toSRGB8(src, &encP3)
+	for _, dist := range []float32{0, 1} {
+		data, err := EncodeBytes(src, &EncodeOptions{ICC: jxl.SynthesizeICC(&encP3), Distance: dist})
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := DecodeBytesOptions(data, &Options{SRGB: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := psnr8(want, img); dist == 0 && p < 50 || p < 34 {
+			t.Errorf("d%v: PSNR %.2f against the sRGB conversion", dist, p)
+		}
+		var out bytes.Buffer
+		if err := ConvertToPNG(&out, data, &Options{SRGB: true}); err != nil {
+			t.Fatal(err)
+		}
+		if a := pngx.ReadAncillary(out.Bytes()); a.ICC != nil || a.CICP != nil {
+			t.Errorf("d%v: PNG still tagged", dist)
+		}
 	}
 }

@@ -101,6 +101,11 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - 16-bit girdiler kayıplıda da 16-bit hassasiyetle XYB'ye geçer ve başlık
   16-bit yazılır (önceden 8-bit'e indiriliyordu)
 - JXL → JPEG (`ConvertToJPEG`) çözülen piksellerin profilini APP2 ICC olarak yazar
+- `Options.SRGB` / `gojxl decode -srgb`: çıktıyı sRGB'ye çevirir (gamut
+  kırpılır, profil yazılmaz). XYB dosyalar doğrudan sRGB'ye çizilir (djxl
+  `--color_space` ile aynı, >116 dB); diğerleri matris/TRC profili, enum
+  veya LUT tabanlı RGB profilin A2B0 tablosuyla çevrilir (djxl'in CMS'iyle
+  ~89-92 dB, en fazla 0,2/255 fark). PQ/HLG ton eşleme gerektirdiği için olduğu gibi kalır
 
 **Metadata (Exif, XMP, yönlendirme)**
 - PNG `eXIf`/`iTXt` (XMP, sıkıştırılmış dahil) ve JPEG APP1 Exif/XMP
@@ -133,6 +138,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 
 ./gojxl decode resim.jxl cikti.png          # JXL → PNG (animasyon → APNG)
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
+./gojxl decode -srgb resim.jxl c.png        # sRGB'ye çevir (geniş gamut/ICC → etiketsiz sRGB)
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
 ./gojxl decode foto.jxl foto.jpg            # yeniden sıkıştırılmış JPEG'i aynen geri ver
 ./gojxl encode girdi.png cikti.jxl          # PNG → kayıpsız JXL (efor 4, renk profili korunur)
@@ -279,5 +285,5 @@ yüzünden yavaşlar. Tek çekirdekte 4K VarDCT çözme: skaler 20 MP/s, SIMD
 
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - Grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+), daha hızlı JPEG dönüştürme
-- HDR ton eşleme (PQ/HLG → SDR), ICC'yi zorla sRGB'ye çevirme seçeneği
-- Akış (streaming) kod çözme; kayıplı kodlamada alfa kanalı (şu an kayıpsız ve cjxl'den büyük)
+- HDR ton eşleme (PQ/HLG → SDR)
+- Akış (streaming) kod çözme

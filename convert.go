@@ -61,6 +61,16 @@ func ConvertToJXL(data []byte, opt *EncodeOptions) (out []byte, err error) {
 	return encodeImage(img, &o, col, meta)
 }
 
+// outputColour returns the ICC profile and cICP code points that describe
+// the decoded pixels under opt.
+func outputColour(data []byte, opt *Options) (icc, cicp []byte) {
+	d, err := newDecoder(data, opt)
+	if err != nil {
+		return nil, nil
+	}
+	return d.OutputICC(), outputCICP(d)
+}
+
 // decodeInput decodes PNG (with the fast pngx decoder), JPEG or any other
 // registered image format.
 func decodeInput(data []byte) (image.Image, error) {
@@ -75,7 +85,8 @@ func decodeInput(data []byte) (image.Image, error) {
 // when it is a losslessly recompressed JPEG (see ReconstructJPEG), else
 // the first frame's pixels encoded at the given quality (1-100), with the
 // colour profile of the decoded pixels and the Exif and XMP metadata.
-func ConvertToJPEG(w io.Writer, data []byte, quality int) (err error) {
+// opt (may be nil) applies to the pixel path.
+func ConvertToJPEG(w io.Writer, data []byte, quality int, opt *Options) (err error) {
 	defer recoverErr(&err)
 	jpg, err := ReconstructJPEG(data)
 	if err == nil {
@@ -85,7 +96,7 @@ func ConvertToJPEG(w io.Writer, data []byte, quality int) (err error) {
 	if !errors.Is(err, ErrNoJPEG) {
 		return err
 	}
-	img, err := DecodeBytes(data)
+	img, err := DecodeBytesOptions(data, opt)
 	if err != nil {
 		return err
 	}
@@ -95,7 +106,8 @@ func ConvertToJPEG(w io.Writer, data []byte, quality int) (err error) {
 	}
 	out := buf.Bytes()
 	if info, err := Stat(data); err == nil {
-		out = ijpeg.InsertMetadata(out, info.OutputICC, exif.ResetOrientation(info.Exif), info.XMP)
+		icc, _ := outputColour(data, opt)
+		out = ijpeg.InsertMetadata(out, icc, exif.ResetOrientation(info.Exif), info.XMP)
 	}
 	_, err = w.Write(out)
 	return err
@@ -113,14 +125,15 @@ func ConvertToPNG(w io.Writer, data []byte, opt *Options) (err error) {
 	if ierr != nil {
 		info = &Info{}
 	}
+	icc, cicp := outputColour(data, opt)
 	// colour description chunks after IHDR (cICP before iCCP), then the
 	// metadata (the pixels are oriented: the Exif orientation becomes 1)
 	var extra []pngx.Chunk
-	if info.CICP != nil {
-		extra = append(extra, pngx.CICPChunk(info.CICP[0], info.CICP[1]))
+	if cicp != nil {
+		extra = append(extra, pngx.CICPChunk(cicp[0], cicp[1]))
 	}
-	if info.OutputICC != nil {
-		extra = append(extra, pngx.ICCChunk(info.OutputICC))
+	if icc != nil {
+		extra = append(extra, pngx.ICCChunk(icc))
 	}
 	if info.Exif != nil {
 		extra = append(extra, pngx.ExifChunk(exif.ResetOrientation(info.Exif)))
@@ -129,7 +142,7 @@ func ConvertToPNG(w io.Writer, data []byte, opt *Options) (err error) {
 		extra = append(extra, pngx.XMPChunk(info.XMP))
 	}
 	if info.Animated {
-		anim, err := DecodeAll(data)
+		anim, err := DecodeAllOptions(data, opt)
 		if err != nil {
 			return err
 		}
@@ -158,7 +171,7 @@ func writeWithChunks(w io.Writer, png []byte, extra []pngx.Chunk) error {
 // writeFramePNG writes the first displayed frame as PNG in the format
 // frameToImage and pngx.Encode would give it.
 func writeFramePNG(w io.Writer, data []byte, opt *Options, info *Info, extra []pngx.Chunk) error {
-	d, err := jxl.NewDecoder(data)
+	d, err := newDecoder(data, opt)
 	if err != nil {
 		return err
 	}

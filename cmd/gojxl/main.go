@@ -168,6 +168,7 @@ func cmdDecode(args []string) {
 	outDir := fs.String("o", "", "batch mode: decode every input into this directory")
 	format := fs.String("format", "png", "output format when it does not follow from the name: png or jpg")
 	jobs := fs.Int("j", defaultJobs(), "batch mode: files decoded at once")
+	srgb := fs.Bool("srgb", false, "convert the output to sRGB (no colour profile; PQ/HLG images keep their space)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
@@ -183,7 +184,7 @@ func cmdDecode(args []string) {
 		pprof.StartCPUProfile(pf)
 		defer pprof.StopCPUProfile()
 	}
-	opt := &gojxl.Options{Force16: *depth == 16}
+	opt := &gojxl.Options{Force16: *depth == 16, SRGB: *srgb}
 	convert := func(in, out string) (string, error) {
 		f := *format
 		if ext := strings.ToLower(filepath.Ext(out)); ext == ".jpg" || ext == ".jpeg" {
@@ -259,7 +260,7 @@ func decodeOne(in, out, format string, opt *gojxl.Options, quality int) (string,
 	if format == "jpg" {
 		// the original JPEG for a recompressed JPEG, else the pixels
 		var buf bytes.Buffer
-		if err := gojxl.ConvertToJPEG(&buf, data, quality); err != nil {
+		if err := gojxl.ConvertToJPEG(&buf, data, quality, opt); err != nil {
 			return "", err
 		}
 		if err := writeFile(out, buf.Bytes()); err != nil {

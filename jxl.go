@@ -120,6 +120,21 @@ func Decode(r io.Reader) (image.Image, error) {
 type Options struct {
 	// Force16 always produces 16-bit images.
 	Force16 bool
+	// SRGB converts the output to sRGB (gamut clipped): wide-gamut and
+	// ICC-tagged images come out untagged, for software without colour
+	// management. PQ and HLG images, which need tone mapping, keep their
+	// space.
+	SRGB bool
+}
+
+// newDecoder parses the headers and applies the options that affect
+// rendering.
+func newDecoder(data []byte, opt *Options) (*jxl.Decoder, error) {
+	d, err := jxl.NewDecoder(data)
+	if err == nil && opt != nil {
+		d.ForceSRGB = opt.SRGB
+	}
+	return d, err
 }
 
 // DecodeBytes decodes a JPEG XL image held in memory.
@@ -130,7 +145,7 @@ func DecodeBytes(data []byte) (image.Image, error) {
 // DecodeBytesOptions decodes with options.
 func DecodeBytesOptions(data []byte, opt *Options) (img image.Image, err error) {
 	defer recoverErr(&err)
-	d, err := jxl.NewDecoder(data)
+	d, err := newDecoder(data, opt)
 	if err != nil {
 		return nil, err
 	}
@@ -158,8 +173,13 @@ type Animation struct {
 
 // DecodeAll decodes all displayed frames.
 func DecodeAll(data []byte) (anim *Animation, err error) {
+	return DecodeAllOptions(data, nil)
+}
+
+// DecodeAllOptions decodes all displayed frames with options.
+func DecodeAllOptions(data []byte, opt *Options) (anim *Animation, err error) {
 	defer recoverErr(&err)
-	d, err := jxl.NewDecoder(data)
+	d, err := newDecoder(data, opt)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +195,7 @@ func DecodeAll(data []byte) (anim *Animation, err error) {
 		if f == nil {
 			break
 		}
-		fr := Frame{Image: frameToImage(d.Header, f, nil)}
+		fr := Frame{Image: frameToImage(d.Header, f, opt)}
 		if an := d.Header.Animation; d.Header.HaveAnimation && an.TpsNumerator > 0 {
 			fr.Duration = float64(f.Duration) * float64(an.TpsDenominator) / float64(an.TpsNumerator)
 		}

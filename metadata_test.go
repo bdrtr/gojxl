@@ -72,7 +72,7 @@ func TestJPEGMetadata(t *testing.T) {
 		t.Errorf("PNG: Exif orientation %d, XMP %d bytes", exif.Orientation(a.Exif), len(a.XMP))
 	}
 	out.Reset()
-	if err := ConvertToJPEG(&out, data, 90); err != nil {
+	if err := ConvertToJPEG(&out, data, 90, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, ex, xmp := ijpeg.ReadMetadata(out.Bytes())
