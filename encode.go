@@ -207,9 +207,24 @@ func toPlanar(img image.Image) *enc.Image {
 	}
 	r, g, bl, a := make([]int32, n), make([]int32, n), make([]int32, n), make([]int32, n)
 	opaque := true
+	// palettes: entries converted once, and exactly (not through the
+	// premultiplied RGBA(), which loses the colour of faint pixels)
+	var pal []color.NRGBA64
+	pimg, paletted := img.(*image.Paletted)
+	if paletted {
+		pal = make([]color.NRGBA64, 256) // indices past the palette: transparent
+		for i, c := range pimg.Palette {
+			pal[i] = exactNRGBA64(c)
+		}
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			c := color.NRGBA64Model.Convert(img.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA64)
+			var c color.NRGBA64
+			if paletted {
+				c = pal[pimg.Pix[y*pimg.Stride+x]]
+			} else {
+				c = exactNRGBA64(img.At(b.Min.X+x, b.Min.Y+y))
+			}
 			i := y*w + x
 			r[i], g[i], bl[i], a[i] = int32(uint32(c.R)>>shift), int32(uint32(c.G)>>shift), int32(uint32(c.B)>>shift), int32(uint32(c.A)>>shift)
 			opaque = opaque && c.A == 0xffff
@@ -284,4 +299,18 @@ func TranscodeJPEG(data []byte) (out []byte, err error) {
 		return cs, nil
 	}
 	return enc.WrapContainer(cs, jbrd, exif, xmp), nil
+}
+
+// exactNRGBA64 converts c to non-premultiplied 16-bit components, exactly
+// for colours that are non-premultiplied already (color.NRGBA64Model goes
+// through the premultiplied RGBA(), which rounds the colour of
+// translucent pixels away).
+func exactNRGBA64(c color.Color) color.NRGBA64 {
+	switch v := c.(type) {
+	case color.NRGBA:
+		return color.NRGBA64{uint16(v.R) * 0x101, uint16(v.G) * 0x101, uint16(v.B) * 0x101, uint16(v.A) * 0x101}
+	case color.NRGBA64:
+		return v
+	}
+	return color.NRGBA64Model.Convert(c).(color.NRGBA64)
 }

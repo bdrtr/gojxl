@@ -156,3 +156,32 @@ func TestLossyRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// Translucent palette entries keep their exact colour: a conversion through
+// premultiplied RGBA() would round the colour of faint pixels away.
+func TestLosslessPaletteAlpha(t *testing.T) {
+	pal := color.Palette{}
+	for i := 0; i < 16; i++ {
+		pal = append(pal, color.NRGBA{uint8(i * 16), uint8(255 - i*13), uint8(i * 7), uint8(1 + i%4)})
+	}
+	pal = append(pal, color.NRGBA{10, 20, 30, 255})
+	img := image.NewPaletted(image.Rect(0, 0, 23, 9), pal)
+	for i := range img.Pix {
+		img.Pix[i] = uint8(i % len(pal))
+	}
+	data, err := EncodeBytes(img, &EncodeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for y := 0; y < 9; y++ {
+		for x := 0; x < 23; x++ {
+			if a, b := exactNRGBA64(img.At(x, y)), exactNRGBA64(out.At(x, y)); a != b {
+				t.Fatalf("pixel (%d,%d): %v, decoded %v", x, y, a, b)
+			}
+		}
+	}
+}

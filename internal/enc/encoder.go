@@ -1061,33 +1061,24 @@ func tokValue(tok uint32) uint32 {
 	return t << n << c.lsb
 }
 
-// expand maps a b-bit value to the D-bit range the way decoders do.
-func expandDepth(v int64, b, d int) int64 {
-	mb, md := int64(1)<<b-1, int64(1)<<d-1
-	return (v*md + mb/2) / mb
-}
-
 // reducedBitDepth returns the smallest bit depth b <= depth such that every
-// sample is the expansion of a b-bit value.
+// sample is the expansion of a b-bit value, among the depths that divide
+// depth: only then is v/(2^b-1) exactly the original sample's value, so
+// every decoder (float or integer, rounding or not) gives the samples back.
+// (Other depths only round-trip through this decoder's expansion: libjxl
+// writes 7-bit 241/255 back as 240.)
 func reducedBitDepth(chans [][]int32, depth int) int {
-	if depth <= 1 {
-		return depth
-	}
 	md := int64(1)<<depth - 1
 	for b := 1; b < depth; b++ {
-		mb := int64(1)<<b - 1
-		// Values whose exact expansion lies close to a rounding boundary may
-		// be expanded differently by float-based decoders: refuse those.
-		ambiguous := make([]bool, mb+1)
-		for v := int64(0); v <= mb; v++ {
-			f := float64(v*md%mb) / float64(mb)
-			ambiguous[v] = math.Abs(f-0.5) < 0.02
+		if depth%b != 0 {
+			continue
 		}
+		mb := int64(1)<<b - 1
+		step := md / mb // exact: 2^b-1 divides 2^depth-1
 		ok := true
 		for _, c := range chans {
 			for _, s := range c {
-				v := (int64(s)*mb + md/2) / md
-				if expandDepth(v, b, depth) != int64(s) || ambiguous[v] {
+				if int64(s)%step != 0 {
 					ok = false
 					break
 				}

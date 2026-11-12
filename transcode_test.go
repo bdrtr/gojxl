@@ -9,6 +9,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	ijpeg "gojxl/internal/jpeg"
 )
 
 func testPhoto(w, h int, r *rand.Rand) *image.RGBA {
@@ -172,5 +174,59 @@ func TestReconstructJPEGMetadata(t *testing.T) {
 	}
 	if !bytes.Equal(rec, in) {
 		t.Fatalf("reconstruction differs (%d vs %d bytes)", len(rec), len(in))
+	}
+}
+
+// A 4:4:4 JPEG (chroma from luma applies) whose chroma is about 128/84
+// times the luma: the best factor, 128, does not fit the int8 map that
+// decoders read (they clamp it to 127), so the encoder must clamp it too.
+func TestReconstructJPEGCfLClamp(t *testing.T) {
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, testPhoto(64, 64, rand.New(rand.NewSource(6))), &jpeg.Options{Quality: 90})
+	img, err := ijpeg.Parse(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range img.Comps { // 4:2:0 -> 4:4:4
+		c := &img.Comps[i]
+		c.H, c.V, c.BW, c.BH = 1, 1, 8, 8
+	}
+	r := rand.New(rand.NewSource(7))
+	y := img.Comps[0].Coef
+	for b := 0; b < 64; b++ {
+		for _, n := range []int{1, 8, 9} {
+			y[b*64+n] = int16((300 + r.Intn(300)) * (1 - 2*r.Intn(2)))
+		}
+	}
+	qY := img.Quant[img.Comps[0].Tq]
+	for c := 1; c < 3; c++ {
+		qC := img.Quant[img.Comps[c].Tq]
+		coef := make([]int16, len(y))
+		for i, v := range y {
+			n := i % 64
+			if n == 0 {
+				continue
+			}
+			// the decoder's prediction with factor 128 (zero residual)
+			sq := (int32(1) << 11) * int32(qY[n]) / int32(qC[n])
+			cs := (128*(1<<11)/84*sq + 1<<10) >> 11
+			coef[i] = int16(min(max((int32(v)*cs+1<<10)>>11, -1000), 1000))
+		}
+		img.Comps[c].Coef = coef
+	}
+	data, err := img.Write()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jxl, err := TranscodeJPEG(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := ReconstructJPEG(jxl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(back, data) {
+		t.Fatal("reconstructed JPEG differs")
 	}
 }

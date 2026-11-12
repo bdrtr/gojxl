@@ -196,7 +196,9 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 						off += dz[i]
 					}
 					if maxv > off+1 {
-						cmap[c][ty*tw+tx] = int32(best - kOffset)
+						// the map holds int8 (decoders clamp 128 to 127):
+						// the residuals must use the stored factor
+						cmap[c][ty*tw+tx] = int32(min(best-kOffset, 127))
 					}
 				}
 			})
