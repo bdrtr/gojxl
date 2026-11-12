@@ -947,7 +947,11 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 		treeTokens(nodes, func(ctx int, v uint32) { tc.write(lfg, ctx, v) })
 		var dc *ansCode
 		if opt.Effort >= 4 {
-			dc = writeANSCodeTunedLZ(lfg, len(all), visit, counts, lz)
+			if caches != nil && lz == nil { // visit replays the caches
+				dc = writeANSCodeTunedCaches(lfg, caches, counts)
+			} else {
+				dc = writeANSCodeTunedLZ(lfg, len(all), visit, counts, lz)
+			}
 		} else {
 			dc = writeANSCodeClustered(lfg, defaultCfg, counts, 64)
 		}

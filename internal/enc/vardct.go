@@ -1062,8 +1062,7 @@ func writeModularLocalSamples(w *bitio.Writer, chs []channel, effort int, noWP b
 			cache.add(ctx, v)
 			data.add(ctx, v)
 		})
-		visit := func(_ int, fn func(ctx int, v uint32)) { cache.visit(fn) }
-		dc = writeANSCodeTuned(w, 1, visit, data.counts)
+		dc = writeANSCodeTunedCaches(w, []residCache{cache}, data.counts)
 		ansWriteCache(w, dc, &cache)
 		return
 	}

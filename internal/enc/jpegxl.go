@@ -434,7 +434,6 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	parallelWorkers(ngroups, nw, func(k, g int) {
 		emitGroup(g, &caches[g], flats[k], hs2[k])
 	})
-	replay := func(g int, fn func(ctx int, v uint32)) { caches[g].visit(fn) }
 	hf := newHistograms(nctx, defaultCfg)
 	for _, h := range hs2 {
 		hf.merge(h)
@@ -552,7 +551,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 		w.Write(uint(ceilLog2(ngroups)), 0)                         // one HF preset
 		w.WriteU32(1, val(0x5F), val(0x13), val(0), bitio.Bits(13)) // DCT8 order coded
 		writeCoeffOrders(w, nat, orders[:])
-		return writeANSCodeTuned(w, ngroups, replay, hf.counts)
+		return writeANSCodeTunedCaches(w, caches, hf.counts)
 	}
 	writeGroup := func(w *bitio.Writer, g int, hc *ansCode) {
 		ansWriteCache(w, hc, &caches[g])

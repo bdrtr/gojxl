@@ -143,10 +143,22 @@ func writeANSCodeTuned(w *bitio.Writer, nstreams int, visit func(i int, fn func(
 	return writeANSCodeTunedLZ(w, nstreams, visit, counts, nil)
 }
 
+// writeANSCodeTunedCaches is writeANSCodeTuned for streams held in
+// residCaches, which it reads directly (no callback per value).
+func writeANSCodeTunedCaches(w *bitio.Writer, caches []residCache, counts [][]uint64) *ansCode {
+	return writeANSCodeTunedFrom(w, len(caches), nil, caches, counts, nil)
+}
+
 // writeANSCodeTunedLZ is writeANSCodeTuned with optional LZ77: visit then
 // also yields copy lengths (lzLenFlag | length-minLen) in the context of
 // the copy's first symbol, and distances in the extra, last context.
 func writeANSCodeTunedLZ(w *bitio.Writer, nstreams int, visit func(i int, fn func(ctx int, v uint32)), counts [][]uint64, lz *lz77Params) *ansCode {
+	return writeANSCodeTunedFrom(w, nstreams, visit, nil, counts, lz)
+}
+
+// writeANSCodeTunedFrom reads the streams from caches when set (then
+// without LZ77), else through visit.
+func writeANSCodeTunedFrom(w *bitio.Writer, nstreams int, visit func(i int, fn func(ctx int, v uint32)), caches []residCache, counts [][]uint64, lz *lz77Params) *ansCode {
 	maxTok := uint32(256)
 	if lz != nil {
 		maxTok = lz.minSym
@@ -164,6 +176,29 @@ func writeANSCodeTunedLZ(w *bitio.Writer, nstreams int, visit func(i int, fn fun
 	}
 	parallelWorkers(nstreams, nw, func(k, i int) {
 		vh, lc := vhs[k], lzc[k]
+		if caches != nil {
+			rc := &caches[i]
+			j := 0
+			for _, e := range rc.p {
+				v := e & 0xffff
+				if v == 0xffff {
+					v = rc.ov[j]
+					j++
+				}
+				h := vh[cm[e>>16]]
+				if h == nil {
+					h = &valueHist{}
+					vh[cm[e>>16]] = h
+				}
+				if v < vhSmall { // add's common case, inline
+					h.small[v]++
+					h.maxV = max(h.maxV, v)
+					continue
+				}
+				h.add(v)
+			}
+			return
+		}
 		visit(i, func(ctx int, v uint32) {
 			c := cm[ctx]
 			if v&lzLenFlag == 0 {
