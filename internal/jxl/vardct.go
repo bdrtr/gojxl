@@ -784,6 +784,12 @@ func (v *vardctState) decodePassGroup(br *bitio.Reader, pass, g int) error {
 			cmb := cm[bctx*458+37*b.numCtx : bctx*458+37*b.numCtx+458]
 			n := int(64 * nb)
 			fctx := freqCtxTable(lg)
+			if left, ok := dec.ReadHFBlock(br, cmb, &coeffNumNonzeroCtx, fctx, order[:n], coef[:n], int(nb), nz, prev, lg, shift); ok {
+				if left != 0 {
+					return invalid("nonzero count mismatch")
+				}
+				continue
+			}
 			nzc := int(coeffNumNonzeroCtx[(nz-1)>>lg]) * 2
 			for k := int(nb); k < n; k++ {
 				u := dec.ReadUintClustered(br, cmb[nzc+int(fctx[k])+prev])

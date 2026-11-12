@@ -347,6 +347,79 @@ func (d *Decoder) ReadUintClustered(br *bitio.Reader, cluster uint8) uint32 {
 	return uint32((((uint64(tok) << n) | rest) << c.LsbInTok) | uint64(low))
 }
 
+// ReadHFBlock decodes the coefficient tokens of one VarDCT block (the hot
+// loop of HF decoding) without a call per token: for k = k0, ...,
+// len(order)-1 while nz > 0, the cluster is clusters[nzc+freq[k]+prev],
+// where nzc = 2*nzCtx[(nz-1)>>lg] and prev is 1 if the previous token was
+// nonzero; a nonzero token t adds UnpackSigned(t) << shift to
+// coef[order[k]]. It returns the nonzero count left. ok is false (and
+// nothing is read) when the stream uses LZ77 or prefix codes.
+func (d *Decoder) ReadHFBlock(br *bitio.Reader, clusters []uint8, nzCtx *[63]uint16, freq []uint8, order, coef []int32, k0 int, nz int32, prev int, lg, shift uint) (left int32, ok bool) {
+	if d.lz77 || d.usePrefix {
+		return nz, false
+	}
+	ans, cfgs := d.ans, d.configs
+	s := d.state
+	n := len(order)
+	freq = freq[:n]
+	nzc := int(nzCtx[(nz-1)>>lg]) * 2
+	for k := k0; k < n; k++ {
+		cluster := clusters[nzc+int(freq[k])+prev]
+		// ANS symbol (as in ReadUintClustered)
+		br.Refill()
+		buf, nbits := br.State()
+		h := ans[cluster]
+		idx := s & 0xfff
+		b := &h.buckets[idx>>h.logBucket]
+		pos := idx & h.bucketMask
+		sym := idx >> h.logBucket
+		fq := uint32(b.freq0)
+		if pos >= uint32(b.cutoff) {
+			sym = uint32(b.aliasSymbol)
+			fq ^= uint32(b.freq1XorF0)
+			pos += uint32(b.offset1)
+		}
+		s = (s>>12)*fq + pos
+		if s < 1<<16 {
+			s = s<<16 | uint32(buf&0xffff)
+			buf >>= 16
+			nbits -= 16
+		}
+		var u uint32
+		if c := &cfgs[cluster]; sym < c.Split {
+			u = sym
+			br.SetState(buf, nbits)
+		} else {
+			ml := c.MsbInTok + c.LsbInTok
+			e := (c.SplitExp - ml + ((sym - c.Split) >> ml)) & 31
+			low := sym & (1<<c.LsbInTok - 1)
+			tok := sym>>c.LsbInTok&(1<<c.MsbInTok-1) | 1<<c.MsbInTok
+			var rest uint64
+			if nbits < uint(e) {
+				br.SetState(buf, nbits)
+				rest = uint64(br.Read(uint(e)))
+			} else {
+				rest = buf & (1<<(e&63) - 1)
+				br.SetState(buf>>(e&63), nbits-uint(e))
+			}
+			u = uint32((((uint64(tok) << e) | rest) << c.LsbInTok) | uint64(low))
+		}
+		if u == 0 {
+			prev = 0
+			continue
+		}
+		coef[order[k]] += bitio.UnpackSigned(u) << shift
+		prev = 1
+		nz--
+		if nz == 0 {
+			break
+		}
+		nzc = int(nzCtx[(nz-1)>>lg]) * 2
+	}
+	d.state = s
+	return nz, true
+}
+
 func (d *Decoder) readLZ77(br *bitio.Reader, cluster uint8) uint32 {
 	if int(d.numDecoded) >= len(d.window) && len(d.window) < lzWindow {
 		// grow the window lazily (it is a ring buffer once full size)
