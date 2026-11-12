@@ -33,3 +33,25 @@ func TestTF8MatchesDirect(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkXYBTo8(b *testing.B) {
+	ih := &ImageHeader{}
+	ih.Opsin = defaultOpsinInverse()
+	ih.ToneMapping.IntensityTarget = 255
+	ih.Colour.TransferFunction = TFSRGB
+	c := newXYBConv(ih, nil)
+	c.tf8 = buildTF8(c.f)
+	const w = 2048
+	rng := rand.New(rand.NewSource(5))
+	x, y, bb := make([]float32, w), make([]float32, w), make([]float32, w)
+	for i := range x {
+		x[i] = (rng.Float32() - 0.5) * 0.02
+		y[i] = 0.2 + rng.Float32()*0.6
+		bb[i] = 0.2 + rng.Float32()*0.6
+	}
+	dst := make([]byte, 4*w)
+	b.SetBytes(w)
+	for i := 0; i < b.N; i++ {
+		xybTo8(c, x, y, bb, dst)
+	}
+}

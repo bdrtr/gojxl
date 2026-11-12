@@ -181,10 +181,21 @@ func buildTF8(f func(float32) float32) *tf8 {
 	return t
 }
 
+// tf8Index is the cell of v >= 0 (tf8Size for v >= 1; also when the
+// conversion overflows, which gives a negative int). Cheaper than a float
+// min, which must handle NaN and signed zeros.
+func tf8Index(v float32) int {
+	k := int(v * tf8Size)
+	if uint(k) > tf8Size {
+		k = tf8Size
+	}
+	return k & tf8Mask
+}
+
 // get returns q8(f(v)).
 func (t *tf8) get(v float32) uint8 {
 	if v >= t.slowBelow {
-		k := int(min(v, 1)*tf8Size) & tf8Mask
+		k := tf8Index(v)
 		return t.code[k] + uint8(^math.Float32bits(v-t.thr[k])>>31)
 	}
 	if !(v > 0) {
@@ -218,9 +229,7 @@ func xybTo8(c *xybConv, x, y, b []float32, dst []byte) {
 		if vr >= sb && vg >= sb && vb >= sb {
 			// +1 when v >= thr: the sign bit of v-thr (exact for close
 			// values, -Inf for thr = +Inf) is clear
-			kr := int(min(vr, 1)*tf8Size) & tf8Mask
-			kg := int(min(vg, 1)*tf8Size) & tf8Mask
-			kb := int(min(vb, 1)*tf8Size) & tf8Mask
+			kr, kg, kb := tf8Index(vr), tf8Index(vg), tf8Index(vb)
 			o[0] = code[kr] + uint8(^math.Float32bits(vr-thr[kr])>>31)
 			o[1] = code[kg] + uint8(^math.Float32bits(vg-thr[kg])>>31)
 			o[2] = code[kb] + uint8(^math.Float32bits(vb-thr[kb])>>31)
