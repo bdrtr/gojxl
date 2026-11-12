@@ -149,8 +149,11 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 					var dz [257]int32
 					for by := ty * 8; by < min(bh, ty*8+8); by++ {
 						for bx := tx * 8; bx < min(bw, tx*8+8); bx++ {
-							ym, cs := block(1, bx, by), block(c, bx, by)
+							ym, cs := (*[64]int16)(block(1, bx, by)), (*[64]int16)(block(c, bx, by))
 							for n := 1; n < 64; n++ {
+								if ym[n] == 0 {
+									continue // m = 0 (sq >= 8)
+								}
 								m := float32(ym[n]) * (1.0 / 2048) * float32(sq[c][n])
 								s := kScale*float32(cs[n]) + kOffset*m
 								if m > 1e-8 || m < -1e-8 {
