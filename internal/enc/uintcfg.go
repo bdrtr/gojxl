@@ -18,14 +18,23 @@ const vhSmall = 4096
 type valueHist struct {
 	small [vhSmall]uint32
 	large [33]uint64 // by bit length, for values >= vhSmall
-	maxV  uint32
+	// values >= vhSmall by bit length, the three bits below the leading
+	// one and the low three bits: enough to give their token under any
+	// candidate config (allocated on first use; large values are rare)
+	fine *[33 << 6]uint32
+	maxV uint32
 }
 
 func (h *valueHist) add(v uint32) {
 	if v < vhSmall {
 		h.small[v]++
 	} else {
-		h.large[bits.Len32(v)]++
+		bl := bits.Len32(v)
+		h.large[bl]++
+		if h.fine == nil {
+			h.fine = new([33 << 6]uint32)
+		}
+		h.fine[bl<<6|int(v>>(bl-4)&7)<<3|int(v&7)]++
 	}
 	h.maxV = max(h.maxV, v)
 }
@@ -37,7 +46,36 @@ func (h *valueHist) merge(o *valueHist) {
 	for i, v := range o.large {
 		h.large[i] += v
 	}
+	if o.fine != nil {
+		if h.fine == nil {
+			h.fine = new([33 << 6]uint32)
+		}
+		for i, v := range o.fine {
+			h.fine[i] += v
+		}
+	}
 	h.maxV = max(h.maxV, o.maxV)
+}
+
+// tokenCounts adds the token counts of the values under config c (with
+// at most 3 msb and lsb bits in the token) to counts.
+func (h *valueHist) tokenCounts(c uintCfg, counts []uint64) {
+	for v, n := range h.small {
+		if n != 0 {
+			t, _, _ := c.encode(uint32(v))
+			counts[t] += uint64(n)
+		}
+	}
+	if h.fine != nil {
+		for i, n := range h.fine {
+			if n != 0 {
+				bl := i >> 6
+				v := uint32(1)<<(bl-1) | uint32(i>>3&7)<<(bl-4) | uint32(i&7)
+				t, _, _ := c.encode(v)
+				counts[t] += uint64(n)
+			}
+		}
+	}
 }
 
 var cfgCandidates = func() []uintCfg {
@@ -119,20 +157,29 @@ func writeANSCodeTunedLZ(w *bitio.Writer, nstreams int, visit func(i int, fn fun
 	// cluster
 	nw := min(runtime.GOMAXPROCS(0), nstreams)
 	vhs := make([][]*valueHist, nw)
+	lzc := make([][][]uint64, nw) // LZ77 length token counts
 	for k := range vhs {
 		vhs[k] = make([]*valueHist, ncl)
+		lzc[k] = make([][]uint64, ncl)
 	}
 	parallelWorkers(nstreams, nw, func(k, i int) {
-		vh := vhs[k]
+		vh, lc := vhs[k], lzc[k]
 		visit(i, func(ctx int, v uint32) {
+			c := cm[ctx]
 			if v&lzLenFlag == 0 {
-				h := vh[cm[ctx]]
+				h := vh[c]
 				if h == nil {
 					h = &valueHist{}
-					vh[cm[ctx]] = h
+					vh[c] = h
 				}
 				h.add(v)
+				return
 			}
+			if lc[c] == nil {
+				lc[c] = make([]uint64, 256)
+			}
+			t, _, _ := lz.lenCfg.encode(v &^ lzLenFlag)
+			lc[c][lz.minSym+t]++
 		})
 	})
 	vh := make([]valueHist, ncl)
@@ -146,35 +193,18 @@ func writeANSCodeTunedLZ(w *bitio.Writer, nstreams int, visit func(i int, fn fun
 	vhs = nil
 	cfgs := make([]uintCfg, ncl)
 	parallel(ncl, func(c int) { cfgs[c] = bestCfg(&vh[c], maxTok) })
-	parts := make([][][]uint64, nw)
-	for k := range parts {
-		parts[k] = make([][]uint64, ncl)
-		for c := range parts[k] {
-			parts[k][c] = make([]uint64, 256)
-		}
-	}
-	parallelWorkers(nstreams, nw, func(k, i int) {
-		cnt := parts[k]
-		visit(i, func(ctx int, v uint32) {
-			c := cm[ctx]
-			if v&lzLenFlag != 0 {
-				t, _, _ := lz.lenCfg.encode(v &^ lzLenFlag)
-				cnt[c][lz.minSym+t]++
-				return
-			}
-			t, _, _ := cfgs[c].encode(v)
-			cnt[c][t]++
-		})
-	})
+	// token counts under the chosen configs, from the value statistics
+	// (no further pass over the streams)
 	final := make([][]uint64, ncl)
-	for c := range final {
+	parallel(ncl, func(c int) {
 		final[c] = make([]uint64, 256)
-		for _, p := range parts {
+		vh[c].tokenCounts(cfgs[c], final[c])
+		for _, p := range lzc {
 			for t, v := range p[c] {
 				final[c][t] += v
 			}
 		}
-	}
+	})
 	ac := writeANSCodeLZ(w, &histograms{cfg: defaultCfg, cfgs: cfgs, counts: final}, cm, lz)
 	ac.lz = lz
 	return ac
