@@ -12,6 +12,7 @@ import (
 
 	"gojxl/internal/enc"
 	"gojxl/internal/pngx"
+	"gojxl/internal/webp"
 )
 
 // EncodeAnimation encodes an animation (lossless, or lossy VarDCT when
@@ -204,6 +205,16 @@ func DecodeAnimatedInput(data []byte) (*Animation, error) {
 		a := &Animation{NumLoops: loops}
 		for i, f := range frames {
 			a.Frames = append(a.Frames, Frame{Image: f, Duration: delays[i]})
+		}
+		return a, nil
+	case webp.Is(data):
+		w, err := webp.Decode(data)
+		if err != nil || !w.Animated || len(w.Frames) < 2 {
+			return nil, err
+		}
+		a := &Animation{NumLoops: w.Loops}
+		for i, c := range w.Canvases() {
+			a.Frames = append(a.Frames, Frame{Image: c, Duration: float64(w.Frames[i].Duration) / 1000})
 		}
 		return a, nil
 	}

@@ -9,6 +9,7 @@ import (
 	"gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
+	"gojxl/internal/webp"
 )
 
 // metadata is the Exif data (TIFF format) and XMP packet of an image.
@@ -23,6 +24,10 @@ func readInput(data []byte) (colourSpec, metadata) {
 		return specFromPNG(a), metadata{a.Exif, a.XMP}
 	case len(data) > 2 && data[0] == 0xff && data[1] == 0xd8:
 		icc, ex, xmp := jpeg.ReadMetadata(data)
+		s, _ := specFromICC(icc)
+		return s, metadata{ex, xmp}
+	case webp.Is(data):
+		icc, ex, xmp := webp.Metadata(data)
 		s, _ := specFromICC(icc)
 		return s, metadata{ex, xmp}
 	}

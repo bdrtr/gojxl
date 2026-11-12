@@ -22,6 +22,7 @@ import (
 
 	"gojxl"
 	"gojxl/internal/enc"
+	"gojxl/internal/webp"
 )
 
 func usage() {
@@ -32,7 +33,7 @@ Usage:
   gojxl decode [-format png|jpg|pnm|pfm] -o outdir input.jxl|dir...
   gojxl encode [-e effort] [-d distance | -q quality] input output.jxl
   gojxl encode [-e effort] [-d distance | -q quality] -o outdir input|dir...
-      input: PNG/APNG, GIF, JPEG (recompressed losslessly at d=0),
+      input: PNG/APNG, GIF, WebP (still/animated), JPEG (recompressed losslessly at d=0),
       PGM/PPM/PAM (at their bit depth); the
       colour profile and Exif/XMP metadata of the input are kept;
       d=0 (q=100) is lossless; "-" reads stdin / writes stdout
@@ -198,7 +199,7 @@ func batch(inputs []string, dir, ext string, exts []string, jobs int, convert fu
 // encodeExts and decodeExts are the file kinds batch mode takes from
 // directories.
 var (
-	encodeExts = []string{".png", ".apng", ".gif", ".jpg", ".jpeg", ".jfif", ".pgm", ".ppm", ".pam", ".pnm"}
+	encodeExts = []string{".png", ".apng", ".gif", ".jpg", ".jpeg", ".jfif", ".webp", ".pgm", ".ppm", ".pam", ".pnm"}
 	decodeExts = []string{".jxl"}
 )
 
@@ -470,6 +471,9 @@ func encodeOne(in, out string, opt *gojxl.EncodeOptions) (string, error) {
 		opt.JPEGPixels = true
 	}
 	// any input: colour profile and metadata kept, animations as animations
+	if opt.Distance == 0 && webp.Is(raw) && webp.Lossy(raw) {
+		note = " (lossy WebP stored losslessly: -d 1 or -q 90 gives a far smaller file)"
+	}
 	t0 := time.Now()
 	data, err := gojxl.ConvertToJXL(raw, opt)
 	if errors.Is(err, gojxl.ErrUnsupportedColour) {
