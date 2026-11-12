@@ -1136,6 +1136,21 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		})
 	}
 
+	// when selection kept every varblock's coefficients, pass A does not
+	// read the XYB planes: release them before it allocates its outputs
+	if selCoef != nil {
+		all := true
+		for b, f := range first {
+			if f && selCoef[b] == nil {
+				all = false
+				break
+			}
+		}
+		if all {
+			xyb = [3][]float32{}
+		}
+	}
+
 	// --- pass A: coefficients, AQ, DC (from LLF), Y AC, CfL statistics
 	qdc := [3][]int32{make([]int32, nb), make([]int32, nb), make([]int32, nb)}
 	bqf := make([]int32, nb)
@@ -1399,11 +1414,17 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	nctx := 495 * numBlockCtx
 	nw := min(runtime.GOMAXPROCS(0), ngroups)
 	hs := make([]*histograms, nw) // per worker: counts are order-free
+	// the tokens are kept (4 bytes each) for the writer
+	hfToks := make([]residCache, ngroups)
 	parallelWorkers(ngroups, nw, func(k, g int) {
 		if hs[k] == nil {
 			hs[k] = newHistograms(nctx, defaultCfg)
 		}
-		emitGroup(g, hs[k].add)
+		h, c := hs[k], &hfToks[g]
+		emitGroup(g, func(ctx int, v uint32) {
+			c.add(ctx, v)
+			h.add(ctx, v)
+		})
 	})
 	hf := hs[0]
 	for _, h := range hs[1:] {
@@ -1495,9 +1516,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		return writeANSCodeClustered(w, defaultCfg, hf.counts, 64)
 	}
 	writeGroup := func(w *bitio.Writer, g int, hc *ansCode) {
-		st := &ansStream{c: hc}
-		emitGroup(g, st.add)
-		st.flush(w)
+		c := &hfToks[g]
+		ansWriteVisit(w, hc, len(c.p), c.visit)
+		hfToks[g] = residCache{}
 		if alpha != nil {
 			alpha.writeGroup(w, g)
 		}
