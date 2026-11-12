@@ -41,6 +41,7 @@ type Decoder struct {
 	targetDone bool
 	cmyk       *cmykTransform
 	cmykDone   bool
+	nframes    int
 	srgb       *srgbConv
 	srgbDone   bool
 	sdrTarget  *outputTarget
@@ -223,6 +224,10 @@ type Frame struct {
 // Done reports whether all frames have been decoded.
 func (d *Decoder) Done() bool { return d.done }
 
+// FramesDecoded returns the number of frames decoded so far, including
+// those not displayed (such as patch references).
+func (d *Decoder) FramesDecoded() int { return d.nframes }
+
 // NextFrame decodes frames until the next displayed frame and returns it.
 func (d *Decoder) NextFrame() (*Frame, error) {
 	for !d.done {
@@ -238,6 +243,7 @@ func (d *Decoder) NextFrame() (*Frame, error) {
 }
 
 func (d *Decoder) decodeOneFrame() (*Frame, bool, error) {
+	d.nframes++
 	ih := d.Header
 	if d.pos >= len(d.cs) {
 		return nil, false, bitio.ErrEOF

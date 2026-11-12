@@ -23,6 +23,7 @@ type LossyOptions struct {
 	NoCfL      bool    // disable per-tile chroma-from-luma
 	OnlyDCT8   bool    // disable larger transforms
 	NoSmall    bool    // disable the 8x8 types IDENTITY, DCT2X2, DCT4X4, AFV
+	NoPatches  bool    // disable patches for repeated text-like components
 	// Tuning of the 8x8 type choice: SmallMask enables the families
 	// IDENTITY (1), DCT2X2 (2), DCT4X4 (4), AFV (8) (0: DCT2X2 only, the
 	// one that measured better); SmallMul and SplitMul scale the costs of
@@ -1087,6 +1088,12 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		return nil, err
 	}
 	xyb := toXYB(im, pw, ph, model)
+	// patches (effort 7, as libjxl): repeated text-like components go to a
+	// reference frame and are subtracted before everything else
+	var patches *patchPlan
+	if e := opt.Effort; (e <= 0 || e >= 7) && !opt.NoPatches && !im.Alpha && opt.Frame.Anim == nil {
+		patches = planPatches(xyb, im.W, im.H, pw, d)
+	}
 	// keep only the alpha plane of the input, so the colour planes can be
 	// freed while encoding (when the caller drops its reference)
 	{
@@ -1686,6 +1693,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 
 	// --- section writers
 	writeLfGlobal := func(w *bitio.Writer) {
+		if patches != nil {
+			patches.writeDict(w)
+		}
 		w.WriteBool(true) // LF channel dequant default
 		w.WriteU32(gs, bitsOff(11, 1), bitsOff(11, 2049), bitsOff(12, 4097), bitsOff(16, 8193))
 		w.WriteU32(uint32(qlf), val(16), bitsOff(5, 1), bitsOff(8, 1), bitsOff(16, 1))
@@ -1803,10 +1813,17 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		writeICCIfAny(out, im)
 		out.ZeroPadToByte()
 	}
+	if patches != nil {
+		out.AppendBytes(patches.frame)
+	}
 	out.WriteBool(false)
-	out.Write(2, 0)    // regular
-	out.Write(1, 0)    // VarDCT
-	out.WriteU64(0x80) // skip adaptive LF smoothing
+	out.Write(2, 0)       // regular
+	out.Write(1, 0)       // VarDCT
+	flags := uint64(0x80) // skip adaptive LF smoothing
+	if patches != nil {
+		flags |= 2
+	}
+	out.WriteU64(flags)
 	out.WriteU32(1, val(1), val(2), val(4), val(8))
 	nec := 0
 	if alpha != nil {

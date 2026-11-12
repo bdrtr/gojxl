@@ -55,6 +55,7 @@ func tuneFromEnv(lo *enc.LossyOptions) {
 	lo.LibAQ = lo.LibAQ && os.Getenv("GOJXL_NOLAQ") == ""
 	lo.OnlyDCT8 = lo.OnlyDCT8 || os.Getenv("GOJXL_DCT8") != ""
 	lo.NoSmall = lo.NoSmall || os.Getenv("GOJXL_NOSMALL") != ""
+	lo.NoPatches = lo.NoPatches || os.Getenv("GOJXL_NOPATCHES") != ""
 	if v := os.Getenv("GOJXL_SMALLMASK"); v != "" {
 		lo.SmallMask, _ = strconv.Atoi(v)
 	}

@@ -55,9 +55,13 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - Efor 7 DCT2X2'yi de dener (metin/ekran görüntülerinde %−2,7, bike'ta %−1,2,
   fotoğraflarda ±0,2 BD-rate). IDENTITY, DCT4X4 ve AFV kodlanabiliyor
   (djxl ile doğrulandı) ama mevcut maliyet modeliyle dosyaları %1–3
-  büyüttüğü için kapalı. Beş görüntüde e7, cjxl e7'ye göre: fotoğraflarda
-  %−10..+1,5; gri metin ekran görüntüsünde hâlâ %+18 (cjxl DCT64 ve
-  algısal kayıp ölçüsü kullanıyor)
+  büyüttüğü için kapalı. EPF yinelemeleri libjxl gibi mesafeye göre (0,7 / 1,5 / 4)
+- **Patch'ler (efor 7)**: ekran görüntülerinde düz arka plan üzerindeki
+  tekrarlayan küçük bileşenler (metin glifleri) libjxl'in yöntemiyle bulunur,
+  bir referans çerçevesinde bir kez saklanır ve kod çözücü tarafından eklenir;
+  VarDCT yalnızca düz arka planı kodlar. Metin ekran görüntülerinde %−33..−56
+  (aynı kalitede); cjxl e7'ye göre metin görüntüsünde %−22 BD-rate (önce %+21).
+  Fotoğraflarda arama atlanır (tohum oranı < %1), çıktı ve süre değişmez
 
 **JPEG → JXL kayıpsız dönüştürme**
 - Saf Go JPEG ayrıştırıcı (baseline, progressive, restart işaretleri,
