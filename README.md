@@ -134,16 +134,26 @@ jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → or
 
 ## Performans (Ryzen 7 8845HS, yük altındaki dizüstü)
 
-Kod çözme, MP/s (yüksek iyi):
+Kod çözme (yalnız piksellere), MP/s (yüksek iyi; dosyalar cjxl v0.12 ile):
 
-| Dosya | libjxl 1T | libjxl MT | gojxl 1T | gojxl MT |
+| Dosya | libjxl 1T | libjxl 4T | gojxl 1T | gojxl 4T |
 |---|---|---|---|---|
-| 4K foto, VarDCT d1 | 33 | 127 | 18 | ~35–50 |
-| JPEG→JXL (cafe) | 19 | 78 | **21** | 55 |
-| Kayıpsız e7 foto | 5.9 | 17.4 | 5.8 | **19.1** |
+| 4K foto, VarDCT d1 | 36 | 119 | 20 | 60 |
+| JPEG→JXL (1280×1600, 4:2:0) | 74 | 203 | 44 | 89 |
+| 4K foto, kayıpsız e7 | 4.8 | 18.1 | 4.2 | 15.7 |
 
-WASM derlemeleri tek thread çalışır ve native'in kabaca yarısı hızındadır;
-gojxl tüm çekirdekleri kullanarak çoğu dosyada bunun üzerindedir.
+JXL → PNG dönüştürme (dosya okuma, çözme, PNG yazma; duvar süresi):
+
+| Dosya | djxl 1T | gojxl 1T | djxl 4T | gojxl 4T |
+|---|---|---|---|---|
+| 4K foto, VarDCT d1 | **0.60 s** | 0.75 s | 0.41 s | **0.24 s** |
+| JPEG→JXL (1280×1600) | 0.13 s | 0.13 s | 0.09 s | **0.05 s** |
+| 4K foto, kayıpsız e7 | **2.10 s** | 2.20 s | 0.82 s | **0.61 s** |
+
+libjxl AVX2 SIMD kullanır; gojxl skaler saf Go'dur ve yalnız çözmede tek
+çekirdekte ~1.2–1.8× geridedir, PNG yazımı da paralel olduğundan çok
+çekirdekli dönüştürmede öndedir. WASM derlemeleri çoğunlukla tek thread
+çalışır ve native'in kabaca yarısı hızındadır.
 
 Kayıpsız sıkıştırma (bayt, düşük iyi; cjxl v0.12):
 
@@ -162,11 +172,12 @@ Kodlama süresi, efor 4 ve cjxl e7 (duvar süresi):
 
 | | gojxl 1T | cjxl 1T | gojxl 4T | cjxl 4T |
 |---|---|---|---|---|
-| 640×480 foto | **0.38 s** | 0.47 s | **0.15 s** | 0.42 s |
-| bike (5 MP) | **2.9 s** | 4.9 s | **1.0 s** | 1.3 s |
+| 640×480 foto | **0.33 s** | 0.44 s | **0.13 s** | 0.39 s |
+| bike (5 MP) | **2.7 s** | 4.8 s | **0.81 s** | 1.31 s |
 
-Efor 5–6 daha yavaştır (RCT denemeleri, daha büyük ağaçlar). Bellek
-kullanımı cjxl'in yaklaşık iki katıdır (5 MP'de ~470 MB).
+Efor 5–6 daha yavaştır (RCT denemeleri, daha büyük ağaçlar). Tepe bellek
+5 MP'de 185 MB (cjxl e7 236 MB): gruplar kendi karolarına ayrılır, görüntü
+düzlemleri ve pikseller artıklar önbelleğe alınır alınmaz bırakılır.
 
 ## Mimari
 
@@ -180,9 +191,12 @@ internal/brotli    Brotli (RFC 7932) çözücü (kodlayıcı: internal/enc/brotl
 cmd/gojxl          CLI
 ```
 
-Kod çözme grup bazında paraleldir; filtreler (EPF/Gaborish) önbellekte
+Kod çözme grup bazında paraleldir; tek geçişli VarDCT karelerinde her
+grup çözülür çözülmez nicemlemeden çıkarılıp IDCT'den geçirilir (tüm
+katsayılar hiç bellekte tutulmaz). 2B IDCT her geçişi bloğun bütün
+sütunları üzerinde birlikte yapar. Filtreler (EPF/Gaborish) önbellekte
 kalacak şekilde karolara bölünmüştür; son renk dönüşümü (XYB→sRGB→8-bit)
-çıktı tamponuna tek geçişte yazılır.
+kesin eşikli bir tabloyla çıktı tamponuna tek geçişte yazılır.
 
 ## SIMD
 
@@ -192,9 +206,14 @@ desteklemiyorsa çalışma anında skaler koda düşülür. Hâlâ saf Go'dur (c
 
 | Çekirdek | skaler | SIMD | hızlanma |
 |---|---|---|---|
-| 8×8 IDCT | 97 ns | 42 ns | 2.3× |
-| 32×32 IDCT | 5.5 µs | 1.5 µs | 3.6× |
-| EPF satırı (256 px) | 4.2 µs | 0.6 µs | 6.8× |
+| 8×8 IDCT | 110 ns | 44 ns | 2.5× |
+| 32×32 IDCT | 3.8 µs | 1.7 µs | 2.3× |
+| EPF satırı (256 px) | 2.0 µs | 0.48 µs | 4.2× |
+
+Vektör çekirdeklerinden sonra YMM yazmaçlarının üst yarısı temizlenir
+(VZEROUPPER); aksi halde ardından gelen skaler kod yanlış bağımlılıklar
+yüzünden yavaşlar. Tek çekirdekte 4K VarDCT çözme: skaler 20 MP/s, SIMD
+24 MP/s.
 
 ## Yol haritası
 

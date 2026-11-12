@@ -11,7 +11,11 @@ var useSIMD = archsimd.X86.AVX2() && archsimd.X86.FMA()
 // SIMDActive reports whether vectorised kernels are in use.
 func SIMDActive() bool { return useSIMD }
 
-func ld(s []float32) v8    { return archsimd.LoadFloat32x8(s[:8]) }
+func ld(s []float32) v8 { return archsimd.LoadFloat32x8(s[:8]) }
+
+// vzu clears the upper halves of the vector registers before returning to
+// scalar (SSE) code, which otherwise pays for false dependencies on them.
+func vzu()                 { archsimd.ClearAVXUpperBits() }
 func bc(f float32) v8      { return archsimd.BroadcastFloat32x8(f) }
 func st(v v8, s []float32) { v.Store(s[:8]) }
 
@@ -85,6 +89,7 @@ func idct8x8(c, out []float32, stride int) {
 	for y := 0; y < 8; y++ {
 		st(v[y], out[y*stride:])
 	}
+	vzu()
 }
 
 func dequantRow(q []int32, m, o []float32, mul float32, d *dequantBias) {
@@ -103,6 +108,7 @@ func dequantRow(q []int32, m, o []float32, mul float32, d *dequantBias) {
 		val := small.IfElse(f.Abs().LessEqual(one), gen)
 		st(val.Mul(ld(m[k:])).Mul(mv), o[k:])
 	}
+	vzu()
 	if k < n {
 		dequantRowScalar(q[k:], m[k:], o[k:], mul, d)
 	}
@@ -122,6 +128,7 @@ func epfDiffRow(d, a0, b0, a1, b1, a2, b2 []float32, s0, s1, s2 float32) {
 		r = ld(a2[x:]).Sub(ld(b2[x:])).Abs().MulAdd(v2, r)
 		st(r, d[x:])
 	}
+	vzu()
 	if x < n {
 		epfDiffRowScalar(d[x:], a0[x:], b0[x:], a1[x:], b1[x:], a2[x:], b2[x:], s0, s1, s2)
 	}
@@ -138,6 +145,7 @@ func plusRow(out, up, mid, dn []float32) {
 		r := ld(mid[x:]).Add(ld(mid[x-1:])).Add(ld(mid[x+1:])).Add(ld(up[x:])).Add(ld(dn[x:]))
 		st(r, out[x:])
 	}
+	vzu()
 	for ; x < n-1; x++ {
 		out[x] = mid[x] + mid[x-1] + mid[x+1] + up[x] + dn[x]
 	}
@@ -156,6 +164,7 @@ func gabRow(o, t, m, b []float32, w0, w1, w2 float32) {
 		sum2 := ld(t[x-1:]).Add(ld(t[x+1:])).Add(ld(b[x-1:]).Add(ld(b[x+1:])))
 		st(sum2.MulAdd(v2, sum1.MulAdd(v1, ld(m[x:]).Mul(v0))), o[x:])
 	}
+	vzu()
 	for ; x < n-1; x++ {
 		sum1 := (m[x-1] + m[x+1]) + (t[x] + b[x])
 		sum2 := (t[x-1] + t[x+1]) + (b[x-1] + b[x+1])
@@ -195,6 +204,7 @@ func epfRow4(a *epf4Args) {
 			st(acc.Mul(iw), a.o[c][lx:])
 		}
 	}
+	vzu()
 	if nb*8 < a.n {
 		epfRow4Scalar(a, nb*8)
 	}
@@ -225,6 +235,7 @@ func xybRow(c *xybConv, x, y, b, r, g, bo []float32) {
 		st(m[3].Mul(mr).Add(m[4].Mul(mg)).Add(m[5].Mul(mb)), g[i:])
 		st(m[6].Mul(mr).Add(m[7].Mul(mg)).Add(m[8].Mul(mb)), bo[i:])
 	}
+	vzu()
 	if i < n {
 		xybRowScalar(c, x[i:], y[i:], b[i:], r[i:], g[i:], bo[i:])
 	}
@@ -293,7 +304,17 @@ func scaledIDCT2D(rows, cols int, in, out []float32, stride int, scratch []float
 		scaledIDCT2DScalar(rows, cols, in, out, stride, scratch)
 		return
 	}
-	var vbuf, vtmp [256]v8
+	if max(rows, cols) <= 32 {
+		var vbuf, vtmp [32]v8 // zeroed per call: keep small for small blocks
+		scaledIDCT2DV(rows, cols, in, out, stride, vbuf[:], vtmp[:])
+	} else {
+		var vbuf, vtmp [256]v8
+		scaledIDCT2DV(rows, cols, in, out, stride, vbuf[:], vtmp[:])
+	}
+	vzu()
+}
+
+func scaledIDCT2DV(rows, cols int, in, out []float32, stride int, vbuf, vtmp []v8) {
 	if rows < cols {
 		// natural layout: horizontal pass on rows, vertical pass vectorised
 		idctRowsV(in, rows, cols, vbuf[:], vtmp[:])
