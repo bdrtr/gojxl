@@ -13,6 +13,7 @@ import (
 	ijpeg "gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
+	"gojxl/internal/pnm"
 )
 
 // ConvertToJXL encodes an image file as JPEG XL: PNG or APNG, GIF, JPEG,
@@ -47,6 +48,17 @@ func ConvertToJXL(data []byte, opt *EncodeOptions) (out []byte, err error) {
 	if o.XMP != nil {
 		meta.xmp = o.XMP
 	}
+	if pnm.Is(data) {
+		// at the anymap's own bit depth
+		p, err := pnm.Decode(data)
+		if err != nil {
+			return nil, err
+		}
+		if p.IsFloat {
+			return nil, errPFMInput
+		}
+		return encodePlanar(pnmPlanar(p), &o, col, meta)
+	}
 	anim, err := DecodeAnimatedInput(data)
 	if err != nil {
 		return nil, err
@@ -71,11 +83,29 @@ func outputColour(data []byte, opt *Options) (icc, cicp []byte) {
 	return d.OutputICC(), outputCICP(d)
 }
 
-// decodeInput decodes PNG (with the fast pngx decoder), JPEG or any other
-// registered image format.
+// DecodeInput decodes an image file of a format ConvertToJXL takes (the
+// first frame of an animation): PNG, JPEG, GIF, PGM, PPM, PAM or any
+// other format registered with package image.
+func DecodeInput(data []byte) (img image.Image, err error) {
+	defer recoverErr(&err)
+	return decodeInput(data)
+}
+
+// decodeInput decodes PNG (with the fast pngx decoder), JPEG, PGM, PPM,
+// PAM or any other registered image format.
 func decodeInput(data []byte) (image.Image, error) {
 	if bytes.HasPrefix(data, []byte("\x89PNG")) {
 		return pngx.Decode(data)
+	}
+	if pnm.Is(data) {
+		p, err := pnm.Decode(data)
+		if err != nil {
+			return nil, err
+		}
+		if p.IsFloat {
+			return nil, errPFMInput
+		}
+		return pnmImage(p), nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	return img, err

@@ -153,8 +153,10 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl decode -srgb resim.jxl c.png        # sRGB'ye çevir (geniş gamut/ICC → etiketsiz sRGB)
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
 ./gojxl decode foto.jxl foto.jpg            # yeniden sıkıştırılmış JPEG'i aynen geri ver
+./gojxl decode resim.jxl cikti.ppm          # PGM/PPM (alfa varsa PAM); .pfm: 32-bit float
 ./gojxl encode girdi.png cikti.jxl          # PNG → kayıpsız JXL (efor 4, renk profili korunur)
 ./gojxl encode anim.gif cikti.jxl           # GIF/APNG animasyonu → JXL animasyonu
+./gojxl encode girdi.ppm cikti.jxl          # PGM/PPM/PAM (P2/P3/P5/P6/P7), kendi bit derinliğinde (ör. 10-bit)
 ./gojxl compare orijinal.png bozuk.jxl      # SSIMULACRA 2 + PSNR (PNG/JPEG/GIF/JXL)
 ./gojxl encode foto.jpg foto.jxl            # JPEG → JXL kayıpsız yeniden sıkıştırma (~%15-30 küçük)
 ./gojxl encode -e 1 girdi.png cikti.jxl     # en hızlı kayıpsız
@@ -162,7 +164,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl encode -e 3 -d 1 girdi.png cikti.jxl  # daha hızlı kayıplı
 ./gojxl encode -q 90 girdi.png cikti.jxl    # cjxl gibi kalite (100 = kayıpsız, 90 = d 1)
 ./gojxl encode -q 85 -o jxl/ *.png *.jpg    # toplu: dosyalar paralel (-j 4) jxl/ içine
-./gojxl decode -o png/ jxl/*.jxl            # toplu çözme (-format jpg ile JPEG)
+./gojxl decode -o png/ jxl/*.jxl            # toplu çözme (-format jpg|pnm|pfm)
 cat a.png | ./gojxl encode -d 1 - - | ./gojxl decode - b.png   # stdin/stdout
 ./gojxl info resim.jxl
 ```
@@ -177,10 +179,12 @@ anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{ICC: profil})     // pikseller profil uzayında
-jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG → JXL, renk korunur
+jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG/PNM → JXL, renk korunur
 jxlData, err := gojxl.TranscodeJPEG(jpegBytes)                     // JPEG → JXL
 err = gojxl.ConvertToPNG(w, jxlData, nil)                          // JXL → PNG (akışlı)
-err = gojxl.ConvertToJPEG(w, jxlData, 90)                          // JXL → JPEG (orijinal varsa o)
+err = gojxl.ConvertToJPEG(w, jxlData, 90, nil)                     // JXL → JPEG (orijinal varsa o)
+err = gojxl.ConvertToPNM(w, jxlData, nil)                          // JXL → PGM/PPM/PAM
+err = gojxl.ConvertToPFM(w, jxlData, nil)                          // JXL → PFM (float, HDR değerleri kırpılmaz)
 jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → orijinal JPEG
 ```
 
@@ -199,7 +203,7 @@ jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → or
 - CMYK (SWOP profili): lcms perceptual dönüşümüyle 69 dB, djxl ile 46 dB.
 - Kodlayıcının ürettiği dosyalar djxl ile bit-birebir çözülür; round-trip
   testleri (`go test ./...`) 1×1'den çok gruplu görüntülere kadar kapsar.
-- Bozuk girdiler: JXL çözücü, PNG okuyucu ve JPEG ayrıştırıcı için fuzz
+- Bozuk girdiler: JXL çözücü, PNG okuyucu, JPEG ve PNM ayrıştırıcıları için fuzz
   hedefleri var (`go test -run x -fuzz FuzzDecode .`); bulunan askılar,
   dev ayırmalar ve karesel yavaşlıklar düzeltildi, girdileri
   `testdata/fuzz` altında gerileme testi olarak duruyor.

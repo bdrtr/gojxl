@@ -48,10 +48,48 @@ func FuzzDecode(f *testing.F) {
 	if b, err := EncodeAnimation(anim, &EncodeOptions{Effort: 2}); err == nil {
 		f.Add(b)
 	}
+	// patches (text at d >= 3: a reference frame and a dictionary)
+	add(glyphImage(120, 72), &EncodeOptions{Distance: 3})
+	// HDR: lossless and lossy PQ (tone mapped when decoded to sRGB)
+	pq := pngWith(f, pqImage(colourTestImage()), chunk("cICP", []byte{9, 16, 0, 1}))
+	for _, o := range []*EncodeOptions{{Effort: 1}, {Distance: 1, Effort: 3}} {
+		if b, err := ConvertToJXL(pq, o); err == nil {
+			f.Add(b)
+		}
+	}
 	// small images only: a few bytes may legitimately declare a huge one
 	jxl.MaxPixels = 1 << 20
 	f.Fuzz(func(t *testing.T, data []byte) {
 		DecodeBytes(data)
+		DecodeBytesOptions(data, &Options{SRGB: true, Force16: true})
 		DecodeAll(data)
 	})
+}
+
+// glyphImage draws rows of three distinct glyphs on a flat background
+// (content the lossy encoder turns into patches).
+func glyphImage(w, h int) *image.NRGBA {
+	glyphs := [][]string{
+		{"..##..", ".#..#.", "#....#", "######", "#....#", "#....#", "#....#"},
+		{"#####.", "#....#", "#####.", "#....#", "#....#", "#....#", "#####."},
+		{".####.", "#....#", "#.....", "#.....", "#.....", "#....#", ".####."},
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for i := 0; i < len(img.Pix); i += 4 {
+		copy(img.Pix[i:i+4], []byte{235, 238, 240, 255})
+	}
+	k := 0
+	for y0 := 8; y0+8 < h; y0 += 16 {
+		for x0 := 8; x0+7 < w; x0 += 12 {
+			for gy, row := range glyphs[k%len(glyphs)] {
+				for gx, p := range row {
+					if p == '#' {
+						copy(img.Pix[img.PixOffset(x0+gx, y0+gy):], []byte{20, 30, 60})
+					}
+				}
+			}
+			k++
+		}
+	}
+	return img
 }

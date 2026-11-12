@@ -134,7 +134,7 @@ func TestEncodeWithICC(t *testing.T) {
 }
 
 // pngWith returns a PNG of img with extra chunks after IHDR.
-func pngWith(t *testing.T, img image.Image, chunks ...[]byte) []byte {
+func pngWith(t testing.TB, img image.Image, chunks ...[]byte) []byte {
 	t.Helper()
 	var b bytes.Buffer
 	if err := png.Encode(&b, img); err != nil {

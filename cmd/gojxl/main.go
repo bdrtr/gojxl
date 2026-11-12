@@ -21,18 +21,18 @@ import (
 
 	"gojxl"
 	"gojxl/internal/enc"
-	"gojxl/internal/pngx"
 )
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `gojxl - pure Go JPEG XL tool
 
 Usage:
-  gojxl decode [-depth 16] input.jxl output.png|.jpg
-  gojxl decode [-format png|jpg] -o outdir input.jxl...
+  gojxl decode [-depth 16] input.jxl output.png|.jpg|.ppm|.pgm|.pam|.pfm
+  gojxl decode [-format png|jpg|pnm|pfm] -o outdir input.jxl...
   gojxl encode [-e effort] [-d distance | -q quality] input output.jxl
   gojxl encode [-e effort] [-d distance | -q quality] -o outdir input...
-      input: PNG/APNG, GIF, JPEG (recompressed losslessly at d=0); the
+      input: PNG/APNG, GIF, JPEG (recompressed losslessly at d=0),
+      PGM/PPM/PAM (at their bit depth); the
       colour profile and Exif/XMP metadata of the input are kept;
       d=0 (q=100) is lossless; "-" reads stdin / writes stdout
   gojxl info input.jxl
@@ -167,14 +167,16 @@ func cmdDecode(args []string) {
 	memprof := fs.String("memprofile", "", "write allocation profile to file")
 	quality := fs.Int("q", 90, "JPEG quality when the output is JPEG and no original JPEG is stored")
 	outDir := fs.String("o", "", "batch mode: decode every input into this directory")
-	format := fs.String("format", "png", "output format when it does not follow from the name: png or jpg")
+	format := fs.String("format", "png", "output format when it does not follow from the name: png, jpg, pnm (PGM/PPM/PAM) or pfm")
 	jobs := fs.Int("j", defaultJobs(), "batch mode: files decoded at once")
 	srgb := fs.Bool("srgb", false, "convert the output to sRGB (no colour profile; PQ/HLG images keep their space)")
 	fs.Parse(args)
 	if fs.NArg() < 1 {
 		usage()
 	}
-	if *format != "png" && *format != "jpg" {
+	switch *format {
+	case "png", "jpg", "pnm", "pfm":
+	default:
 		fatal(fmt.Errorf("unknown format %q", *format))
 	}
 	if *cpuprof != "" {
@@ -188,10 +190,15 @@ func cmdDecode(args []string) {
 	opt := &gojxl.Options{Force16: *depth == 16, SRGB: *srgb}
 	convert := func(in, out string) (string, error) {
 		f := *format
-		if ext := strings.ToLower(filepath.Ext(out)); ext == ".jpg" || ext == ".jpeg" {
+		switch strings.ToLower(filepath.Ext(out)) {
+		case ".jpg", ".jpeg":
 			f = "jpg"
-		} else if ext == ".png" || ext == ".apng" {
+		case ".png", ".apng":
 			f = "png"
+		case ".pnm", ".ppm", ".pgm", ".pam":
+			f = "pnm"
+		case ".pfm":
+			f = "pfm"
 		}
 		return decodeOne(in, out, f, opt, *quality)
 	}
@@ -273,7 +280,14 @@ func decodeOne(in, out, format string, opt *gojxl.Options, quality int) (string,
 		}
 		return fmt.Sprintf("%s: %d bytes, %v", what, buf.Len(), time.Since(t0)), nil
 	}
-	// PNG: rows go straight into the file (no intermediate image)
+	// PNG rows go straight into the file (no intermediate image)
+	conv := gojxl.ConvertToPNG
+	switch format {
+	case "pnm":
+		conv = gojxl.ConvertToPNM
+	case "pfm":
+		conv = gojxl.ConvertToPFM
+	}
 	var w io.Writer = os.Stdout
 	var f *os.File
 	if out != "-" {
@@ -283,7 +297,7 @@ func decodeOne(in, out, format string, opt *gojxl.Options, quality int) (string,
 		w = f
 	}
 	bw := bufio.NewWriterSize(w, 1<<20)
-	err = gojxl.ConvertToPNG(bw, data, opt)
+	err = conv(bw, data, opt)
 	if err == nil {
 		err = bw.Flush()
 	}
@@ -443,21 +457,11 @@ func loadImage(path string) image.Image {
 	if img, err := gojxl.DecodeBytes(data); err == nil {
 		return img
 	}
-	img, err := decodeInput(data)
+	img, err := gojxl.DecodeInput(data)
 	if err != nil {
 		fatal(fmt.Errorf("%s: %w", path, err))
 	}
 	return img
-}
-
-// decodeInput decodes PNG (with the fast pngx decoder) or any other
-// registered image format.
-func decodeInput(data []byte) (image.Image, error) {
-	if bytes.HasPrefix(data, []byte("\x89PNG")) {
-		return pngx.Decode(data)
-	}
-	img, _, err := image.Decode(bytes.NewReader(data))
-	return img, err
 }
 
 func cmdCompare(args []string) {

@@ -87,11 +87,15 @@ func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
 
 // encodeImage encodes img, whose samples col describes, with metadata.
 func encodeImage(img image.Image, opt *EncodeOptions, col colourSpec, meta metadata) ([]byte, error) {
+	return encodePlanar(toPlanar(img), opt, col, meta)
+}
+
+// encodePlanar encodes im (which it may consume).
+func encodePlanar(im *enc.Image, opt *EncodeOptions, col colourSpec, meta metadata) ([]byte, error) {
 	o := enc.Options{Effort: 4, Consume: true} // the planar copy is ours
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}
-	im := toPlanar(img)
 	col.apply(im)
 	meta.apply(im)
 	var cs []byte
