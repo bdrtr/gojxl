@@ -126,6 +126,11 @@ func Decode(data []byte) (*Image, error) {
 	}
 	n := im.W * im.H * im.Channels
 	if kind == '2' || kind == '3' {
+		// every sample takes a digit and a separator: refuse before
+		// allocating for more samples than the file can hold
+		if n > (len(data)-r.i+1)/2 {
+			return nil, fmt.Errorf("%w: truncated", ErrFormat)
+		}
 		im.Samples = make([]uint16, n)
 		for i := range im.Samples {
 			v, err := r.int()

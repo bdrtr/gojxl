@@ -81,6 +81,7 @@ func TestDecodeErrors(t *testing.T) {
 		"P7\nWIDTH 1\nHEIGHT 1\nDEPTH 1\nMAXVAL 255\nTUPLTYPE CMYK\nENDHDR\n\x00",
 		"P5\n99999999999 99999999999\n255\n", // area overflow
 		"Pf\n1 1\n0\n\x00\x00\x00\x00",       // scale 0
+		"P2\n16384 16384\n255\n1 2 3",        // plain, far too short
 	} {
 		if _, err := Decode([]byte(d)); err == nil {
 			t.Errorf("%q accepted", d)
