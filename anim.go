@@ -18,6 +18,18 @@ import (
 // opt.Distance > 0). All frames must have the same size; each is shown for
 // its Duration (seconds). NumLoops is the number of plays (0 = forever).
 func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
+	var col colourSpec
+	if opt != nil && opt.ICC != nil {
+		var ok bool
+		if col, ok = specFromICC(opt.ICC); !ok {
+			return nil, errBadICC
+		}
+	}
+	return encodeAnimation(anim, opt, col)
+}
+
+// encodeAnimation encodes an animation whose samples col describes.
+func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec) ([]byte, error) {
 	if anim == nil || len(anim.Frames) == 0 {
 		return nil, errors.New("gojxl: empty animation")
 	}
@@ -39,9 +51,6 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 		deep = deep || ims[i].BitDepth > 8
 	}
 	// one image header for all frames: common channels and bit depth
-	if lossy {
-		deep = false // VarDCT input is 8-bit
-	}
 	for _, im := range ims {
 		if !deep && im.BitDepth > 8 {
 			for _, c := range im.Chans {
@@ -73,6 +82,7 @@ func EncodeAnimation(anim *Animation, opt *EncodeOptions) ([]byte, error) {
 			im.Chans = append(im.Chans, a)
 			im.Alpha = true
 		}
+		col.apply(im) // cropped frames keep it
 	}
 	// frames identical to their predecessor only extend its duration;
 	// others are cropped to the region that changed

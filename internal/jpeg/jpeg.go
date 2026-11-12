@@ -454,18 +454,58 @@ func (p *parser) metadata() {
 			img.JFIF = true
 		}
 	}
-	if len(iccChunks) > 0 {
-		total := int(iccChunks[0][13])
-		parts := make([][]byte, total+1)
-		for _, c := range iccChunks {
-			if seq := int(c[12]); seq >= 1 && seq <= total {
-				parts[seq] = c[14:]
-			}
-		}
-		for _, pt := range parts[1:] {
-			img.ICC = append(img.ICC, pt...)
+	img.ICC = assembleICC(iccChunks)
+}
+
+// assembleICC joins the profile parts of ICC_PROFILE APP2 payloads (from
+// the signature on) in sequence order.
+func assembleICC(chunks [][]byte) []byte {
+	if len(chunks) == 0 {
+		return nil
+	}
+	total := int(chunks[0][13])
+	parts := make([][]byte, total+1)
+	for _, c := range chunks {
+		if seq := int(c[12]); seq >= 1 && seq <= total {
+			parts[seq] = c[14:]
 		}
 	}
+	var icc []byte
+	for _, pt := range parts[1:] {
+		icc = append(icc, pt...)
+	}
+	return icc
+}
+
+// ICCProfile returns the ICC profile in the APP2 segments of a JPEG file,
+// or nil, without parsing the rest of the file.
+func ICCProfile(data []byte) []byte {
+	if len(data) < 4 || data[0] != 0xff || data[1] != 0xd8 {
+		return nil
+	}
+	var chunks [][]byte
+	for p := 2; p+4 <= len(data) && data[p] == 0xff; {
+		m := data[p+1]
+		switch {
+		case m == 0xff: // fill byte
+			p++
+			continue
+		case m == 0x01 || m >= 0xd0 && m <= 0xd8: // no payload
+			p += 2
+			continue
+		case m == 0xda || m == 0xd9: // scan data or end
+			return assembleICC(chunks)
+		}
+		n := int(data[p+2])<<8 | int(data[p+3])
+		if n < 2 || p+2+n > len(data) {
+			break
+		}
+		if pl := data[p+4 : p+2+n]; m == 0xe2 && len(pl) >= 14 && string(pl[:12]) == "ICC_PROFILE\x00" {
+			chunks = append(chunks, pl)
+		}
+		p += 2 + n
+	}
+	return assembleICC(chunks)
 }
 
 func (p *parser) sofSeg(pos *int) error {
@@ -989,4 +1029,32 @@ func (p *parser) refineBlock(br *bitReader, act *huffTable, Ss, Se, Al int, eobr
 	}
 	*eobrun--
 	return nil
+}
+
+// InsertICC returns a JPEG file with icc stored in APP2 ICC_PROFILE
+// segments after the SOI marker (and a JFIF APP0 segment).
+func InsertICC(jpg, icc []byte) []byte {
+	if len(jpg) < 4 || len(icc) == 0 {
+		return jpg
+	}
+	at := 2
+	if jpg[2] == 0xff && jpg[3] == 0xe0 && len(jpg) >= 6 {
+		at = min(4+(int(jpg[4])<<8|int(jpg[5])), len(jpg))
+	}
+	const part = 65519 // segment payload after the 14-byte header
+	n := (len(icc) + part - 1) / part
+	if n > 255 {
+		return jpg
+	}
+	out := make([]byte, 0, len(jpg)+len(icc)+18*n)
+	out = append(out, jpg[:at]...)
+	for i := 0; i < n; i++ {
+		p := icc[i*part : min((i+1)*part, len(icc))]
+		l := 2 + 14 + len(p)
+		out = append(out, 0xff, 0xe2, byte(l>>8), byte(l))
+		out = append(out, "ICC_PROFILE\x00"...)
+		out = append(out, byte(i+1), byte(n))
+		out = append(out, p...)
+	}
+	return append(out, jpg[at:]...)
 }

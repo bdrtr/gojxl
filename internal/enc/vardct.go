@@ -30,6 +30,10 @@ type LossyOptions struct {
 	forceType int  // tests: use only vtypes[forceType] (> 0)
 }
 
+// TuneLossy, when set, adjusts the options of single-image lossy encodes
+// (the command line tool sets it from GOJXL_* variables for tuning).
+var TuneLossy func(*LossyOptions)
+
 // candidates are the transform families tried by AC strategy selection.
 type candidates struct{ split, rect, dct16, dct32, rect32 bool }
 
@@ -197,8 +201,16 @@ func srgbToLinear(v float32) float32 {
 	return float32(math.Pow((float64(v)+0.055)/1.055, 2.4))
 }
 
-// toXYB converts the image to padded XYB planes (X, Y, B).
-func toXYB(im *Image, pw, ph int) [3][]float32 {
+// opsinAbsorbance is the linear sRGB to LMS mix of XYB.
+var opsinAbsorbance = [9]float64{
+	0.30, 0.622, 0.078,
+	0.23, 0.692, 0.078,
+	0.24342268924547819, 0.20476744424496821, 0.55180986650955360,
+}
+
+// toXYB converts the image to padded XYB planes (X, Y, B). model maps
+// the samples to linear sRGB (nil: they are sRGB).
+func toXYB(im *Image, pw, ph int, model *jxl.ColourModel) [3][]float32 {
 	var out [3][]float32
 	for c := range out {
 		out[c] = make([]float32, pw*ph)
@@ -208,7 +220,47 @@ func toXYB(im *Image, pw, ph int) [3][]float32 {
 	ch := im.Chans
 	W, H := im.W, im.H
 	eight := im.BitDepth == 8
-	lin := &srgbToLinear8
+	// per channel decoding tables and the opsin mix, folded with the
+	// conversion to linear sRGB
+	lin := [3][]float32{srgbToLinear8[:], srgbToLinear8[:], srgbToLinear8[:]}
+	var k [9]float32
+	for i, v := range opsinAbsorbance {
+		k[i] = float32(v)
+	}
+	if model != nil {
+		for i := 0; i < 3; i++ {
+			for j := 0; j < 3; j++ {
+				var s float64
+				for l := 0; l < 3; l++ {
+					s += opsinAbsorbance[i*3+l] * model.M[l*3+j]
+				}
+				k[i*3+j] = float32(s)
+			}
+		}
+	}
+	if model != nil || !eight {
+		nc := 3
+		if model == nil || model.Grey {
+			nc = 1 // one curve
+		}
+		for c := 0; c < nc; c++ {
+			t := make([]float32, int(maxv)+1)
+			parallel(len(t)/4096+1, func(b int) {
+				for v := b * 4096; v < min((b+1)*4096, len(t)); v++ {
+					if model == nil {
+						t[v] = srgbToLinear(float32(v) / maxv)
+					} else {
+						t[v] = float32(model.Curves[c](float64(v) / float64(maxv)))
+					}
+				}
+			})
+			lin[c] = t
+		}
+		if nc == 1 {
+			lin[1], lin[2] = lin[0], lin[0]
+		}
+	}
+	mask := int32(maxv)
 	parallel(ph, func(y int) {
 		// row slices in locals: through ch and out every sample would
 		// reload the slice headers
@@ -219,18 +271,14 @@ func toXYB(im *Image, pw, ph int) [3][]float32 {
 			cg, cbl = ch[1][sy*W:sy*W+W], ch[2][sy*W:sy*W+W]
 		}
 		o0, o1, o2 := out[0][y*pw:y*pw+pw], out[1][y*pw:y*pw+pw], out[2][y*pw:y*pw+pw]
+		l0, l1, l2 := lin[0], lin[1], lin[2]
+		k := k
 		for x := 0; x < pw; x++ {
 			sx := min(x, W-1)
-			var r, g, b float32
-			if eight {
-				r, g, b = lin[cr[sx]&255], lin[cg[sx]&255], lin[cbl[sx]&255]
-			} else {
-				r = srgbToLinear(float32(cr[sx]) / maxv)
-				g, b = srgbToLinear(float32(cg[sx])/maxv), srgbToLinear(float32(cbl[sx])/maxv)
-			}
-			m0 := 0.30*r + 0.622*g + 0.078*b + opsinBias
-			m1 := 0.23*r + 0.692*g + 0.078*b + opsinBias
-			m2 := 0.24342268924547819*r + 0.20476744424496821*g + 0.55180986650955360*b + opsinBias
+			r, g, b := l0[cr[sx]&mask], l1[cg[sx]&mask], l2[cbl[sx]&mask]
+			m0 := k[0]*r + k[1]*g + k[2]*b + opsinBias
+			m1 := k[3]*r + k[4]*g + k[5]*b + opsinBias
+			m2 := k[6]*r + k[7]*g + k[8]*b + opsinBias
 			m0 = float32(cbrtFast(float64(max(m0, 0)))) - cb
 			m1 = float32(cbrtFast(float64(max(m1, 0)))) - cb
 			m2 = float32(cbrtFast(float64(max(m2, 0)))) - cb
@@ -949,7 +997,11 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	}
 	bw, bh := (im.W+7)/8, (im.H+7)/8
 	pw, ph := bw*8, bh*8
-	xyb := toXYB(im, pw, ph)
+	model, err := im.colourModel()
+	if err != nil {
+		return nil, err
+	}
+	xyb := toXYB(im, pw, ph, model)
 	// keep only the alpha plane of the input, so the colour planes can be
 	// freed while encoding (when the caller drops its reference)
 	{
@@ -1605,7 +1657,10 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	if !fo.NoImageHeader {
 		out.Write(16, 0x0aff)
 		writeSize(out, im.W, im.H)
-		if alpha == nil && fo.Anim == nil {
+		// grey samples keep a grey colour space only with a description
+		// (sRGB grey stays the RGB default the decoder renders)
+		plain := im.defaultColour()
+		if alpha == nil && fo.Anim == nil && plain && im.BitDepth == 8 {
 			out.WriteBool(true) // metadata all default: 8-bit sRGB, XYB
 		} else {
 			out.WriteBool(false) // metadata
@@ -1613,22 +1668,23 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			if fo.Anim != nil {
 				writeAnimHeader(out, fo.Anim)
 			}
-			writeBitDepth(out, 8)
-			out.WriteBool(true) // 16-bit buffers suffice
+			writeBitDepth(out, im.BitDepth)
+			out.WriteBool(im.BitDepth <= 12) // 16-bit buffers suffice
 			if alpha != nil {
 				out.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
-				out.WriteBool(true) // default 8-bit alpha
+				writeAlphaInfo(out, im.BitDepth)
 			} else {
 				out.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
 			}
 			out.WriteBool(true) // xyb
-			out.WriteBool(true) // sRGB
+			writeColour(out, im, im.Grey && !plain)
 			if fo.Anim != nil {
 				out.WriteBool(true) // default tone mapping
 			}
 			out.WriteU64(0) // extensions
 		}
 		out.WriteBool(true) // default transform data
+		writeICCIfAny(out, im)
 		out.ZeroPadToByte()
 	}
 	out.WriteBool(false)

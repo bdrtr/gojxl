@@ -7,16 +7,17 @@ import (
 	"flag"
 	"fmt"
 	"image"
-	"image/jpeg"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"time"
 
 	"gojxl"
+	"gojxl/internal/enc"
 	"gojxl/internal/pngx"
 )
 
@@ -25,14 +26,38 @@ func usage() {
 
 Usage:
   gojxl decode [-bench N] input.jxl output.png
-  gojxl encode [-e effort] [-d distance] input.png output.jxl  (d=0: lossless)
+  gojxl encode [-e effort] [-d distance] input output.jxl  (d=0: lossless)
+      input: PNG/APNG, GIF, JPEG (recompressed losslessly at d=0); the
+      colour profile of the input is kept
   gojxl info input.jxl
   gojxl compare original distorted   (SSIMULACRA 2 and PSNR; PNG/JPEG/GIF/JXL)
 `)
 	os.Exit(2)
 }
 
+// tuneFromEnv lets GOJXL_* variables override lossy encoder settings
+// (for tuning experiments).
+func tuneFromEnv(lo *enc.LossyOptions) {
+	if v := os.Getenv("GOJXL_EPF"); v != "" {
+		lo.EPFIters, _ = strconv.Atoi(v)
+	}
+	if v := os.Getenv("GOJXL_SHARP"); v != "" {
+		lo.Sharpness, _ = strconv.Atoi(v)
+	}
+	lo.NoGaborish = lo.NoGaborish || os.Getenv("GOJXL_NOGAB") != ""
+	lo.NoCfL = lo.NoCfL || os.Getenv("GOJXL_NOCFL") != ""
+	lo.LibAQ = lo.LibAQ && os.Getenv("GOJXL_NOLAQ") == ""
+	lo.OnlyDCT8 = lo.OnlyDCT8 || os.Getenv("GOJXL_DCT8") != ""
+	if v := os.Getenv("GOJXL_MU"); v != "" {
+		lo.RDMu, _ = strconv.ParseFloat(v, 64)
+	}
+	if v := os.Getenv("GOJXL_AQ"); v != "" {
+		lo.AQ, _ = strconv.ParseFloat(v, 64)
+	}
+}
+
 func main() {
+	enc.TuneLossy = tuneFromEnv
 	if len(os.Args) < 2 {
 		usage()
 	}
@@ -84,29 +109,18 @@ func cmdDecode(args []string) {
 			// JPEG output: restore the original JPEG when the file is a
 			// recompressed JPEG, otherwise encode the pixels.
 			t0 := time.Now()
-			jpg, err := gojxl.ReconstructJPEG(data)
-			if err == nil {
-				if err := os.WriteFile(fs.Arg(1), jpg, 0o644); err != nil {
-					fatal(err)
-				}
-				fmt.Fprintf(os.Stderr, "JPEG reconstructed: %d bytes, %v\n", len(jpg), time.Since(t0))
-				return
-			}
-			if !errors.Is(err, gojxl.ErrNoJPEG) {
+			var buf bytes.Buffer
+			if err := gojxl.ConvertToJPEG(&buf, data, *quality); err != nil {
 				fatal(err)
 			}
-			img, err := gojxl.DecodeBytes(data)
-			if err != nil {
+			if err := os.WriteFile(fs.Arg(1), buf.Bytes(), 0o644); err != nil {
 				fatal(err)
 			}
-			f, err := os.Create(fs.Arg(1))
-			if err != nil {
-				fatal(err)
+			what := "JPEG encoded"
+			if _, err := gojxl.ReconstructJPEG(data); err == nil {
+				what = "JPEG reconstructed"
 			}
-			if err := jpeg.Encode(f, img, &jpeg.Options{Quality: *quality}); err != nil {
-				fatal(err)
-			}
-			f.Close()
+			fmt.Fprintf(os.Stderr, "%s: %d bytes, %v\n", what, buf.Len(), time.Since(t0))
 			return
 		}
 	}
@@ -223,6 +237,7 @@ func cmdEncode(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	opt := &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist), JPEGPixels: *pixels}
 	if *dist == 0 && !*pixels && len(raw) > 2 && raw[0] == 0xff && raw[1] == 0xd8 {
 		// JPEG input: lossless recompression of the DCT coefficients
 		t0 := time.Now()
@@ -236,30 +251,14 @@ func cmdEncode(args []string) {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "JPEG recompression not possible (%v); encoding pixels\n", err)
+		opt.JPEGPixels = true
 	}
-	// animated GIF/APNG input: one JPEG XL animation
-	if anim, err := gojxl.DecodeAnimatedInput(raw); err != nil {
-		fatal(err)
-	} else if anim != nil {
-		t0 := time.Now()
-		data, err := gojxl.EncodeAnimation(anim, &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist)})
-		if err != nil {
-			fatal(err)
-		}
-		if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
-			fatal(err)
-		}
-		b := anim.Frames[0].Image.Bounds()
-		fmt.Fprintf(os.Stderr, "%dx%d, %d frames, %d bytes, %v\n", b.Dx(), b.Dy(), len(anim.Frames), len(data), time.Since(t0))
-		return
-	}
-	img, err := decodeInput(raw)
-	if err != nil {
-		fatal(err)
-	}
-	b := img.Bounds()
+	// any input: colour profile kept, animations as animations
 	t0 := time.Now()
-	data, err := gojxl.EncodeBytes(img, &gojxl.EncodeOptions{Effort: *effort, Distance: float32(*dist)})
+	data, err := gojxl.ConvertToJXL(raw, opt)
+	if errors.Is(err, gojxl.ErrUnsupportedColour) {
+		fatal(fmt.Errorf("%w; lossless encoding (-d 0) keeps any profile", err))
+	}
 	if err != nil {
 		fatal(err)
 	}
@@ -267,8 +266,17 @@ func cmdEncode(args []string) {
 	if err := os.WriteFile(fs.Arg(1), data, 0o644); err != nil {
 		fatal(err)
 	}
-	mp := float64(b.Dx()*b.Dy()) / 1e6
-	fmt.Fprintf(os.Stderr, "%dx%d, %d bytes (%.3f bpp), %v, %.2f MP/s\n", b.Dx(), b.Dy(), len(data), float64(len(data)*8)/float64(b.Dx()*b.Dy()), el, mp/el.Seconds())
+	info, err := gojxl.Stat(data)
+	if err != nil {
+		fatal(err)
+	}
+	w, h := info.Width, info.Height
+	mp := float64(w*h) / 1e6
+	kind := ""
+	if info.Animated {
+		kind = ", animation"
+	}
+	fmt.Fprintf(os.Stderr, "%dx%d%s, %d bytes (%.3f bpp), %v, %.2f MP/s\n", w, h, kind, len(data), float64(len(data)*8)/float64(w*h), el, mp/el.Seconds())
 }
 
 // loadImage decodes a JPEG XL file or any registered image format.

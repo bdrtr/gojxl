@@ -3,13 +3,95 @@ package gojxl
 import (
 	"bytes"
 	"compress/flate"
+	"errors"
 	"image"
+	"image/jpeg"
 	"io"
 	"sync"
 
+	ijpeg "gojxl/internal/jpeg"
 	"gojxl/internal/jxl"
 	"gojxl/internal/pngx"
 )
+
+// ConvertToJXL encodes an image file as JPEG XL: PNG or APNG, GIF, JPEG,
+// or any other format registered with package image. The colour space of
+// the input is kept (PNG cICP, iCCP, sRGB and gAMA/cHRM chunks, JPEG ICC
+// profiles; opt.ICC overrides them). With Distance 0, JPEG files are
+// recompressed losslessly (restorable byte for byte with ReconstructJPEG)
+// when possible, unless opt.JPEGPixels is set; animated GIF and APNG files
+// become animations.
+func ConvertToJXL(data []byte, opt *EncodeOptions) (out []byte, err error) {
+	defer recoverErr(&err)
+	var o EncodeOptions
+	if opt != nil {
+		o = *opt
+	}
+	if o.Distance == 0 && !o.JPEGPixels && len(data) > 2 && data[0] == 0xff && data[1] == 0xd8 {
+		if out, err := TranscodeJPEG(data); err == nil {
+			return out, nil
+		}
+	}
+	col := inputColour(data)
+	if o.ICC != nil {
+		var ok bool
+		if col, ok = specFromICC(o.ICC); !ok {
+			return nil, errBadICC
+		}
+	}
+	anim, err := DecodeAnimatedInput(data)
+	if err != nil {
+		return nil, err
+	}
+	if anim != nil {
+		return encodeAnimation(anim, &o, col)
+	}
+	img, err := decodeInput(data)
+	if err != nil {
+		return nil, err
+	}
+	return encodeImage(img, &o, col)
+}
+
+// decodeInput decodes PNG (with the fast pngx decoder), JPEG or any other
+// registered image format.
+func decodeInput(data []byte) (image.Image, error) {
+	if bytes.HasPrefix(data, []byte("\x89PNG")) {
+		return pngx.Decode(data)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	return img, err
+}
+
+// ConvertToJPEG writes a JPEG XL image to w as JPEG: the original file
+// when it is a losslessly recompressed JPEG (see ReconstructJPEG), else
+// the first frame's pixels encoded at the given quality (1-100), with the
+// colour profile of the decoded pixels.
+func ConvertToJPEG(w io.Writer, data []byte, quality int) (err error) {
+	defer recoverErr(&err)
+	jpg, err := ReconstructJPEG(data)
+	if err == nil {
+		_, err = w.Write(jpg)
+		return err
+	}
+	if !errors.Is(err, ErrNoJPEG) {
+		return err
+	}
+	img, err := DecodeBytes(data)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return err
+	}
+	out := buf.Bytes()
+	if info, err := Stat(data); err == nil && info.OutputICC != nil {
+		out = ijpeg.InsertICC(out, info.OutputICC)
+	}
+	_, err = w.Write(out)
+	return err
+}
 
 // ConvertToPNG decodes a JPEG XL image and writes it to w as PNG: the
 // first displayed frame, or an APNG of all frames for animations, with the

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"gojxl/internal/bitio"
+	"gojxl/internal/jxl"
 )
 
 // Image is a planar integer image to be encoded losslessly.
@@ -21,6 +22,11 @@ type Image struct {
 	Grey     bool      // one colour channel
 	Alpha    bool      // last channel is alpha
 	Chans    [][]int32 // colour channels (1 or 3) followed by alpha
+	// Colour describes the samples (nil: sRGB); ICC, when set, is stored
+	// as their profile instead. Lossy encoding converts the samples to
+	// XYB through either.
+	Colour *jxl.ColourEncoding
+	ICC    []byte
 }
 
 // Options controls encoding.
@@ -120,6 +126,21 @@ func writeBitDepth(w *bitio.Writer, bd int) {
 	w.WriteU32(uint32(bd), val(8), val(10), val(12), bitsOff(6, 1))
 }
 
+// writeAlphaInfo writes the extra channel info of an alpha channel with
+// bd bits per sample.
+func writeAlphaInfo(w *bitio.Writer, bd int) {
+	if bd == 8 {
+		w.WriteBool(true) // default alpha
+		return
+	}
+	w.WriteBool(false)
+	w.WriteEnum(0) // alpha
+	writeBitDepth(w, bd)
+	w.WriteU32(0, val(0), val(3), val(4), bitsOff(3, 1)) // dim shift
+	w.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48))
+	w.WriteBool(false) // not premultiplied
+}
+
 func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	w.Write(16, 0x0aff)
 	writeSize(w, im.W, im.H)
@@ -136,35 +157,16 @@ func writeImageHeader(w *bitio.Writer, im *Image, anim *Anim) {
 	}
 	w.WriteU32(uint32(nec), val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
 	if im.Alpha {
-		if im.BitDepth == 8 {
-			w.WriteBool(true) // default alpha
-		} else {
-			w.WriteBool(false)
-			w.WriteEnum(0) // alpha
-			writeBitDepth(w, im.BitDepth)
-			w.WriteU32(0, val(0), val(3), val(4), bitsOff(3, 1)) // dim shift
-			w.WriteU32(0, val(0), bitio.Bits(4), bitsOff(5, 16), bitsOff(10, 48))
-			w.WriteBool(false) // not premultiplied
-		}
+		writeAlphaInfo(w, im.BitDepth)
 	}
 	w.WriteBool(false) // xyb_encoded
-	// colour encoding
-	if !im.Grey {
-		w.WriteBool(true) // sRGB
-	} else {
-		w.WriteBool(false)
-		w.WriteBool(false) // want_icc
-		w.WriteEnum(1)     // grey
-		w.WriteEnum(1)     // D65
-		w.WriteBool(false) // no gamma
-		w.WriteEnum(13)    // sRGB transfer
-		w.WriteEnum(1)     // relative intent
-	}
+	writeColour(w, im, im.Grey)
 	if anim != nil {
 		w.WriteBool(true) // default tone mapping
 	}
 	w.WriteU64(0)     // extensions
 	w.WriteBool(true) // default transform data
+	writeICCIfAny(w, im)
 	w.ZeroPadToByte()
 }
 

@@ -1,11 +1,10 @@
 package gojxl
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"io"
-	"os"
-	"strconv"
 	"sync/atomic"
 
 	"gojxl/internal/enc"
@@ -13,7 +12,7 @@ import (
 	"gojxl/internal/jxl"
 )
 
-// EncodeOptions controls lossless encoding.
+// EncodeOptions controls encoding.
 type EncodeOptions struct {
 	// Effort trades speed for size; 0 selects the default.
 	//
@@ -31,7 +30,20 @@ type EncodeOptions struct {
 	// Distance > 0 selects lossy (VarDCT) encoding with the given
 	// perceptual distance (1.0 ~ visually lossless). 0 means lossless.
 	Distance float32
+	// ICC is the colour profile of the input samples; nil means sRGB (for
+	// ConvertToJXL: the profile of the input file). It is stored as the
+	// equivalent enum colour encoding when there is one, as libjxl does,
+	// else as is; lossy encoding converts the samples to XYB through it,
+	// which needs a matrix/TRC RGB or grey profile (else
+	// ErrUnsupportedColour).
+	ICC []byte
+	// JPEGPixels makes ConvertToJXL encode the pixels of JPEG input
+	// instead of recompressing its DCT coefficients losslessly.
+	JPEGPixels bool
 }
+
+// errBadICC reports a malformed EncodeOptions.ICC.
+var errBadICC = errors.New("gojxl: malformed ICC profile")
 
 // Encode writes img as a lossless JPEG XL codestream.
 func Encode(w io.Writer, img image.Image, opt *EncodeOptions) error {
@@ -43,32 +55,31 @@ func Encode(w io.Writer, img image.Image, opt *EncodeOptions) error {
 	return err
 }
 
-// EncodeBytes encodes img losslessly and returns the JPEG XL bytes.
+// EncodeBytes encodes img (losslessly unless opt.Distance > 0) and returns
+// the JPEG XL bytes.
 func EncodeBytes(img image.Image, opt *EncodeOptions) ([]byte, error) {
+	var col colourSpec
+	if opt != nil && opt.ICC != nil {
+		var ok bool
+		if col, ok = specFromICC(opt.ICC); !ok {
+			return nil, errBadICC
+		}
+	}
+	return encodeImage(img, opt, col)
+}
+
+// encodeImage encodes img, whose samples col describes.
+func encodeImage(img image.Image, opt *EncodeOptions, col colourSpec) ([]byte, error) {
 	o := enc.Options{Effort: 4, Consume: true} // the planar copy is ours
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}
 	im := toPlanar(img)
+	col.apply(im)
 	if opt != nil && opt.Distance > 0 {
-		to8Bit(im)
-		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, Effort: opt.Effort}
-		if v := os.Getenv("GOJXL_EPF"); v != "" {
-			lo.EPFIters, _ = strconv.Atoi(v)
-		}
-		if v := os.Getenv("GOJXL_SHARP"); v != "" {
-			lo.Sharpness, _ = strconv.Atoi(v)
-		}
-		lo.NoGaborish = os.Getenv("GOJXL_NOGAB") != ""
-		lo.NoCfL = os.Getenv("GOJXL_NOCFL") != ""
-		lo.LibAQ = os.Getenv("GOJXL_NOLAQ") == ""
-		lo.OnlyDCT8 = os.Getenv("GOJXL_DCT8") != ""
-		if v := os.Getenv("GOJXL_MU"); v != "" {
-			lo.RDMu, _ = strconv.ParseFloat(v, 64)
-		}
-		lo.AQ = 0
-		if v := os.Getenv("GOJXL_AQ"); v != "" {
-			lo.AQ, _ = strconv.ParseFloat(v, 64)
+		lo := enc.LossyOptions{Distance: opt.Distance, EPFIters: -1, Sharpness: -1, Effort: opt.Effort, LibAQ: true}
+		if enc.TuneLossy != nil {
+			enc.TuneLossy(&lo)
 		}
 		return enc.EncodeVarDCT(im, lo)
 	}
@@ -238,18 +249,4 @@ func TranscodeJPEG(data []byte) (out []byte, err error) {
 		return cs, nil
 	}
 	return enc.WrapContainer(cs, jbrd, exif, xmp), nil
-}
-
-// to8Bit converts a deeper image to 8 bits per sample (VarDCT input).
-func to8Bit(im *enc.Image) {
-	if im.BitDepth == 8 {
-		return
-	}
-	maxv := int32(1)<<im.BitDepth - 1
-	for _, c := range im.Chans {
-		for i, v := range c {
-			c[i] = (v*255 + maxv/2) / maxv
-		}
-	}
-	im.BitDepth = 8
 }

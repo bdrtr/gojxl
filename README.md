@@ -77,6 +77,25 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - `gojxl encode foto.jpg foto.jxl` JPEG girdisinde varsayılan olarak bunu yapar
   (`-pixels` ile pikselleri kodlar)
 
+**Renk yönetimi (kodlayıcı)**
+- Girdinin renk uzayı korunur: PNG `cICP`, `iCCP`, `sRGB`, `gAMA`/`cHRM`
+  (PNG 3. sürümdeki öncelik sırasıyla), JPEG ICC profilleri; kütüphanede
+  `EncodeOptions.ICC` ile verilebilir
+- ICC profili libjxl gibi mümkünse eşdeğer enum kodlamaya çevrilir (sRGB,
+  Display P3, BT.2100, DCI-P3, Adobe RGB/ProPhoto gibi özel primerler, gamma,
+  doğrusal, 709): profilden beyaz nokta (`chad`/`wtpt`) ve primerler geri
+  hesaplanır, eğri ve dönüşüm kodlanmış uzayda 1/255 içinde doğrulanır;
+  karşılığı olmayan profiller (ör. ölçülmüş ekran profilleri, LUT tabanlılar)
+  olduğu gibi saklanır. Sonuçlar cjxl'in seçimleriyle aynı
+- Kayıpsızda pikseller ve profil aynen geri döner (djxl ve gojxl ile doğrulandı)
+- Kayıplıda pikseller XYB'den önce profil/enum üzerinden doğrusal sRGB'ye
+  çevrilir (geniş gamut dahil); djxl ve gojxl çıktıları kaynak uzayında
+  aynı sonucu verir. Matris/TRC olmayan profiller ve PQ/HLG kayıplıda
+  `ErrUnsupportedColour` döner (kayıpsız her profili saklar)
+- 16-bit girdiler kayıplıda da 16-bit hassasiyetle XYB'ye geçer ve başlık
+  16-bit yazılır (önceden 8-bit'e indiriliyordu)
+- JXL → JPEG (`ConvertToJPEG`) çözülen piksellerin profilini APP2 ICC olarak yazar
+
 **Kayıpsız kodlayıcı (Modular)**
 - Efor 1–3: sabit bağlam ağaçları, YCoCg, Gradient/Weighted predictor (hızlı)
 - Efor 4+ (varsayılan 4): **MA ağacı öğrenme** — örneklenmiş piksellerden
@@ -99,7 +118,7 @@ GOEXPERIMENT=simd go build -o gojxl ./cmd/gojxl     # AVX2/FMA SIMD çekirdekler
 ./gojxl decode -depth 16 resim.jxl c.png    # 16-bit PNG
 ./gojxl decode -bench 5 resim.jxl           # hız ölçümü
 ./gojxl decode foto.jxl foto.jpg            # yeniden sıkıştırılmış JPEG'i aynen geri ver
-./gojxl encode girdi.png cikti.jxl          # PNG → kayıpsız JXL (efor 4)
+./gojxl encode girdi.png cikti.jxl          # PNG → kayıpsız JXL (efor 4, renk profili korunur)
 ./gojxl encode anim.gif cikti.jxl           # GIF/APNG animasyonu → JXL animasyonu
 ./gojxl compare orijinal.png bozuk.jxl      # SSIMULACRA 2 + PSNR (PNG/JPEG/GIF/JXL)
 ./gojxl encode foto.jpg foto.jxl            # JPEG → JXL kayıpsız yeniden sıkıştırma (~%15-30 küçük)
@@ -118,8 +137,11 @@ img, err := gojxl.Decode(r)                 // image.Image
 anim, err := gojxl.DecodeAll(data)          // tüm kareler + süreler
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Effort: 5})       // kayıpsız
 err = gojxl.Encode(w, img, &gojxl.EncodeOptions{Distance: 1.0})   // kayıplı
+err = gojxl.Encode(w, img, &gojxl.EncodeOptions{ICC: profil})     // pikseller profil uzayında
+jxlData, err := gojxl.ConvertToJXL(dosya, &gojxl.EncodeOptions{Distance: 1}) // PNG/APNG/GIF/JPEG → JXL, renk korunur
 jxlData, err := gojxl.TranscodeJPEG(jpegBytes)                     // JPEG → JXL
 err = gojxl.ConvertToPNG(w, jxlData, nil)                          // JXL → PNG (akışlı)
+err = gojxl.ConvertToJPEG(w, jxlData, 90)                          // JXL → JPEG (orijinal varsa o)
 jpegBytes, err := gojxl.ReconstructJPEG(jxlData)                   // JXL → orijinal JPEG
 ```
 
