@@ -71,7 +71,9 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - Test: cjpeg/jpegtran/ImageMagick/ffmpeg/Pillow/Go ile üretilmiş ve sistemdeki
   gerçek JPEG'lerin hepsi (baseline, progressive, restart, 4:2:0/4:2:2/4:4:0/4:4:4,
   gri, RGB, EXIF/XMP/ICC/COM, kuyruk verisi) djxl ile bayt-birebir geri döner
-- Boyut cjxl ile aynı düzeyde (ör. 10.3 MB JPEG → 7.94 MB; cjxl 7.95 MB)
+- Boyut cjxl ile aynı düzeyde (ör. 10.3 MB JPEG → 7.93 MB; cjxl 7.95 MB);
+  bu 11 MP dosyada süre tek çekirdekte 1.75 s (cjxl 0.74 s), 4 çekirdekte
+  0.66 s (cjxl 0.39 s)
 - `gojxl encode foto.jpg foto.jxl` JPEG girdisinde varsayılan olarak bunu yapar
   (`-pixels` ile pikselleri kodlar)
 
