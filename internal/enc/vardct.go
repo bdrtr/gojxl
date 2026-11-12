@@ -914,49 +914,69 @@ var log2Tab = func() (t [256]float64) {
 // DCT); types made of smaller transforms weigh each coefficient by the
 // pixel energy of its unit error (pixelWeights).
 func rdCostPre(coef, st, inv []float32, order []int32, t vtype, step float32, cw float64) (float64, float64) {
+	dd, rr, _ := rdCostBound(coef, st, inv, order, t, step, cw, 0, 0, 0, math.Inf(1))
+	return dd, rr
+}
+
+// rdCostBound is rdCostPre that gives up (ok false) once the channel's
+// term so far, dd/64 + mu*rr, added to prev, times mul reaches bound: the
+// candidate's cost can then only be higher (every quantity grows with
+// more coefficients, and the bound is computed in the order the final
+// value is). It checks every 64 coefficients.
+func rdCostBound(coef, st, inv []float32, order []int32, t vtype, step float32, cw, mu, prev, mul, bound float64) (dd, rr float64, ok bool) {
 	nllf, sz := t.cx*t.cy, t.size()
 	var w []float32
 	if t.split {
 		w = pixelWeights(t.acs)
 	}
+	ref := float64(step) * refMult
+	check := mul > 0 && !math.IsInf(bound, 1)
 	var r, d float64
 	last := nllf
-	for i := nllf; i < sz; i++ {
-		p := order[i]
-		v := coef[p]
-		x := v * inv[p]
-		var e float64
-		if x < 0.6 && x > -0.6 {
-			if w == nil {
-				d += float64(v * v)
-				continue
+	for c0 := nllf; c0 < sz; c0 += 64 {
+		if check && c0 > nllf {
+			dd := d * float64(sz) * cw / (ref * ref)
+			rr := r + (0.35*float64(last-nllf) + 5)
+			if (prev+(dd/64+mu*rr))*mul >= bound {
+				return 0, 0, false
 			}
-			e = float64(v)
-		} else {
-			// sign-symmetric: work on magnitudes (same result as
-			// math.Round and dequantAC on the signed values)
-			if x < 0 {
-				x, v = -x, -v
-			}
-			q := int32(float64(x) + 0.5)
-			if q < 256 {
-				e = float64(v - dqTab[q]*st[p])
-				r += log2Tab[q]
-			} else {
-				e = float64(v - dequantAC(q, st[p], 0.95, 0.145))
-				r += 3.5 + 2*math.Log2(float64(q))
-			}
-			last = i + 1
 		}
-		if w != nil {
-			d += e * e * float64(w[p]) / float64(sz)
-		} else {
-			d += e * e
+		for i := c0; i < min(c0+64, sz); i++ {
+			p := order[i]
+			v := coef[p]
+			x := v * inv[p]
+			var e float64
+			if x < 0.6 && x > -0.6 {
+				if w == nil {
+					d += float64(v * v)
+					continue
+				}
+				e = float64(v)
+			} else {
+				// sign-symmetric: work on magnitudes (same result as
+				// math.Round and dequantAC on the signed values)
+				if x < 0 {
+					x, v = -x, -v
+				}
+				q := int32(float64(x) + 0.5)
+				if q < 256 {
+					e = float64(v - dqTab[q]*st[p])
+					r += log2Tab[q]
+				} else {
+					e = float64(v - dequantAC(q, st[p], 0.95, 0.145))
+					r += 3.5 + 2*math.Log2(float64(q))
+				}
+				last = i + 1
+			}
+			if w != nil {
+				d += e * e * float64(w[p]) / float64(sz)
+			} else {
+				d += e * e
+			}
 		}
 	}
 	r += 0.35*float64(last-nllf) + 5
-	ref := float64(step) * refMult
-	return d * float64(sz) * cw / (ref * ref), r
+	return d * float64(sz) * cw / (ref * ref), r, true
 }
 
 // splitWeights holds pixelWeights per AC strategy.
@@ -1266,7 +1286,19 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 						} else {
 							rc.coef(c, vt, (bx-bx0)*8, (by-by0)*8, buf[:sz])
 						}
-						dd, rr := rdCostPre(buf[:sz], selSt[ti][c], selInv[ti][c], torder[ti], vt, baseStep, chanDistW[c])
+						// the sum so far the term adds to (as in the final
+						// t[0] + t[1] + t[2])
+						var prev float64
+						switch k {
+						case 1:
+							prev = t[1]
+						case 2:
+							prev = t[0] + t[1]
+						}
+						dd, rr, ok := rdCostBound(buf[:sz], selSt[ti][c], selInv[ti][c], torder[ti], vt, baseStep, chanDistW[c], mu, prev, mul, bound)
+						if !ok {
+							return math.Inf(1)
+						}
 						t[c] = dd/64 + mu*rr
 						var part float64
 						switch k {
