@@ -2,6 +2,7 @@ package enc
 
 import (
 	"math"
+	"runtime"
 	"sort"
 
 	"gojxl/internal/bitio"
@@ -160,25 +161,62 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 		}
 		clTotNl[k] = nlog2n(clTot[k])
 	}
-	for ei := range es {
-		e := &es[ei]
-		c := counts[e.i]
-		alone := histCost(c)
-		best, bestInc := -1, math.Inf(1)
-		for k := range cl {
-			if inc := addCost(k, e); inc < bestInc {
-				best, bestInc = k, inc
+	// greedy assignment, largest contexts first. With many contexts, the
+	// costs against the clusters there are at the start of a batch are
+	// computed in parallel; applying the batch in order then recomputes
+	// only the costs for clusters changed (or created) within it, so the
+	// choices are exactly those of the plain sequential pass.
+	const batch = 32
+	par := runtime.GOMAXPROCS(0) > 1 && len(es) >= 8*batch
+	var bc []float64 // batch costs: [context in batch][cluster < k0]
+	var touched []bool
+	for b0 := 0; b0 < len(es); b0 += batch {
+		b1 := min(b0+batch, len(es))
+		k0 := 0
+		if par && len(cl) > 0 {
+			k0 = len(cl)
+			if cap(bc) < (b1-b0)*k0 {
+				bc = make([]float64, batch*maxClusters)
 			}
+			bc = bc[:(b1-b0)*k0]
+			parallel(b1-b0, func(j int) {
+				e := &es[b0+j]
+				row := bc[j*k0 : (j+1)*k0]
+				for k := range row {
+					row[k] = addCost(k, e)
+				}
+			})
+			touched = append(touched[:0], make([]bool, k0)...)
 		}
-		if best < 0 || (len(cl) < maxClusters && alone+sigBits(c) < bestInc) {
-			cl = append(cl, make([]uint64, alpha))
-			clNl = append(clNl, make([]float64, alpha))
-			clTot = append(clTot, 0)
-			clTotNl = append(clTotNl, 0)
-			best = len(cl) - 1
+		for ei := b0; ei < b1; ei++ {
+			e := &es[ei]
+			c := counts[e.i]
+			alone := histCost(c)
+			best, bestInc := -1, math.Inf(1)
+			for k := range cl {
+				var inc float64
+				if k < k0 && !touched[k] {
+					inc = bc[(ei-b0)*k0+k]
+				} else {
+					inc = addCost(k, e)
+				}
+				if inc < bestInc {
+					best, bestInc = k, inc
+				}
+			}
+			if best < 0 || (len(cl) < maxClusters && alone+sigBits(c) < bestInc) {
+				cl = append(cl, make([]uint64, alpha))
+				clNl = append(clNl, make([]float64, alpha))
+				clTot = append(clTot, 0)
+				clTotNl = append(clTotNl, 0)
+				best = len(cl) - 1
+			}
+			move(e, best, 1)
+			if best < k0 {
+				touched[best] = true
+			}
+			cm[e.i] = uint8(best)
 		}
-		move(e, best, 1)
-		cm[e.i] = uint8(best)
 	}
 	if len(cl) == 0 {
 		return cm, [][]uint64{make([]uint64, 1)}
