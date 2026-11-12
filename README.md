@@ -96,7 +96,9 @@ tabanlı dönüştürücülerden daha hızlı, tüm çekirdekleri kullanan bir a
 - Kayıpsızda pikseller ve profil aynen geri döner (djxl ve gojxl ile doğrulandı)
 - Kayıplıda pikseller XYB'den önce profil/enum üzerinden doğrusal sRGB'ye
   çevrilir (geniş gamut dahil); djxl ve gojxl çıktıları kaynak uzayında
-  aynı sonucu verir. Matris/TRC olmayan profiller ve PQ/HLG kayıplıda
+  aynı sonucu verir. HDR (PQ/HLG) de kayıplı kodlanır: XYB mutlak ışık
+  taşır (1 = 255 nit; HLG OOTF ile ekran ışığına çevrilir); boyut/PSNR
+  cjxl ile aynı düzeyde. Matris/TRC olmayan (LUT tabanlı) profiller kayıplıda
   `ErrUnsupportedColour` döner (kayıpsız her profili saklar)
 - 16-bit girdiler kayıplıda da 16-bit hassasiyetle XYB'ye geçer ve başlık
   16-bit yazılır (önceden 8-bit'e indiriliyordu)
@@ -291,5 +293,4 @@ yüzünden yavaşlar. Tek çekirdekte 4K VarDCT çözme: skaler 20 MP/s, SIMD
 
 - Algısal (butteraugli benzeri) uyarlamalı nicemleme, daha fazla dönüşüm tipi
 - Grup başına RCT seçimi, daha hızlı ağaç öğrenme (efor 5+), daha hızlı JPEG dönüştürme
-- Kayıplı HDR (PQ/HLG) kodlama
 - Akış (streaming) kod çözme

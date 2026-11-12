@@ -276,6 +276,16 @@ func toXYB(im *Image, pw, ph int, model *jxl.ColourModel) [3][]float32 {
 		}
 	}
 	mask := int32(maxv)
+	// HLG: display light = scene light * scale * Y^(gamma-1); the factor
+	// is common to the three channels, so it applies after the opsin mix
+	var ootfExp, ootfScale float64
+	var ootfLum [3]float32
+	if model != nil && model.OOTFGamma != 0 {
+		ootfExp, ootfScale = model.OOTFGamma-1, model.OOTFScale
+		for i, v := range model.OOTFLum {
+			ootfLum[i] = float32(v)
+		}
+	}
 	parallel(ph, func(y int) {
 		// row slices in locals: through ch and out every sample would
 		// reload the slice headers
@@ -291,9 +301,20 @@ func toXYB(im *Image, pw, ph int, model *jxl.ColourModel) [3][]float32 {
 		for x := 0; x < pw; x++ {
 			sx := min(x, W-1)
 			r, g, b := l0[cr[sx]&mask], l1[cg[sx]&mask], l2[cbl[sx]&mask]
-			m0 := k[0]*r + k[1]*g + k[2]*b + opsinBias
-			m1 := k[3]*r + k[4]*g + k[5]*b + opsinBias
-			m2 := k[6]*r + k[7]*g + k[8]*b + opsinBias
+			var m0, m1, m2 float32
+			if ootfScale == 0 {
+				m0 = k[0]*r + k[1]*g + k[2]*b + opsinBias
+				m1 = k[3]*r + k[4]*g + k[5]*b + opsinBias
+				m2 = k[6]*r + k[7]*g + k[8]*b + opsinBias
+			} else {
+				var s float32
+				if yl := ootfLum[0]*r + ootfLum[1]*g + ootfLum[2]*b; yl > 0 {
+					s = float32(ootfScale * math.Pow(float64(yl), ootfExp))
+				}
+				m0 = s*(k[0]*r+k[1]*g+k[2]*b) + opsinBias
+				m1 = s*(k[3]*r+k[4]*g+k[5]*b) + opsinBias
+				m2 = s*(k[6]*r+k[7]*g+k[8]*b) + opsinBias
+			}
 			m0 = float32(cbrtFast(float64(max(m0, 0)))) - cb
 			m1 = float32(cbrtFast(float64(max(m1, 0)))) - cb
 			m2 = float32(cbrtFast(float64(max(m2, 0)))) - cb
@@ -1756,7 +1777,8 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			out.WriteBool(false) // metadata
 			extra := writeExtraFields(out, im.Orientation, fo.Anim, im.intensityTarget() != 0)
 			writeBitDepth(out, im.BitDepth)
-			out.WriteBool(im.BitDepth <= 12) // 16-bit buffers suffice
+			// HDR light makes larger LF values
+			out.WriteBool(im.BitDepth <= 12 && im.intensityTarget() == 0) // 16-bit buffers suffice
 			if alpha != nil {
 				out.WriteU32(1, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
 				writeAlphaInfo(out, im.BitDepth)

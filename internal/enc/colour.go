@@ -120,9 +120,8 @@ func writeICCIfAny(w *bitio.Writer, im *Image) {
 }
 
 // ErrColourModel reports a colour description that lossy encoding cannot
-// convert to XYB: ICC profiles other than matrix/TRC RGB or grey ones,
-// and PQ or HLG transfer functions.
-var ErrColourModel = errors.New("jxl: lossy encoding needs a matrix/TRC colour profile (not PQ, HLG or LUT based)")
+// convert to XYB: ICC profiles other than matrix/TRC RGB or grey ones.
+var ErrColourModel = errors.New("jxl: lossy encoding needs a matrix/TRC colour profile (not LUT based)")
 
 // colourModel returns how the image's samples map to linear sRGB, or nil
 // for sRGB samples.
@@ -131,6 +130,8 @@ func (im *Image) colourModel() (*jxl.ColourModel, error) {
 	switch {
 	case im.ICC != nil:
 		m = jxl.ModelFromICC(im.ICC)
+	case im.intensityTarget() != 0:
+		m = jxl.ModelFromEncodingHDR(im.Colour, im.intensityTarget())
 	case im.Colour != nil && !im.Colour.IsSRGB():
 		m = jxl.ModelFromEncoding(im.Colour)
 	default:

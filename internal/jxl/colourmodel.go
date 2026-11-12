@@ -17,6 +17,44 @@ type ColourModel struct {
 	Grey   bool
 	Curves [3]func(float64) float64
 	M      [9]float64
+	// HLG: the curves give scene light; the display light XYB holds is
+	// that times OOTFScale * Y^(OOTFGamma-1), Y its luminance (weights
+	// OOTFLum). OOTFGamma 0: no OOTF.
+	OOTFGamma, OOTFScale float64
+	OOTFLum              [3]float64
+}
+
+// ModelFromEncodingHDR returns the model of a PQ or HLG enum encoding for
+// XYB, which holds absolute light (1 = 255 nits): PQ samples decode to
+// nits / 255, HLG samples to scene light that the OOTF for the intensity
+// target turns into display light. nil for other encodings.
+func ModelFromEncodingHDR(c *ColourEncoding, intensityTarget float32) *ColourModel {
+	if c.WantICC || c.ColourSpace > CSGrey || c.TransferFunction != TFPQ && c.TransferFunction != TFHLG {
+		return nil
+	}
+	lin := *c
+	lin.TransferFunction = TFLinear
+	m := ModelFromEncoding(&lin)
+	if m == nil {
+		return nil
+	}
+	var f func(float64) float64
+	if c.TransferFunction == TFPQ {
+		f = func(v float64) float64 { return pqEOTF(v) / 255 }
+	} else {
+		f = hlgInverseOETF
+		it := float64(intensityTarget)
+		m.OOTFGamma = 1.2 * math.Pow(1.111, math.Log2(it/1000))
+		m.OOTFScale = it / 255
+		m.OOTFLum = [3]float64{0, 1, 0}
+		if !m.Grey {
+			w, p := c.whiteXY(), c.primariesXY()
+			t := rgbToXYZ(p[0], p[1], p[2], w)
+			m.OOTFLum = [3]float64{t[3], t[4], t[5]}
+		}
+	}
+	m.Curves = [3]func(float64) float64{f, f, f}
+	return m
 }
 
 var (

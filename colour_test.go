@@ -420,3 +420,59 @@ func TestPQToSDR(t *testing.T) {
 		t.Error("SDR output still tagged")
 	}
 }
+
+// Lossy PQ and HLG encoding keeps the samples' space: decoding gives the
+// signal back (XYB holds the light, 1 = 255 nits).
+func TestLossyHDR(t *testing.T) {
+	src := colourTestImage()
+	pqImg := pqImage(src)
+	hlgImg := image.NewNRGBA64(pqImg.Rect)
+	for i := 0; i < len(src.Pix); i += 4 {
+		for k := 0; k < 3; k++ {
+			// HLG signal of a scene light ramp (a plain test pattern)
+			s := float64(src.Pix[i+k]) / 255 * 0.8
+			var e float64
+			if s <= 1.0/12 {
+				e = math.Sqrt(3 * s)
+			} else {
+				e = 0.17883277*math.Log(12*s-0.28466892) + 0.55991073
+			}
+			v := uint16(math.Round(e * 65535))
+			hlgImg.Pix[2*i+2*k], hlgImg.Pix[2*i+2*k+1] = uint8(v>>8), uint8(v)
+		}
+		hlgImg.Pix[2*i+6], hlgImg.Pix[2*i+7] = 255, 255
+	}
+	for _, c := range []struct {
+		name string
+		img  image.Image
+		tf   byte
+	}{{"PQ", pqImg, 16}, {"HLG", hlgImg, 18}} {
+		file := pngWith(t, c.img, chunk("cICP", []byte{9, c.tf, 0, 1}))
+		data, err := ConvertToJXL(file, &EncodeOptions{Distance: 1})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		d := headerOf(t, data)
+		if !d.Header.XYBEncoded || d.Header.Colour.TransferFunction != uint32(c.tf) {
+			t.Fatalf("%s: xyb %v, transfer %d", c.name, d.Header.XYBEncoded, d.Header.Colour.TransferFunction)
+		}
+		img, err := DecodeBytes(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var se float64
+		b := c.img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				r1, g1, b1, _ := c.img.At(x, y).RGBA()
+				r2, g2, b2, _ := img.At(x, y).RGBA()
+				for _, dd := range [3]float64{float64(r1) - float64(r2), float64(g1) - float64(g2), float64(b1) - float64(b2)} {
+					se += dd * dd
+				}
+			}
+		}
+		if p := 10 * math.Log10(65535*65535/(se/float64(3*b.Dx()*b.Dy()))); p < 32 {
+			t.Errorf("%s: PSNR %.2f", c.name, p)
+		}
+	}
+}
