@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,9 +29,9 @@ func usage() {
 
 Usage:
   gojxl decode [-depth 16] input.jxl output.png|.jpg|.ppm|.pgm|.pam|.pfm
-  gojxl decode [-format png|jpg|pnm|pfm] -o outdir input.jxl...
+  gojxl decode [-format png|jpg|pnm|pfm] -o outdir input.jxl|dir...
   gojxl encode [-e effort] [-d distance | -q quality] input output.jxl
-  gojxl encode [-e effort] [-d distance | -q quality] -o outdir input...
+  gojxl encode [-e effort] [-d distance | -q quality] -o outdir input|dir...
       input: PNG/APNG, GIF, JPEG (recompressed losslessly at d=0),
       PGM/PPM/PAM (at their bit depth); the
       colour profile and Exif/XMP metadata of the input are kept;
@@ -121,39 +122,85 @@ func writeFile(path string, data []byte) error {
 // batch runs convert(input, output) for every input, writing outputs into
 // dir with the extension ext, jobs at a time; it reports each result and
 // exits with status 1 if any failed.
-func batch(inputs []string, dir, ext string, jobs int, convert func(in, out string) (string, error)) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fatal(err)
+func batch(inputs []string, dir, ext string, exts []string, jobs int, convert func(in, out string) (string, error)) {
+	type job struct{ in, out string }
+	var list []job
+	seen := map[string]string{} // output -> input
+	add := func(in, rel string) {
+		out := filepath.Join(dir, strings.TrimSuffix(rel, filepath.Ext(rel))+ext)
+		if prev, ok := seen[out]; ok {
+			fatal(fmt.Errorf("%s and %s would both be written to %s", prev, in, out))
+		}
+		seen[out] = in
+		list = append(list, job{in, out})
+	}
+	for _, in := range inputs {
+		st, err := os.Stat(in)
+		if err != nil {
+			fatal(err)
+		}
+		if !st.IsDir() {
+			add(in, filepath.Base(in))
+			continue
+		}
+		// a directory: the files of the input kinds in it and below, at
+		// the same relative paths under the output directory
+		err = filepath.WalkDir(in, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !slices.Contains(exts, strings.ToLower(filepath.Ext(path))) {
+				return nil
+			}
+			rel, err := filepath.Rel(in, path)
+			if err != nil {
+				return err
+			}
+			add(path, rel)
+			return nil
+		})
+		if err != nil {
+			fatal(err)
+		}
 	}
 	t0 := time.Now()
 	var mu sync.Mutex
 	failed := 0
 	sem := make(chan struct{}, max(jobs, 1))
 	var wg sync.WaitGroup
-	for _, in := range inputs {
-		out := filepath.Join(dir, strings.TrimSuffix(filepath.Base(in), filepath.Ext(in))+ext)
+	for _, j := range list {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			msg, err := convert(in, out)
+			msg, err := "", os.MkdirAll(filepath.Dir(j.out), 0o755)
+			if err == nil {
+				msg, err = convert(j.in, j.out)
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
 				failed++
-				fmt.Fprintf(os.Stderr, "%s: error: %v\n", in, err)
+				fmt.Fprintf(os.Stderr, "%s: error: %v\n", j.in, err)
 				return
 			}
-			fmt.Fprintf(os.Stderr, "%s -> %s: %s\n", in, out, msg)
+			fmt.Fprintf(os.Stderr, "%s -> %s: %s\n", j.in, j.out, msg)
 		}()
 	}
 	wg.Wait()
 	el := time.Since(t0)
-	fmt.Fprintf(os.Stderr, "%d files in %v (%.1f files/s), %d failed\n", len(inputs), el.Round(time.Millisecond), float64(len(inputs))/el.Seconds(), failed)
+	fmt.Fprintf(os.Stderr, "%d files in %v (%.1f files/s), %d failed\n", len(list), el.Round(time.Millisecond), float64(len(list))/el.Seconds(), failed)
 	if failed > 0 {
 		os.Exit(1)
 	}
 }
+
+// encodeExts and decodeExts are the file kinds batch mode takes from
+// directories.
+var (
+	encodeExts = []string{".png", ".apng", ".gif", ".jpg", ".jpeg", ".jfif", ".pgm", ".ppm", ".pam", ".pnm"}
+	decodeExts = []string{".jxl"}
+)
 
 // defaultJobs is the number of files converted at once in batch mode (each
 // conversion is parallel too).
@@ -166,7 +213,7 @@ func cmdDecode(args []string) {
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	memprof := fs.String("memprofile", "", "write allocation profile to file")
 	quality := fs.Int("q", 90, "JPEG quality when the output is JPEG and no original JPEG is stored")
-	outDir := fs.String("o", "", "batch mode: decode every input into this directory")
+	outDir := fs.String("o", "", "batch mode: decode every input (directories: their .jxl files, recursively) into this directory")
 	format := fs.String("format", "png", "output format when it does not follow from the name: png, jpg, pnm (PGM/PPM/PAM) or pfm")
 	jobs := fs.Int("j", defaultJobs(), "batch mode: files decoded at once")
 	srgb := fs.Bool("srgb", false, "convert the output to sRGB (no colour profile; PQ/HLG images keep their space)")
@@ -203,7 +250,7 @@ func cmdDecode(args []string) {
 		return decodeOne(in, out, f, opt, *quality)
 	}
 	if *outDir != "" {
-		batch(fs.Args(), *outDir, "."+*format, *jobs, convert)
+		batch(fs.Args(), *outDir, "."+*format, decodeExts, *jobs, convert)
 		return
 	}
 	if fs.NArg() >= 2 && *bench == 0 && *memprof == "" {
@@ -355,7 +402,7 @@ func cmdEncode(args []string) {
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
 	memprof := fs.String("memprofile", "", "write allocation profile to file")
 	pixels := fs.Bool("pixels", false, "for JPEG input: encode decoded pixels instead of recompressing")
-	outDir := fs.String("o", "", "batch mode: encode every input into this directory")
+	outDir := fs.String("o", "", "batch mode: encode every input (directories: their image files, recursively, keeping subdirectories) into this directory")
 	jobs := fs.Int("j", defaultJobs(), "batch mode: files encoded at once")
 	fs.Parse(args)
 	if *quality >= 0 {
@@ -387,7 +434,7 @@ func cmdEncode(args []string) {
 		if fs.NArg() < 1 {
 			usage()
 		}
-		batch(fs.Args(), *outDir, ".jxl", *jobs, convert)
+		batch(fs.Args(), *outDir, ".jxl", encodeExts, *jobs, convert)
 		return
 	}
 	if fs.NArg() < 2 {
