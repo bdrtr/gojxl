@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"gojxl/internal/exif"
-	ijpeg "gojxl/internal/jpeg"
-	"gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/exif"
+	ijpeg "github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/pngx"
 )
 
 // testExif is big-endian TIFF data with orientation 6 and a Make tag.

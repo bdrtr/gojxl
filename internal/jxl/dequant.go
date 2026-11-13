@@ -3,7 +3,7 @@ package jxl
 import (
 	"math"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // Quant table indices.

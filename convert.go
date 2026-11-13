@@ -10,14 +10,14 @@ import (
 	"io"
 	"sync"
 
-	"gojxl/internal/bmp"
-	"gojxl/internal/exif"
-	ijpeg "gojxl/internal/jpeg"
-	"gojxl/internal/jxl"
-	"gojxl/internal/pngx"
-	"gojxl/internal/pnm"
-	"gojxl/internal/tiff"
-	"gojxl/internal/webp"
+	"github.com/bdrtr/gojxl/internal/bmp"
+	"github.com/bdrtr/gojxl/internal/exif"
+	ijpeg "github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/pnm"
+	"github.com/bdrtr/gojxl/internal/tiff"
+	"github.com/bdrtr/gojxl/internal/webp"
 )
 
 // ConvertToJXL encodes an image file as JPEG XL: PNG or APNG, GIF, JPEG,

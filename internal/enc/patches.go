@@ -4,7 +4,7 @@ import (
 	"math"
 	"slices"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // Patches for text-like content (libjxl enc_patch_dictionary.cc, used at

@@ -1,6 +1,6 @@
 package jxl
 
-import "gojxl/internal/bitio"
+import "github.com/bdrtr/gojxl/internal/bitio"
 
 // Exports for the encoder (same module).
 

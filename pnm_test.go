@@ -7,8 +7,8 @@ import (
 	"math"
 	"testing"
 
-	"gojxl/internal/jxl"
-	"gojxl/internal/pnm"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/pnm"
 )
 
 // A 10-bit PPM is stored at 10 bits and comes back exactly (as 16-bit

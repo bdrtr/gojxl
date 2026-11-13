@@ -1,8 +1,8 @@
 package jxl
 
 import (
-	"gojxl/internal/bitio"
-	"gojxl/internal/entropy"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/entropy"
 )
 
 func readCodeForTree(br *bitio.Reader, t *MATree) (*entropy.Code, error) {

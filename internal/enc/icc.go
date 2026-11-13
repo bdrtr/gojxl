@@ -1,6 +1,6 @@
 package enc
 
-import "gojxl/internal/bitio"
+import "github.com/bdrtr/gojxl/internal/bitio"
 
 // ICC profile encoding. The profile is stored in the "predicted" form the
 // decoder expects; this encoder uses the simplest valid layout: the 128

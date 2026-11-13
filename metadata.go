@@ -3,14 +3,14 @@ package gojxl
 import (
 	"bytes"
 
-	"gojxl/internal/brotli"
-	"gojxl/internal/enc"
-	"gojxl/internal/exif"
-	"gojxl/internal/jpeg"
-	"gojxl/internal/jxl"
-	"gojxl/internal/pngx"
-	"gojxl/internal/tiff"
-	"gojxl/internal/webp"
+	"github.com/bdrtr/gojxl/internal/brotli"
+	"github.com/bdrtr/gojxl/internal/enc"
+	"github.com/bdrtr/gojxl/internal/exif"
+	"github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/tiff"
+	"github.com/bdrtr/gojxl/internal/webp"
 )
 
 // metadata is the Exif data (TIFF format) and XMP packet of an image.

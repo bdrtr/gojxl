@@ -3,9 +3,9 @@ package gojxl
 import (
 	"encoding/binary"
 
-	"gojxl/internal/enc"
-	"gojxl/internal/jxl"
-	"gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/enc"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/pngx"
 )
 
 // ErrUnsupportedColour is returned for lossy encoding of samples whose

@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"gojxl/internal/webp"
+	"github.com/bdrtr/gojxl/internal/webp"
 )
 
 // WebP inputs: a lossless one with alpha comes back exactly from lossless

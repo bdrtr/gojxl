@@ -4,9 +4,9 @@ import (
 	"errors"
 	"math"
 
-	"gojxl/internal/brotli"
-	"gojxl/internal/jpeg"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/brotli"
+	"github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // ErrNoJPEG is returned by ReconstructJPEG for files without JPEG

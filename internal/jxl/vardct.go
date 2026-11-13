@@ -3,8 +3,8 @@ package jxl
 import (
 	"sync"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/entropy"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/entropy"
 )
 
 // AC strategy types.

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // Image is a planar integer image to be encoded losslessly.

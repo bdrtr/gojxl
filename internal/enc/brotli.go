@@ -3,8 +3,8 @@ package enc
 import (
 	"math/bits"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/brotli"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/brotli"
 )
 
 // A small Brotli (RFC 7932) compressor: LZ77 with hash chains and one

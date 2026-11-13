@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // Errors returned by the decoder.

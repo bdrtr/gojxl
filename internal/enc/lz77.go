@@ -5,7 +5,7 @@ import (
 	"math/bits"
 	"sync"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // LZ77 over hybrid-integer symbol streams. A copy is coded as a length

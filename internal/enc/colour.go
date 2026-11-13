@@ -4,8 +4,8 @@ import (
 	"errors"
 	"math"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // greySRGB is the colour encoding written for grey images without one.

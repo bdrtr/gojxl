@@ -10,7 +10,7 @@ import (
 	"math/rand"
 	"testing"
 
-	ijpeg "gojxl/internal/jpeg"
+	ijpeg "github.com/bdrtr/gojxl/internal/jpeg"
 )
 
 func testPhoto(w, h int, r *rand.Rand) *image.RGBA {

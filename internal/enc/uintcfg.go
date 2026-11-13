@@ -5,7 +5,7 @@ import (
 	"math/bits"
 	"runtime"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // Per-cluster hybrid uint configuration search: after contexts are

@@ -12,9 +12,9 @@ import (
 	"math"
 	"testing"
 
-	ijpeg "gojxl/internal/jpeg"
-	"gojxl/internal/jxl"
-	"gojxl/internal/pngx"
+	ijpeg "github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/pngx"
 )
 
 func colourTestImage() *image.NRGBA {

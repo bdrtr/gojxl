@@ -3,7 +3,7 @@ package jpeg
 import (
 	"errors"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // Decompressor decompresses the Brotli stream at the end of a jbrd box.

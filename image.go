@@ -3,7 +3,7 @@ package gojxl
 import (
 	"image"
 
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 func q8(v float32) uint8 {

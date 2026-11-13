@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 func iccFiles(t *testing.T) [][]byte {

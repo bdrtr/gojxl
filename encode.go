@@ -7,9 +7,9 @@ import (
 	"io"
 	"sync/atomic"
 
-	"gojxl/internal/enc"
-	"gojxl/internal/jpeg"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/enc"
+	"github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // EncodeOptions controls encoding.

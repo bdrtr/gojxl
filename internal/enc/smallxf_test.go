@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // The forward transforms invert the decoder's, and index 0 is the block

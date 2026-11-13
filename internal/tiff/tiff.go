@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 
-	"gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/pngx"
 )
 
 // ErrFormat reports a malformed or unsupported file.

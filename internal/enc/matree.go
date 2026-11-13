@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // MA tree learning: samples of (properties, residual tokens per candidate

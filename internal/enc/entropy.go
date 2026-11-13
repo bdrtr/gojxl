@@ -3,7 +3,7 @@ package enc
 import (
 	"math/bits"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 type uintCfg struct{ se, msb, lsb uint32 }

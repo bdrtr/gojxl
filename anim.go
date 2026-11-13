@@ -10,9 +10,9 @@ import (
 	"runtime"
 	"sync"
 
-	"gojxl/internal/enc"
-	"gojxl/internal/pngx"
-	"gojxl/internal/webp"
+	"github.com/bdrtr/gojxl/internal/enc"
+	"github.com/bdrtr/gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/webp"
 )
 
 // EncodeAnimation encodes an animation (lossless, or lossy VarDCT when

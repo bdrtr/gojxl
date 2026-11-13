@@ -5,7 +5,7 @@ package entropy
 import (
 	"errors"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 var (

@@ -3,7 +3,7 @@ package jxl
 import (
 	"math"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 func (fd *frameDecoder) readNoise(br *bitio.Reader) error {

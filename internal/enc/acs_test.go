@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // acsTestImage is a smooth image with sharp-edged patches, not a multiple

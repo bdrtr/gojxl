@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"sort"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 // nlog2n returns n*log2(n) (table for small n).

@@ -8,7 +8,7 @@ import (
 	"image/color"
 	"io"
 
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 func init() {

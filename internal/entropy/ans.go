@@ -1,6 +1,6 @@
 package entropy
 
-import "gojxl/internal/bitio"
+import "github.com/bdrtr/gojxl/internal/bitio"
 
 const (
 	ansLogTabSize = 12

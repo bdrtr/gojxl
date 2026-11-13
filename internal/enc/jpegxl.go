@@ -9,10 +9,10 @@ import (
 	"runtime"
 	"sort"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/exif"
-	"gojxl/internal/jpeg"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/exif"
+	"github.com/bdrtr/gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // Lossless JPEG recompression: the quantised DCT coefficients of a JPEG

@@ -1,6 +1,6 @@
 package enc
 
-import "gojxl/internal/jxl"
+import "github.com/bdrtr/gojxl/internal/jxl"
 
 // Forward transforms of the 8x8 varblock types made of smaller parts:
 // IDENTITY (acs 1), DCT2X2 (2), DCT4X4 (3) and AFV0-3 (14-17), the exact

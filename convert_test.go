@@ -10,7 +10,7 @@ import (
 	"os"
 	"testing"
 
-	"gojxl/internal/pngx"
+	"github.com/bdrtr/gojxl/internal/pngx"
 )
 
 // ConvertToPNG must give the same file as decoding to an image and

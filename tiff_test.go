@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"gojxl/internal/jxl"
-	"gojxl/internal/tiff"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/tiff"
 )
 
 // A 16-bit TIFF comes back exactly from lossless JPEG XL.

@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"gojxl/internal/brotli"
+	"github.com/bdrtr/gojxl/internal/brotli"
 )
 
 func TestBrotliCompress(t *testing.T) {

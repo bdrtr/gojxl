@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // FuzzDecode feeds mutated files of every kind the encoders produce to the

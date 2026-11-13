@@ -3,7 +3,7 @@ package gojxl
 import (
 	"image"
 
-	"gojxl/internal/metric"
+	"github.com/bdrtr/gojxl/internal/metric"
 )
 
 // SSIMULACRA2 returns the SSIMULACRA 2 perceptual score of dist against

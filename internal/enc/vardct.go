@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"slices"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // LossyOptions controls VarDCT encoding.

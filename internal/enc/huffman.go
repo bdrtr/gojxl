@@ -5,7 +5,7 @@ import (
 	"container/heap"
 	"sort"
 
-	"gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/bitio"
 )
 
 type hnode struct {

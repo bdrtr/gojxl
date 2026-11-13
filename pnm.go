@@ -8,10 +8,10 @@ import (
 	"io"
 	"math"
 
-	"gojxl/internal/enc"
-	"gojxl/internal/jxl"
-	"gojxl/internal/pnm"
-	"gojxl/internal/tiff"
+	"github.com/bdrtr/gojxl/internal/enc"
+	"github.com/bdrtr/gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/pnm"
+	"github.com/bdrtr/gojxl/internal/tiff"
 )
 
 // errPFMInput reports float anymap input, which the encoder cannot take.

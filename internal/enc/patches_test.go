@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"gojxl/internal/jxl"
+	"github.com/bdrtr/gojxl/internal/jxl"
 )
 
 // textImage draws rows of a few distinct glyphs on a flat background.

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/jpeg"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/jpeg"
 )
 
 // JPEG bitstream reconstruction data ('jbrd' box): the information, besides

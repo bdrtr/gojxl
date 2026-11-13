@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"gojxl"
-	"gojxl/internal/enc"
-	"gojxl/internal/webp"
+	"github.com/bdrtr/gojxl"
+	"github.com/bdrtr/gojxl/internal/enc"
+	"github.com/bdrtr/gojxl/internal/webp"
 )
 
 func usage() {

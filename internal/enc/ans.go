@@ -5,8 +5,8 @@ import (
 	"sort"
 	"sync"
 
-	"gojxl/internal/bitio"
-	"gojxl/internal/entropy"
+	"github.com/bdrtr/gojxl/internal/bitio"
+	"github.com/bdrtr/gojxl/internal/entropy"
 )
 
 const ansTab = 4096
