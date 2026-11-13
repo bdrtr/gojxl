@@ -55,3 +55,34 @@ func BenchmarkXYBTo8(b *testing.B) {
 		xybTo8(c, x, y, bb, dst, 4)
 	}
 }
+
+// Gamma curves give 0 up to linear 1e-5 and for negative values, as
+// libjxl's output stage (OpGamma) does.
+func TestGammaZeroBelow(t *testing.T) {
+	for _, tf := range []uint32{TFGamma, TFDCI} {
+		f := tfFunc(tf, 0.45455, 255)
+		lut := buildTFLUT(f)
+		lut.powerLaw()
+		px := []float32{-0.5, -1e-6, 0, 5e-6, 1e-5, 2e-5, 0.5}
+		lut.apply(px, f)
+		for i, want := range []bool{false, false, false, false, false, true, true} {
+			if (px[i] > 0) != want {
+				t.Errorf("tf %d: sample %d -> %g", tf, i, px[i])
+			}
+		}
+	}
+	if tfZeroesNegatives(TFSRGB) {
+		t.Error("sRGB mirrors negative values")
+	}
+	// interpolation near zero stays within 0.5/65535 of the curve
+	f := tfFunc(TFGamma, 0.45455, 255)
+	lut := buildTFLUT(f)
+	lut.powerLaw()
+	for v := float32(1.1e-5); v < 0.01; v *= 1.01 {
+		px := []float32{v}
+		lut.apply(px, f)
+		if d := math.Abs(float64(px[0] - f(v))); d > 0.5/65535 {
+			t.Fatalf("v %g: %g vs %g", v, px[0], f(v))
+		}
+	}
+}

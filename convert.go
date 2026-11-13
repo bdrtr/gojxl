@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"errors"
 	"image"
+	"image/draw"
 	"image/jpeg"
 	"io"
 	"sync"
@@ -163,12 +164,23 @@ func ConvertToJPEG(w io.Writer, data []byte, quality int, opt *Options) (err err
 	if err != nil {
 		return err
 	}
+	info, ierr := Stat(data)
+	if ierr == nil && info.Grey {
+		// grey images (with alpha, or 16-bit) as one-component JPEGs:
+		// image/jpeg writes YCbCr for anything but *image.Gray, and a grey
+		// ICC profile may not tag a colour JPEG
+		if _, ok := img.(*image.Gray); !ok {
+			g := image.NewGray(img.Bounds())
+			draw.Draw(g, g.Rect, img, img.Bounds().Min, draw.Src)
+			img = g
+		}
+	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 		return err
 	}
 	out := buf.Bytes()
-	if info, err := Stat(data); err == nil {
+	if ierr == nil {
 		icc, _ := outputColour(data, opt)
 		out = ijpeg.InsertMetadata(out, icc, exif.ResetOrientation(info.Exif), info.XMP)
 	}
@@ -216,7 +228,8 @@ func ConvertToPNG(w io.Writer, data []byte, opt *Options) (err error) {
 				frames[i], delays[i] = fr.Image, fr.Duration
 			}
 			var buf bytes.Buffer
-			if err := pngx.EncodeAPNG(&buf, frames, delays, anim.NumLoops, flate.BestSpeed); err != nil {
+			// grey images stay grey (+alpha): their grey ICC profile may not tag an RGB PNG
+			if err := pngx.EncodeAPNGGrey(&buf, frames, delays, anim.NumLoops, flate.BestSpeed, info.Grey); err != nil {
 				return err
 			}
 			return writeWithChunks(w, buf.Bytes(), extra)
@@ -248,7 +261,7 @@ func writeFramePNG(w io.Writer, data []byte, opt *Options, info *Info, extra []p
 	h := d.Header
 	if _, _, tr := orient(int(h.Orientation), f.Width, f.Height); tr != nil {
 		var buf bytes.Buffer
-		if err := pngx.Encode(&buf, frameToImage(h, f, opt), flate.BestSpeed); err != nil {
+		if err := pngx.EncodeGrey(&buf, frameToImage(h, f, opt), flate.BestSpeed, h.IsGrey()); err != nil {
 			return err
 		}
 		return writeWithChunks(w, buf.Bytes(), extra)
@@ -265,24 +278,41 @@ func writeFramePNG(w io.Writer, data []byte, opt *Options, info *Info, extra []p
 	}
 	// float rows of colour converted on the fly (deferred XYB)
 	tmps := sync.Pool{New: func() any { return make([]float32, 3*W) }}
-	if h.IsGrey() && alpha == nil {
-		return pngx.EncodeRows(w, W, H, 0, depth, func(y int, dst []byte) {
+	if h.IsGrey() {
+		// grey or grey+alpha (a grey ICC profile may not tag an RGB PNG);
+		// alpha only if any pixel is not fully opaque at the output depth
+		ga := alpha != nil && !opaqueAt(alpha, deep)
+		ctype, ch := 0, 1
+		if ga {
+			ctype, ch = 4, 2
+		}
+		return pngx.EncodeRows(w, W, H, ctype, depth, func(y int, dst []byte) {
 			tmp := tmps.Get().([]float32)
 			r, _, _ := f.RGBRow(y, tmp)
-			if deep {
-				for x, v := range r[:W] {
+			r = r[:W]
+			var a []float32
+			if ga {
+				a = alpha.Row(y)[:W]
+			}
+			for x, v := range r {
+				if deep {
 					q := q16(v)
-					dst[2*x], dst[2*x+1] = uint8(q>>8), uint8(q)
-				}
-			} else {
-				for x, v := range r[:W] {
-					dst[x] = q8(v)
+					dst[2*ch*x], dst[2*ch*x+1] = uint8(q>>8), uint8(q)
+					if ga {
+						q := q16(a[x])
+						dst[2*ch*x+2], dst[2*ch*x+3] = uint8(q>>8), uint8(q)
+					}
+				} else {
+					dst[ch*x] = q8(v)
+					if ga {
+						dst[ch*x+1] = q8(a[x])
+					}
 				}
 			}
 			tmps.Put(tmp)
 		}, flate.BestSpeed, extra...)
 	}
-	// RGB or RGBA (grey with alpha too), RGBA only if any pixel is not
+	// RGB or RGBA, RGBA only if any pixel is not
 	// fully opaque at the output depth
 	ctype, ch := 2, 3
 	if alpha != nil && !opaqueAt(alpha, deep) {

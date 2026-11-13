@@ -20,7 +20,14 @@ import (
 // concatenate into one zlib stream (the Adler-32 sums are combined).
 // Supported: *image.Gray, *image.Gray16, *image.NRGBA, *image.NRGBA64.
 func Encode(w io.Writer, img image.Image, level int) error {
-	l, err := pixelLayout(img, !isOpaque(img))
+	return EncodeGrey(w, img, level, false)
+}
+
+// EncodeGrey is Encode; with grey set, NRGBA images (whose red channel
+// holds the grey value) are written as grey or grey+alpha PNGs, which a
+// grey ICC profile can then describe (it may not tag an RGB PNG).
+func EncodeGrey(w io.Writer, img image.Image, level int, grey bool) error {
+	l, err := pixelLayout(img, !isOpaque(img), grey)
 	if err != nil {
 		return err
 	}
@@ -37,7 +44,7 @@ func Encode(w io.Writer, img image.Image, level int) error {
 }
 
 // EncodeRows writes a width x height PNG whose rows row fills in PNG
-// layout (ctype 0 grey, 2 RGB or 6 RGBA; depth 8 or 16 bits per sample,
+// layout (ctype 0 grey, 2 RGB, 4 grey+alpha or 6 RGBA; depth 8 or 16 bits per sample,
 // big endian), so images need not exist in memory as a whole. row is
 // called concurrently for different rows.
 //
@@ -47,7 +54,7 @@ func EncodeRows(w io.Writer, width, height, ctype, depth int, row func(y int, ds
 	if width <= 0 || height <= 0 {
 		return errors.New("png: empty image")
 	}
-	ch := map[int]int{0: 1, 2: 3, 6: 4}[ctype]
+	ch := map[int]int{0: 1, 2: 3, 4: 2, 6: 4}[ctype]
 	if ch == 0 || (depth != 8 && depth != 16) {
 		return errors.New("png: unsupported row format")
 	}
@@ -122,6 +129,11 @@ func writeChunkTo(w io.Writer, typ string) error {
 // type) shown for delays[i] seconds each, looping loops times (0 =
 // forever). The first frame is also the default image.
 func EncodeAPNG(w io.Writer, frames []image.Image, delays []float64, loops int, level int) error {
+	return EncodeAPNGGrey(w, frames, delays, loops, level, false)
+}
+
+// EncodeAPNGGrey is EncodeAPNG with EncodeGrey's grey option.
+func EncodeAPNGGrey(w io.Writer, frames []image.Image, delays []float64, loops int, level int, grey bool) error {
 	if len(frames) == 0 || len(delays) != len(frames) {
 		return errors.New("pngx: no frames")
 	}
@@ -134,7 +146,7 @@ func EncodeAPNG(w io.Writer, frames []image.Image, delays []float64, loops int, 
 	}
 	ls := make([]layout, len(frames))
 	for i, f := range frames {
-		l, err := pixelLayout(f, alpha)
+		l, err := pixelLayout(f, alpha, grey)
 		if err != nil {
 			return err
 		}
@@ -202,8 +214,9 @@ func isOpaque(img image.Image) bool {
 }
 
 // pixelLayout returns the PNG pixel format of img and a row converter;
-// alpha selects RGBA output for NRGBA images.
-func pixelLayout(img image.Image, alpha bool) (layout, error) {
+// alpha selects RGBA output for NRGBA images, grey grey (+alpha) output
+// from their red channel.
+func pixelLayout(img image.Image, alpha, grey bool) (layout, error) {
 	b := img.Bounds()
 	W, H := b.Dx(), b.Dy()
 	l := layout{w: W, h: H}
@@ -219,7 +232,22 @@ func pixelLayout(img image.Image, alpha bool) (layout, error) {
 		l.row = func(y int, dst []byte) { copy(dst, m.Pix[y*m.Stride:]) }
 	case *image.NRGBA:
 		l.depth = 8
-		if !alpha {
+		if grey {
+			l.ctype, l.bpp = 0, 1
+			if alpha {
+				l.ctype, l.bpp = 4, 2
+			}
+			l.row = func(y int, dst []byte) {
+				src := m.Pix[y*m.Stride : y*m.Stride+4*W]
+				for x := 0; x < W; x++ {
+					if alpha {
+						dst[2*x], dst[2*x+1] = src[4*x], src[4*x+3]
+					} else {
+						dst[x] = src[4*x]
+					}
+				}
+			}
+		} else if !alpha {
 			l.ctype, l.bpp = 2, 3
 			l.row = func(y int, dst []byte) {
 				src := m.Pix[y*m.Stride : y*m.Stride+4*W]
@@ -233,7 +261,23 @@ func pixelLayout(img image.Image, alpha bool) (layout, error) {
 		}
 	case *image.NRGBA64:
 		l.depth = 16
-		if !alpha {
+		if grey {
+			l.ctype, l.bpp = 0, 2
+			if alpha {
+				l.ctype, l.bpp = 4, 4
+			}
+			l.row = func(y int, dst []byte) {
+				src := m.Pix[y*m.Stride : y*m.Stride+8*W]
+				for x := 0; x < W; x++ {
+					if alpha {
+						copy(dst[4*x:4*x+2], src[8*x:8*x+2])
+						copy(dst[4*x+2:4*x+4], src[8*x+6:8*x+8])
+					} else {
+						copy(dst[2*x:2*x+2], src[8*x:8*x+2])
+					}
+				}
+			}
+		} else if !alpha {
 			l.ctype, l.bpp = 2, 6
 			l.row = func(y int, dst []byte) {
 				src := m.Pix[y*m.Stride : y*m.Stride+8*W]

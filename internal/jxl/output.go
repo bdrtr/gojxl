@@ -36,6 +36,12 @@ func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 	}
 	if t != nil && !t.srgb {
 		om = t.m.mul(om)
+	} else if ih.IsGrey() {
+		// grey sRGB output is the luminance, as libjxl (srgb_to_luma rows
+		// of kSRGBLuminances); the green channel alone differs by up to
+		// ~3e-4 where lossy coding left X or B-Y non-zero
+		const lr, lg, lb = 0.2126, 0.7152, 0.0722
+		om = mat3{lr, lg, lb, lr, lg, lb, lr, lg, lb}.mul(om)
 	}
 	for i := range c.m {
 		c.m[i] = float32(om[i])
@@ -48,8 +54,9 @@ func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 		c.post = t.hdr
 		return c
 	}
+	zeroNeg := false
 	if t != nil && !t.srgb {
-		c.f = t.enc
+		c.f, zeroNeg = t.enc, t.zeroNeg
 		c.hlgExp, c.lum = t.hlgExp, t.lum
 		if t.enc3[0] != nil {
 			c.f3 = t.enc3
@@ -64,8 +71,12 @@ func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 			return c
 		}
 		c.f = tfFunc(tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
+		zeroNeg = tfZeroesNegatives(tf)
 	}
 	c.lut = buildTFLUT(c.f)
+	if zeroNeg {
+		c.lut.powerLaw()
+	}
 	return c
 }
 

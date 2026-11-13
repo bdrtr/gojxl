@@ -493,6 +493,8 @@ type outputTarget struct {
 	m    mat3 // linear sRGB -> target linear RGB
 	grey bool
 	enc  func(float32) float32 // linear -> encoded
+	// zeroNeg: enc maps negative values to 0 (gamma curves, as libjxl)
+	zeroNeg bool
 	// enc3 are per channel curves when an ICC profile's differ (else nil)
 	enc3 [3]func(float32) float32
 	// hdr, when set, takes linear sRGB light (m and enc are identities) to
@@ -540,6 +542,7 @@ func xybTarget(ih *ImageHeader, icc []byte) *outputTarget {
 		t.m = rgbToXYZ(p[0], p[1], p[2], c.whiteXY()).inv().mul(toTgt)
 	}
 	t.enc = tfFunc(c.TransferFunction, c.Gamma, ih.ToneMapping.IntensityTarget)
+	t.zeroNeg = tfZeroesNegatives(c.TransferFunction)
 	if c.TransferFunction == TFHLG {
 		// libjxl renders HLG display referred: undo the OOTF for the
 		// image's peak luminance (BT.2100 system gamma).

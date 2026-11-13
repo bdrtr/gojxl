@@ -271,6 +271,15 @@ func srgbFromLinear(v float32) float32 {
 	return float32(1.055*math.Pow(float64(v), 1/2.4) - 0.055)
 }
 
+// gammaZeroBelow: libjxl's output stage (OpGamma, used for gamma and DCI
+// curves) gives 0 for linear values up to 1e-5 (and negative ones), where
+// the curve would still reach ~1.4/255 at gamma 1/2.2.
+const gammaZeroBelow = 1e-5
+
+// tfZeroesNegatives reports whether negative linear values encode to 0
+// (libjxl's OpGamma) rather than mirrored (sRGB, PQ, ... use CopySign).
+func tfZeroesNegatives(tf uint32) bool { return tf == TFGamma || tf == TFDCI }
+
 // tfFunc returns the encoding (from linear) function of a transfer function.
 func tfFunc(tf uint32, gamma float64, intensity float32) func(float32) float32 {
 	var f func(float32) float32
@@ -280,7 +289,7 @@ func tfFunc(tf uint32, gamma float64, intensity float32) func(float32) float32 {
 	case TFGamma:
 		g := gamma
 		f = func(v float32) float32 {
-			if v <= 0 {
+			if v <= gammaZeroBelow {
 				return 0
 			}
 			return float32(math.Pow(float64(v), g))
@@ -310,7 +319,7 @@ func tfFunc(tf uint32, gamma float64, intensity float32) func(float32) float32 {
 		}
 	case TFDCI:
 		f = func(v float32) float32 {
-			if v <= 0 {
+			if v <= gammaZeroBelow {
 				return 0
 			}
 			return float32(math.Pow(float64(v), 1/2.6))
@@ -332,6 +341,9 @@ func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity fl
 	f := tfFunc(tf, gamma, intensity)
 
 	lut := buildTFLUT(f)
+	if tfZeroesNegatives(tf) {
+		lut.powerLaw()
+	}
 	done := map[*Plane]bool{}
 	for _, pl := range p {
 		if pl == nil || done[pl] {
@@ -347,7 +359,17 @@ func applyTransferFromLinear(p [3]*Plane, tf uint32, gamma float64, intensity fl
 
 // tfLUT approximates a transfer function on [0,1] by linear interpolation.
 type tfLUT struct {
-	t []float32
+	t           []float32
+	zeroNeg     bool    // negative values give 0 (else -f(-v))
+	directBelow float32 // values below are computed exactly
+}
+
+// powerLaw configures l for a gamma curve (tfZeroesNegatives): negative
+// values give 0, and values below 16 cells (~1e-3, where the steep curve
+// makes interpolation err by up to ~20/65535) are computed exactly.
+func (l *tfLUT) powerLaw() {
+	l.zeroNeg = true
+	l.directBelow = 16.0 / tfLUTSize
 }
 
 const tfLUTSize = 16384
@@ -357,20 +379,24 @@ func buildTFLUT(f func(float32) float32) *tfLUT {
 	for i := range t {
 		t[i] = f(float32(i) / tfLUTSize)
 	}
-	return &tfLUT{t: t}
+	return &tfLUT{t: t, directBelow: 1.0 / tfLUTSize}
 }
 
 func (l *tfLUT) apply(px []float32, f func(float32) float32) {
 	t := l.t
 	for i, v := range px {
-		if v >= 1.0/tfLUTSize && v < 1 {
+		if v >= l.directBelow && v < 1 {
 			fv := v * tfLUTSize
 			k := int(fv)
 			fr := fv - float32(k)
 			a := t[k]
 			px[i] = a + (t[k+1]-a)*fr
 		} else if v < 0 {
-			px[i] = -f(-v)
+			if l.zeroNeg {
+				px[i] = 0
+			} else {
+				px[i] = -f(-v)
+			}
 		} else {
 			px[i] = f(v)
 		}
