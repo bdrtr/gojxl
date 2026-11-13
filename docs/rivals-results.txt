@@ -1,0 +1,72 @@
+# bench/rivals results, 2026-11-13, Ryzen 7 8845HS laptop (Linux), Go 1.27.3
+# gojxl v0.1.0, gen2brain/jxl v0.2.1, gen2brain/jpegxl v0.6.0 (-tags nodynamic: WASM), kpfaulkner/jxl-go 20260623
+# images: storm (1280x720) and cafe (1280x1600); *_d1 = cjxl -d 1, *_ll = cjxl -d 0 (cjxl 0.12)
+# decode: best of 5, to image.Image; encode: best of 3; 'vs source' scored by gojxl compare
+decode T=1 storm_d1 gojxl decode 79.9 ms | vs source: SSIMULACRA2 83.7519  PSNR 32.90 dB
+decode T=1 storm_d1 gen2brain-jxl decode 40.0 ms | vs source: SSIMULACRA2 83.7535  PSNR 32.90 dB
+decode T=1 storm_d1 jpegxl-wasm decode 60.7 ms | vs source: SSIMULACRA2 83.7021  PSNR 32.89 dB
+decode T=1 storm_d1 jxl-go decode 314.5 ms | vs source: SSIMULACRA2 41.6114  PSNR 32.19 dB
+decode T=1 storm_ll gojxl decode 227.2 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=1 storm_ll gen2brain-jxl decode 237.0 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=1 storm_ll jpegxl-wasm decode 325.1 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=1 storm_ll jxl-go decode 477.6 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+encode T=1 storm q=75 gojxl encode 322.9 ms 230332 bytes | SSIMULACRA2 72.5169  PSNR 31.08 dB
+encode T=1 storm q=90 gojxl encode 391.4 ms 421668 bytes | SSIMULACRA2 85.5816  PSNR 34.05 dB
+lossless T=1 storm gojxl lossless 623.4 ms 1541592 bytes
+encode T=1 storm q=75 gen2brain-jxl encode 696.3 ms 213797 bytes | SSIMULACRA2 67.4614  PSNR 28.45 dB
+encode T=1 storm q=90 gen2brain-jxl encode 753.5 ms 400446 bytes | SSIMULACRA2 82.5926  PSNR 31.39 dB
+lossless T=1 storm gen2brain-jxl lossless 1594.7 ms 1595260 bytes
+encode T=1 storm q=75 jpegxl-wasm encode 1688.6 ms 194496 bytes | SSIMULACRA2 67.2065  PSNR 29.84 dB
+encode T=1 storm q=90 jpegxl-wasm encode 1754.4 ms 381657 bytes | SSIMULACRA2 83.2540  PSNR 32.71 dB
+lossless T=1 storm jpegxl-wasm lossless 5136.0 ms 1585172 bytes
+decode T=4 storm_d1 gojxl decode 17.7 ms | vs source: SSIMULACRA2 83.7519  PSNR 32.90 dB
+decode T=4 storm_d1 gen2brain-jxl decode 19.9 ms | vs source: SSIMULACRA2 83.7535  PSNR 32.90 dB
+decode T=4 storm_d1 jpegxl-wasm decode 56.6 ms | vs source: SSIMULACRA2 83.7021  PSNR 32.89 dB
+decode T=4 storm_d1 jxl-go decode 213.5 ms | vs source: SSIMULACRA2 41.6114  PSNR 32.19 dB
+decode T=4 storm_ll gojxl decode 64.3 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=4 storm_ll gen2brain-jxl decode 67.3 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=4 storm_ll jpegxl-wasm decode 327.9 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=4 storm_ll jxl-go decode 152.7 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+encode T=4 storm q=75 gojxl encode 107.2 ms 230332 bytes | SSIMULACRA2 72.5169  PSNR 31.08 dB
+encode T=4 storm q=90 gojxl encode 125.7 ms 421668 bytes | SSIMULACRA2 85.5816  PSNR 34.05 dB
+lossless T=4 storm gojxl lossless 211.4 ms 1541592 bytes
+encode T=4 storm q=75 gen2brain-jxl encode 267.5 ms 213797 bytes | SSIMULACRA2 67.4614  PSNR 28.45 dB
+encode T=4 storm q=90 gen2brain-jxl encode 275.9 ms 400446 bytes | SSIMULACRA2 82.5926  PSNR 31.39 dB
+lossless T=4 storm gen2brain-jxl lossless 1272.5 ms 1595260 bytes
+encode T=4 storm q=75 jpegxl-wasm encode 1734.1 ms 194496 bytes | SSIMULACRA2 67.2065  PSNR 29.84 dB
+encode T=4 storm q=90 jpegxl-wasm encode 1758.2 ms 381657 bytes | SSIMULACRA2 83.2540  PSNR 32.71 dB
+lossless T=4 storm jpegxl-wasm lossless 5357.8 ms 1585172 bytes
+decode T=1 cafe_d1 gojxl decode 149.9 ms | vs source: SSIMULACRA2 86.2185  PSNR 36.12 dB
+decode T=1 cafe_d1 gen2brain-jxl decode 71.1 ms | vs source: SSIMULACRA2 86.2239  PSNR 36.12 dB
+decode T=1 cafe_d1 jpegxl-wasm decode 106.5 ms | vs source: SSIMULACRA2 86.2234  PSNR 36.10 dB
+decode T=1 cafe_d1 jxl-go decode 599.7 ms | vs source: SSIMULACRA2 58.5400  PSNR 34.87 dB
+decode T=1 cafe_ll gojxl decode 493.7 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=1 cafe_ll gen2brain-jxl decode 514.3 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=1 cafe_ll jpegxl-wasm decode 729.5 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=1 cafe_ll jxl-go decode 1086.3 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+encode T=1 cafe q=75 gojxl encode 681.8 ms 462704 bytes | SSIMULACRA2 80.9035  PSNR 33.86 dB
+encode T=1 cafe q=90 gojxl encode 750.6 ms 659671 bytes | SSIMULACRA2 87.8277  PSNR 37.31 dB
+lossless T=1 cafe gojxl lossless 1180.9 ms 2825411 bytes
+encode T=1 cafe q=75 gen2brain-jxl encode 1503.9 ms 424649 bytes | SSIMULACRA2 80.8302  PSNR 33.09 dB
+encode T=1 cafe q=90 gen2brain-jxl encode 1691.4 ms 575932 bytes | SSIMULACRA2 87.8090  PSNR 36.06 dB
+lossless T=1 cafe gen2brain-jxl lossless 3527.2 ms 2950630 bytes
+encode T=1 cafe q=75 jpegxl-wasm encode 4093.8 ms 389932 bytes | SSIMULACRA2 74.7541  PSNR 31.86 dB
+encode T=1 cafe q=90 jpegxl-wasm encode 4372.8 ms 555653 bytes | SSIMULACRA2 86.0879  PSNR 35.96 dB
+lossless T=1 cafe jpegxl-wasm lossless 12113.4 ms 2878133 bytes
+decode T=4 cafe_d1 gojxl decode 35.8 ms | vs source: SSIMULACRA2 86.2185  PSNR 36.12 dB
+decode T=4 cafe_d1 gen2brain-jxl decode 37.7 ms | vs source: SSIMULACRA2 86.2239  PSNR 36.12 dB
+decode T=4 cafe_d1 jpegxl-wasm decode 109.7 ms | vs source: SSIMULACRA2 86.2234  PSNR 36.10 dB
+decode T=4 cafe_d1 jxl-go decode 408.0 ms | vs source: SSIMULACRA2 58.5400  PSNR 34.87 dB
+decode T=4 cafe_ll gojxl decode 134.3 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=4 cafe_ll gen2brain-jxl decode 146.0 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=4 cafe_ll jpegxl-wasm decode 726.8 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+decode T=4 cafe_ll jxl-go decode 337.8 ms | vs source: SSIMULACRA2 100.0000  PSNR +Inf dB
+encode T=4 cafe q=75 gojxl encode 213.5 ms 462704 bytes | SSIMULACRA2 80.9035  PSNR 33.86 dB
+encode T=4 cafe q=90 gojxl encode 231.9 ms 659671 bytes | SSIMULACRA2 87.8277  PSNR 37.31 dB
+lossless T=4 cafe gojxl lossless 349.6 ms 2825411 bytes
+encode T=4 cafe q=75 gen2brain-jxl encode 581.4 ms 424649 bytes | SSIMULACRA2 80.8302  PSNR 33.09 dB
+encode T=4 cafe q=90 gen2brain-jxl encode 655.1 ms 575932 bytes | SSIMULACRA2 87.8090  PSNR 36.06 dB
+lossless T=4 cafe gen2brain-jxl lossless 2754.4 ms 2950630 bytes
+encode T=4 cafe q=75 jpegxl-wasm encode 4122.2 ms 389932 bytes | SSIMULACRA2 74.7541  PSNR 31.86 dB
+encode T=4 cafe q=90 jpegxl-wasm encode 4291.6 ms 555653 bytes | SSIMULACRA2 86.0879  PSNR 35.96 dB
+lossless T=4 cafe jpegxl-wasm lossless 12823.3 ms 2878133 bytes

@@ -27,8 +27,10 @@
   **−8.2 %** on 15 photos (−11 % at high quality) and **−10.2 %** on 15
   diagrams, icons and screenshots. Lossless and JPEG-recompressed files are
   0.5 % smaller over a 1,983-file real-world corpus.
-- **Fast where it counts**: parallel decoding and PNG writing. On 4 threads it
-  converts JPEG XL to PNG faster than libjxl's own `djxl` (see [benchmarks](#benchmarks)).
+- **The fastest Go JPEG XL library on 4 threads**: it decodes a little faster
+  than gen2brain/jxl and 3–5× faster than libjxl compiled to WASM, encodes 2–8×
+  faster than gen2brain/jxl and 14–37× faster than the WASM build, and converts
+  JPEG XL to PNG faster than libjxl's own `djxl` (see [benchmarks](#benchmarks)).
 - **Lossless JPEG recompression**: about 20 % smaller files, and the original
   JPEG comes back **byte for byte** (also from files made by `cjxl`; djxl
   reconstructs ours).
@@ -131,8 +133,42 @@ libjxl (`cjxl`/`djxl` 0.12) uses AVX2 SIMD; gojxl is plain Go and gets ahead by
 doing more in parallel, the PNG writer included. At distance 1 the lossy files
 are 589 KB (SSIMULACRA 2 84.4) against 679 KB (84.0). Peak memory is somewhat
 higher than libjxl's when decoding (about 100 MB vs 62 MB here) and lower when
-encoding. Ryzen 7 8845HS laptop, best of 5 runs; [bench/rivals](bench/rivals)
-times the other Go libraries.
+encoding. Ryzen 7 8845HS laptop, best of 5 runs.
+
+### Against the other Go libraries
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/rivals-decode-dark.svg">
+  <img src="docs/rivals-decode-light.svg" alt="Bar chart, decoding a 2 MP photo on 4 threads: gojxl 36 ms, gen2brain/jxl 38 ms, gen2brain/jpegxl (WASM) 110 ms, kpfaulkner/jxl-go 408 ms (lossy); 134, 146, 727 and 338 ms (lossless)">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/rivals-encode-dark.svg">
+  <img src="docs/rivals-encode-light.svg" alt="Bar chart, encoding a 2 MP photo on 4 threads: gojxl 0.23 s, gen2brain/jxl 0.66 s, gen2brain/jpegxl (WASM) 4.29 s (lossy, quality 90); 0.35, 2.75 and 12.82 s (lossless)">
+</picture>
+
+| 2 MP photo (cafe) | gojxl | gen2brain/jxl | gen2brain/jpegxl (WASM) | kpfaulkner/jxl-go |
+|---|---|---|---|---|
+| Decode lossy, 1 thread | 150 ms | **71 ms** | 107 ms | 600 ms (wrong output) |
+| Decode lossy, 4 threads | **36 ms** | 38 ms | 110 ms | 408 ms (wrong output) |
+| Decode lossless, 1 thread | **494 ms** | 514 ms | 730 ms | 1,086 ms |
+| Decode lossless, 4 threads | **134 ms** | 146 ms | 727 ms | 338 ms |
+| Encode lossy, quality 90, 1 thread | **0.75 s** | 1.69 s | 4.37 s | — |
+| Encode lossy, quality 90, 4 threads | **0.23 s** | 0.66 s | 4.29 s | — |
+| Encode lossless, 1 thread | **1.18 s** | 3.53 s | 12.11 s | — |
+| Encode lossless, 4 threads | **0.35 s** | 2.75 s | 12.82 s | — |
+| Lossless file size | **2.83 MB** | 2.95 MB | 2.88 MB | — |
+
+gojxl is the fastest of the four on 4 threads and encodes 2–8× faster than
+gen2brain/jxl and 14–37× faster than libjxl compiled to WASM, with the
+smallest lossless files. gen2brain/jxl, which uses SIMD assembly, decodes
+lossy files about twice as fast on a single thread. Lossy file sizes at equal
+quality are mixed on these two photos: on a 1 MP photo (storm) gojxl is 8 %
+smaller than gen2brain/jxl and on par with libjxl, on this one gen2brain/jxl
+is 13 % smaller (both score SSIMULACRA 2 87.8 at quality 90) and libjxl about
+8 % (a densely textured scene, gojxl's weakest in the set above). All numbers:
+[docs/rivals-results.txt](docs/rivals-results.txt); the tool is
+[bench/rivals](bench/rivals).
 
 ## Compression
 

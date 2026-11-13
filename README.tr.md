@@ -27,8 +27,10 @@
   15 fotoğrafta **%−8,2** (yüksek kalitede %−11), 15 diyagram, ikon ve ekran
   görüntüsünde **%−10,2**. Kayıpsız ve JPEG'den dönüştürülmüş dosyalar 1.983
   dosyalık gerçek dünya derleminde %0,5 daha küçük.
-- **Gereken yerde hızlı**: paralel kod çözme ve PNG yazma. 4 çekirdekte JPEG XL'i
-  PNG'ye libjxl'in kendi `djxl` aracından hızlı çevirir ([ölçümler](#hız-ölçümleri)).
+- **4 çekirdekte en hızlı Go JPEG XL kütüphanesi**: gen2brain/jxl'den biraz,
+  WASM'a derlenmiş libjxl'den 3–5× hızlı çözer; gen2brain/jxl'den 2–8×, WASM
+  sürümünden 14–37× hızlı kodlar; JPEG XL'i PNG'ye libjxl'in kendi `djxl`
+  aracından hızlı çevirir ([ölçümler](#hız-ölçümleri)).
 - **Kayıpsız JPEG yeniden sıkıştırma**: yaklaşık %20 küçük dosya, orijinal JPEG
   **bayt bayt** geri gelir (`cjxl` ile üretilmiş dosyalardan da; bizim
   dosyalarımızı djxl de geri üretir).
@@ -130,8 +132,42 @@ libjxl (`cjxl`/`djxl` 0.12) AVX2 SIMD kullanır; gojxl düz Go'dur ve işin daha
 büyük kısmını (PNG yazıcı dahil) paralel yaparak öne geçer. Mesafe 1'de kayıplı
 dosyalar 589 KB (SSIMULACRA 2 84,4) ve 679 KB (84,0). Tepe bellek kod çözmede
 libjxl'den biraz yüksek (burada yaklaşık 100 MB'a 62 MB), kodlamada düşüktür.
-Ryzen 7 8845HS dizüstü, 5 çalıştırmanın en iyisi; diğer Go kütüphanelerini
-[bench/rivals](bench/rivals) ölçer.
+Ryzen 7 8845HS dizüstü, 5 çalıştırmanın en iyisi.
+
+### Diğer Go kütüphaneleriyle
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/rivals-decode-dark.svg">
+  <img src="docs/rivals-decode-light.svg" alt="Çubuk grafik, 2 MP bir fotoğrafı 4 çekirdekte çözme: gojxl 36 ms, gen2brain/jxl 38 ms, gen2brain/jpegxl (WASM) 110 ms, kpfaulkner/jxl-go 408 ms (kayıplı); 134, 146, 727 ve 338 ms (kayıpsız)">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/rivals-encode-dark.svg">
+  <img src="docs/rivals-encode-light.svg" alt="Çubuk grafik, 2 MP bir fotoğrafı 4 çekirdekte kodlama: gojxl 0,23 s, gen2brain/jxl 0,66 s, gen2brain/jpegxl (WASM) 4,29 s (kayıplı, kalite 90); 0,35, 2,75 ve 12,82 s (kayıpsız)">
+</picture>
+
+| 2 MP fotoğraf (cafe) | gojxl | gen2brain/jxl | gen2brain/jpegxl (WASM) | kpfaulkner/jxl-go |
+|---|---|---|---|---|
+| Kayıplı çözme, 1 çekirdek | 150 ms | **71 ms** | 107 ms | 600 ms (hatalı çıktı) |
+| Kayıplı çözme, 4 çekirdek | **36 ms** | 38 ms | 110 ms | 408 ms (hatalı çıktı) |
+| Kayıpsız çözme, 1 çekirdek | **494 ms** | 514 ms | 730 ms | 1.086 ms |
+| Kayıpsız çözme, 4 çekirdek | **134 ms** | 146 ms | 727 ms | 338 ms |
+| Kayıplı kodlama, kalite 90, 1 çekirdek | **0,75 s** | 1,69 s | 4,37 s | — |
+| Kayıplı kodlama, kalite 90, 4 çekirdek | **0,23 s** | 0,66 s | 4,29 s | — |
+| Kayıpsız kodlama, 1 çekirdek | **1,18 s** | 3,53 s | 12,11 s | — |
+| Kayıpsız kodlama, 4 çekirdek | **0,35 s** | 2,75 s | 12,82 s | — |
+| Kayıpsız dosya boyutu | **2,83 MB** | 2,95 MB | 2,88 MB | — |
+
+gojxl 4 çekirdekte dördünün en hızlısıdır; gen2brain/jxl'den 2–8×, WASM'a
+derlenmiş libjxl'den 14–37× hızlı kodlar ve en küçük kayıpsız dosyaları üretir.
+SIMD assembly kullanan gen2brain/jxl tek çekirdekte kayıplı dosyaları yaklaşık
+iki kat hızlı çözer. Eşit kalitede kayıplı boyutlar bu iki fotoğrafta karışık:
+1 MP bir fotoğrafta (storm) gojxl gen2brain/jxl'den %8 küçük ve libjxl ile
+başa baş; bu fotoğrafta ise gen2brain/jxl %13 (kalite 90'da ikisinin de
+SSIMULACRA 2 puanı 87,8), libjxl yaklaşık %8 daha küçük (yoğun dokulu bir
+sahne; yukarıdaki setteki en zayıf görüntümüz). Tüm sayılar:
+[docs/rivals-results.txt](docs/rivals-results.txt); ölçüm aracı:
+[bench/rivals](bench/rivals).
 
 ## Sıkıştırma
 

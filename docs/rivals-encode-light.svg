@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="218" viewBox="0 0 760 218" role="img" aria-label="Go libraries: encoding, 4 threads">
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<text x="0" y="20" font-size="16" font-weight="600" fill="#1f2328">Go libraries: encoding, 4 threads</text>
+<text x="0" y="40" font-size="12" fill="#59636e">Wall time, lower is better. Same 2 MP photo; jxl-go has no encoder.</text>
+<rect x="230" y="48" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="244" y="57" font-size="12" fill="#1f2328">gojxl</text>
+<rect x="288.0" y="48" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="302.0" y="57" font-size="12" fill="#1f2328">gen2brain/jxl</text>
+<rect x="403.6" y="48" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="417.6" y="57" font-size="12" fill="#1f2328">gen2brain/jpegxl (WASM)</text>
+<line x1="230.0" y1="60" x2="230.0" y2="196" stroke="#d1d9e0" stroke-width="1"/>
+<text x="220" y="91.0" font-size="13" text-anchor="end" fill="#1f2328">Lossy, quality 90</text>
+<path d="M230.0,64h4.3a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-4.3z" fill="#2a78d6"><title>gojxl: 0.23 s</title></path>
+<text x="243.3" y="75" font-size="11" fill="#59636e">0.23 s</text>
+<path d="M230.0,80h19.5a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-19.5z" fill="#eb6834"><title>gen2brain/jxl: 0.66 s</title></path>
+<text x="258.5" y="91" font-size="11" fill="#59636e">0.66 s</text>
+<path d="M230.0,96h150.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-150.0z" fill="#1baf7a"><title>gen2brain/jpegxl (WASM): 4.29 s</title></path>
+<text x="389.0" y="107" font-size="11" fill="#59636e">4.29 s</text>
+<text x="220" y="155.0" font-size="13" text-anchor="end" fill="#1f2328">Lossless</text>
+<path d="M230.0,128h8.6a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-8.6z" fill="#2a78d6"><title>gojxl: 0.35 s</title></path>
+<text x="247.6" y="139" font-size="11" fill="#59636e">0.35 s</text>
+<path d="M230.0,144h94.8a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-94.8z" fill="#eb6834"><title>gen2brain/jxl: 2.75 s</title></path>
+<text x="333.8" y="155" font-size="11" fill="#59636e">2.75 s</text>
+<path d="M230.0,160h456.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-456.0z" fill="#1baf7a"><title>gen2brain/jpegxl (WASM): 12.82 s</title></path>
+<text x="695.0" y="171" font-size="11" fill="#59636e">12.82 s</text>
+<text x="230" y="212" font-size="11" fill="#59636e">Best of 3. Lossless sizes: gojxl 2.83 MB, gen2brain/jxl 2.95 MB, WASM libjxl 2.88 MB.</text>
+</g></svg>
