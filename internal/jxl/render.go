@@ -23,15 +23,21 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 				fd.color[c] = &Plane{W: fd.color[0].W, H: fd.color[0].H, Pix: append([]float32(nil), fd.color[0].Pix...)}
 			}
 		}
-		if fh.Filter.Gab {
+		if fd.gabEPF1Ok() && !noFusedFilters {
 			st := startStage()
-			fd.applyGaborish()
-			st.done("gaborish")
-		}
-		if fh.Filter.EPFIters > 0 {
-			st := startStage()
-			fd.applyEPF()
-			st.done("epf")
+			fd.gabEPF1(fh.Filter.Gab)
+			st.done("gab+epf1")
+		} else {
+			if fh.Filter.Gab {
+				st := startStage()
+				fd.applyGaborish()
+				st.done("gaborish")
+			}
+			if fh.Filter.EPFIters > 0 {
+				st := startStage()
+				fd.applyEPF()
+				st.done("epf")
+			}
 		}
 	}
 	// 3. patches and splines (at decoded resolution), then upsampling
