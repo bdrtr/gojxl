@@ -62,7 +62,15 @@ func encode(lib string, img image.Image, q int, lossless bool) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
+// timeIt returns the best of n runs of f, after running it untimed for at
+// least half a second: short runs from a cold start otherwise catch a
+// laptop CPU before it has raised its clock.
 func timeIt(n int, f func() error) (time.Duration, error) {
+	for t := time.Now(); time.Since(t) < 500*time.Millisecond; {
+		if err := f(); err != nil {
+			return 0, err
+		}
+	}
 	best := time.Duration(1 << 62)
 	for i := 0; i < n; i++ {
 		t := time.Now()

@@ -18,6 +18,7 @@ go build -tags nodynamic -o rivals .
 ./rivals lossless gojxl|gen2brain-jxl|jpegxl-wasm  image.png  RUNS
 ```
 
-Each prints the best wall time of RUNS runs (GOMAXPROCS sets the threads)
+Each prints the best wall time of RUNS runs, after half a second of untimed
+warm-up runs (GOMAXPROCS sets the threads),
 and writes its output (`out_<lib>.png`, `enc_<lib>.jxl`), so quality can be
 checked with `gojxl compare`.
