@@ -251,38 +251,44 @@ func (t *tf8) get(v float32) uint8 {
 }
 
 // xybTo8 converts XYB rows to 8-bit RGB, stride bytes per pixel in dst
-// (the fourth, alpha, byte of RGBA is left untouched).
+// (the fourth, alpha, byte of RGBA is left untouched). Chunks go through
+// linear float rows first: one loop holding the matrix and one holding
+// the table use fewer registers than a fused loop, which spills.
 func xybTo8(c *xybConv, x, y, b []float32, dst []byte, stride int) {
-	t := c.tf8
-	thr, code := t.thr[:tf8Mask+1], t.code[:tf8Mask+1]
-	sb := t.slowBelow
-	m0, m1, m2, m3, m4, m5, m6, m7, m8 := c.m[0], c.m[1], c.m[2], c.m[3], c.m[4], c.m[5], c.m[6], c.m[7], c.m[8]
-	cb0, cb1, cb2 := c.cbrtBias[0], c.cbrtBias[1], c.cbrtBias[2]
-	b0, b1, b2 := c.bias[0], c.bias[1], c.bias[2]
+	const chunk = 256
+	var buf [3][chunk]float32
 	y, b = y[:len(x)], b[:len(x)]
 	dst = dst[:stride*len(x)]
-	for i, X := range x {
-		Y, B := y[i], b[i]
-		gr := Y + X - cb0
-		gg := Y - X - cb1
-		gb := B - cb2
-		mr := gr*gr*gr + b0
-		mg := gg*gg*gg + b1
-		mb := gb*gb*gb + b2
-		vr := m0*mr + m1*mg + m2*mb
-		vg := m3*mr + m4*mg + m5*mb
-		vb := m6*mr + m7*mg + m8*mb
-		o := dst[stride*i : stride*i+3 : stride*i+3]
-		if vr >= sb && vg >= sb && vb >= sb {
+	for i0 := 0; i0 < len(x); i0 += chunk {
+		n := min(chunk, len(x)-i0)
+		r, g, bo := buf[0][:n], buf[1][:n], buf[2][:n]
+		xybRow(c, x[i0:i0+n], y[i0:i0+n], b[i0:i0+n], r, g, bo)
+		o := dst[stride*i0:]
+		tf8Row(c.tf8, r, o, stride)
+		tf8Row(c.tf8, g, o[1:], stride)
+		tf8Row(c.tf8, bo, o[2:], stride)
+	}
+}
+
+// tf8Row writes t.get(v) for each v to dst[stride*i].
+func tf8Row(t *tf8, v []float32, dst []byte, stride int) {
+	thr, code := t.thr[:tf8Mask+1], t.code[:tf8Mask+1]
+	sb := t.slowBelow
+	if len(v) == 0 {
+		return
+	}
+	dst = dst[:stride*(len(v)-1)+1]
+	for i, v := range v {
+		var q uint8
+		if v >= sb {
 			// +1 when v >= thr: the sign bit of v-thr (exact for close
 			// values, -Inf for thr = +Inf) is clear
-			kr, kg, kb := tf8Index(vr), tf8Index(vg), tf8Index(vb)
-			o[0] = code[kr] + uint8(^math.Float32bits(vr-thr[kr])>>31)
-			o[1] = code[kg] + uint8(^math.Float32bits(vg-thr[kg])>>31)
-			o[2] = code[kb] + uint8(^math.Float32bits(vb-thr[kb])>>31)
+			k := tf8Index(v)
+			q = code[k] + uint8(^math.Float32bits(v-thr[k])>>31)
 		} else {
-			o[0], o[1], o[2] = t.get(vr), t.get(vg), t.get(vb)
+			q = t.get(v)
 		}
+		dst[stride*i] = q
 	}
 }
 

@@ -84,6 +84,8 @@ var (
 	sec8  = secHalfTab[3]
 	sec4a = sec4[0]
 	sec4b = sec4[1]
+
+	sec8c0, sec8c1, sec8c2, sec8c3 = sec8[0], sec8[1], sec8[2], sec8[3]
 )
 
 // idct8 is an unrolled 8-point scaled IDCT.
@@ -322,18 +324,51 @@ func idct8Lanes(x []float32, L int) {
 
 // idct8x8 is the DCT8 fast path (transposed storage).
 func idct8x8Scalar(c []float32, out []float32, stride int) {
-	_ = c[63]
+	// both passes run down the columns of an 8x8 array (one base pointer,
+	// constant offsets, no bounds checks) with a transpose between them
+	cc := (*[64]float32)(c[:64])
+	idct8Cols(cc)
+	var t [64]float32
 	for a := 0; a < 8; a++ {
-		idct8(c[a*8 : a*8+8])
+		r := cc[a*8 : a*8+8 : a*8+8]
+		t[a], t[8+a], t[16+a], t[24+a] = r[0], r[1], r[2], r[3]
+		t[32+a], t[40+a], t[48+a], t[56+a] = r[4], r[5], r[6], r[7]
 	}
-	var cl [8]float32
+	idct8Cols(&t)
 	for y := 0; y < 8; y++ {
-		cl[0], cl[1], cl[2], cl[3] = c[y], c[8+y], c[16+y], c[24+y]
-		cl[4], cl[5], cl[6], cl[7] = c[32+y], c[40+y], c[48+y], c[56+y]
-		idct8(cl[:])
-		o := out[y*stride : y*stride+8 : y*stride+8]
-		o[0], o[1], o[2], o[3] = cl[0], cl[1], cl[2], cl[3]
-		o[4], o[5], o[6], o[7] = cl[4], cl[5], cl[6], cl[7]
+		copy(out[y*stride:y*stride+8], t[y*8:y*8+8])
+	}
+}
+
+// idct8Cols applies idct8 to each column of the row-major 8x8 array x.
+func idct8Cols(x *[64]float32) {
+	for l := 0; l < 8; l++ {
+		v0, v2, v4, v6 := x[l], x[16+l], x[32+l], x[48+l]
+		e0, e1 := v0+v4, v0-v4
+		eo1 := v6 + v2
+		eo0 := v2 * sqrt2
+		ep0 := (eo0 + eo1) * sec4a
+		ep1 := (eo0 - eo1) * sec4b
+		E0, E3 := e0+ep0, e0-ep0
+		E1, E2 := e1+ep1, e1-ep1
+		v1, v3, v5, v7 := x[8+l], x[24+l], x[40+l], x[56+l]
+		o0 := v1 * sqrt2
+		o1 := v3 + v1
+		o2 := v5 + v3
+		o3 := v7 + v5
+		f0, f1 := o0+o2, o0-o2
+		fo1 := o3 + o1
+		fo0 := o1 * sqrt2
+		fp0 := (fo0 + fo1) * sec4a
+		fp1 := (fo0 - fo1) * sec4b
+		O0 := (f0 + fp0) * sec8c0
+		O3 := (f0 - fp0) * sec8c3
+		O1 := (f1 + fp1) * sec8c1
+		O2 := (f1 - fp1) * sec8c2
+		x[l], x[56+l] = E0+O0, E0-O0
+		x[8+l], x[48+l] = E1+O1, E1-O1
+		x[16+l], x[40+l] = E2+O2, E2-O2
+		x[24+l], x[32+l] = E3+O3, E3-O3
 	}
 }
 
