@@ -461,6 +461,68 @@ const (
 // SSIMULACRA 2 85, -0.9% by PSNR).
 var chanScale = [3]float32{0.8, 1, 0.8}
 
+// cflBits[a] is cflChoose's rate proxy 2 log2(1+a) + 1 of a non-zero |q|.
+var cflBits = func() (t [64]float64) {
+	for a := range t {
+		t[a] = 2*math.Log2(1+float64(a)) + 1
+	}
+	return
+}()
+
+// cflChoose picks a tile's chroma from luma factor (in 1/84, base added)
+// among 0 and the least squares one or half of it, by the cost of the
+// quantised residuals: a rate proxy plus 8 x squared error in steps. The
+// least squares factor alone, driven by strong colour edges, put
+// uncancelled chroma on the neutral text and lines of the same tile
+// (SSIMULACRA 2 75 -> 83 on a diagram); libjxl's FindBestMultiplier, tried
+// as well, was 17% worse on synthetic images in this encoder. BD-rate vs
+// least squares: synthetic images -2.8%, photos -0.4% (PSNR -0.9%).
+// yd is the dequantised luma (what the decoder multiplies), c the chroma
+// and st its steps.
+func cflChoose(yd, c, st []float32, base float32) int32 {
+	var sxy, syy float64
+	for i, y := range yd {
+		sxy += float64(c[i]) * float64(y)
+		syy += float64(y) * float64(y)
+	}
+	if syy < 1e-9 {
+		return 0
+	}
+	ls := min(max(math.Round((sxy/syy-float64(base))*84), -128), 127)
+	cost := func(k int32) float64 {
+		f := base + float32(k)/84
+		var j float64
+		for i, y := range yd {
+			r := c[i] - f*y
+			q := quantAC(r, st[i])
+			e := float64((r - float32(q)*st[i]) / st[i])
+			if q != 0 {
+				a := q
+				if a < 0 {
+					a = -a
+				}
+				if a < int32(len(cflBits)) {
+					j += cflBits[a]
+				} else {
+					j += 2*math.Log2(1+float64(a)) + 1
+				}
+			}
+			j += 8 * e * e
+		}
+		return j
+	}
+	best, bc := int32(0), cost(0)
+	for _, k := range []int32{int32(ls), int32(math.Round(ls / 2))} {
+		if k == 0 {
+			continue
+		}
+		if c := cost(k); c < bc {
+			best, bc = k, c
+		}
+	}
+	return best
+}
+
 // chanDistW weights channel errors by their visibility (from the DC-ish
 // quantisation weights of the default DCT8 table).
 var chanDistW = [3]float64{31.6, 1, 0.84}
@@ -1150,8 +1212,12 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	// patches (effort 7, as libjxl): repeated text-like components go to a
 	// reference frame and are subtracted before everything else
 	var patches *patchPlan
-	if e := opt.Effort; (e <= 0 || e >= 7) && !opt.NoPatches && !im.Alpha && opt.Frame.Anim == nil {
-		patches = planPatches(xyb, im.W, im.H, pw, d)
+	if e := opt.Effort; (e <= 0 || e >= 7) && !opt.NoPatches && opt.Frame.Anim == nil {
+		nec := 0
+		if im.Alpha {
+			nec = 1
+		}
+		patches = planPatches(xyb, im.W, im.H, pw, d, nec)
 	}
 	var aqMap []float32 // per-block quantisation multipliers (libjxl AQ)
 	var aqMed float32
@@ -1488,7 +1554,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	aqStrength := float32(opt.AQ)
 	tw := (bw + 7) / 8
 	thh := (bh + 7) / 8
-	rowSums := make([][]float64, bh)
 	// coefOf returns the block's coefficients: the cached ones from AC
 	// strategy selection, or computed into scratch
 	coefOf := func(ti, bx, by int, out, scratch *[3][]float32) {
@@ -1521,7 +1586,6 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	}
 	parallel(bh, func(by int) {
 		var coef, scratch [3][]float32
-		sums := make([]float64, 3*tw)
 		// the outputs of the varblocks starting in this row come from one
 		// slab each, not from three allocations per block
 		total := 0
@@ -1594,17 +1658,11 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			q := qslab[: 3*nn : 3*nn]
 			qslab = qslab[3*nn:]
 			mY := tmul[ti][1]
-			t := bx / 8
 			for i := 0; i < nn; i++ {
 				if isLLF(ti, i) {
 					continue
 				}
-				st := mY[i] * steps[1]
-				q[nn+i] = quantAC(coef[1][i], st)
-				yd := float64(dequantAC(q[nn+i], st, biases[1], numer))
-				sums[3*t] += float64(coef[0][i]) * yd
-				sums[3*t+1] += float64(coef[2][i]) * yd
-				sums[3*t+2] += yd * yd
+				q[nn+i] = quantAC(coef[1][i], mY[i]*steps[1])
 			}
 			vq[b] = q
 			// copies, so the (larger) cached block can be freed
@@ -1614,28 +1672,44 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			copy(bc, coef[2])
 			vc[b] = [2][]float32{xc, bc}
 		}
-		rowSums[by] = sums
 	})
 	// the XYB planes and selection results are no longer needed
 	xyb, selCoef = [3][]float32{}, nil
-	// CfL factors per tile
+	// CfL factors per tile, from the AC coefficients of its varblocks
+	// (those with non-zero quantised luma: the others do not depend on it)
 	ytox := make([]int32, tw*thh)
 	ytob := make([]int32, tw*thh)
-	for ty := 0; ty < thh; ty++ {
-		for tx := 0; tx < tw; tx++ {
-			var sx, sb, syy float64
+	if !opt.NoCfL {
+		parallel(tw*thh, func(t int) {
+			tx, ty := t%tw, t/tw
+			// per coefficient: dequantised luma, chroma, chroma steps
+			var yd, cx, cb, stx, stb []float32
 			for by := ty * 8; by < min(bh, ty*8+8); by++ {
-				r := rowSums[by]
-				sx += r[3*tx]
-				sb += r[3*tx+1]
-				syy += r[3*tx+2]
+				for bx := tx * 8; bx < min(bw, tx*8+8); bx++ {
+					b := by*bw + bx
+					if !first[b] {
+						continue
+					}
+					ti := int(vtyp[b])
+					nn := vtypes[ti].size()
+					steps := stepsOf(b)
+					q, mm := vq[b], tmul[ti]
+					for i := 0; i < nn; i++ {
+						if isLLF(ti, i) {
+							continue
+						}
+						if q[nn+i] == 0 {
+							continue // the residual is the same for every factor
+						}
+						yd = append(yd, dequantAC(q[nn+i], mm[1][i]*steps[1], biases[1], numer))
+						cx, cb = append(cx, vc[b][0][i]), append(cb, vc[b][1][i])
+						stx, stb = append(stx, mm[0][i]*steps[0]), append(stb, mm[2][i]*steps[2])
+					}
+				}
 			}
-			if syy > 1e-9 && !opt.NoCfL {
-				clamp := func(v float64) int32 { return int32(min(max(math.Round(v), -128), 127)) }
-				ytox[ty*tw+tx] = clamp(sx / syy * 84)
-				ytob[ty*tw+tx] = clamp((sb/syy - 1) * 84)
-			}
-		}
+			ytox[t] = cflChoose(yd, cx, stx, 0)
+			ytob[t] = cflChoose(yd, cb, stb, 1)
+		})
 	}
 	// pass B: X and B AC with tile CfL
 	parallel(bh, func(by int) {

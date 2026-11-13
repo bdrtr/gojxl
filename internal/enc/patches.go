@@ -374,7 +374,8 @@ type patchPlan struct {
 // planPatches finds patches in the padded XYB planes of a W x H image,
 // writes their reference frame and subtracts what the decoder will add.
 // nil when there are none.
-func planPatches(xyb [3][]float32, W, H, pw int, d float32) *patchPlan {
+// nec extra channels (alpha) are left alone by the patches (kNone).
+func planPatches(xyb [3][]float32, W, H, pw int, d float32, nec int) *patchPlan {
 	ps := findTextPatches(xyb, W, H, pw)
 	if len(ps) == 0 {
 		return nil
@@ -412,7 +413,11 @@ func planPatches(xyb [3][]float32, W, H, pw int, d float32) *patchPlan {
 		dec[1][i] = float32(chY[i]) * step[1]
 		dec[2][i] = float32(chB[i]+chY[i]) * step[2]
 	}
-	frame := writePatchFrame([]channel{{w: rw, h: rh, pix: chY}, {w: rw, h: rh, pix: chX}, {w: rw, h: rh, pix: chB}}, rw, rh, fbits)
+	chs := []channel{{w: rw, h: rh, pix: chY}, {w: rw, h: rh, pix: chX}, {w: rw, h: rh, pix: chB}}
+	for range nec { // every frame has the image's extra channels; unused
+		chs = append(chs, channel{w: rw, h: rh, pix: make([]int32, n)})
+	}
+	frame := writePatchFrame(chs, rw, rh, fbits, nec)
 	// subtract the decoded patches
 	for i, p := range ps {
 		x0, y0 := at[i][0], at[i][1]
@@ -448,6 +453,9 @@ func planPatches(xyb [3][]float32, W, H, pw int, d float32) *patchPlan {
 				add(6, int(bitio.PackSigned(int32(pos[1]-p.pos[j-1][1]))))
 			}
 			add(5, 2) // kAdd
+			for range nec {
+				add(5, 0) // kNone: alpha is coded in the frame itself
+			}
 		}
 	}
 	return pl
@@ -468,15 +476,18 @@ func (pl *patchPlan) writeDict(w *bitio.Writer) {
 // writePatchFrame writes a modular reference-only frame (saved before the
 // colour transform in slot patchRefID) with the channels Y, X, B-Y and
 // the LF dequantisation factors fbits (half floats of 128 x step).
-func writePatchFrame(chs []channel, rw, rh int, fbits [3]uint16) []byte {
+func writePatchFrame(chs []channel, rw, rh int, fbits [3]uint16, nec int) []byte {
 	w := &bitio.Writer{}
 	w.WriteBool(false)                            // not all default
 	w.Write(2, 2)                                 // reference only
 	w.Write(1, 1)                                 // modular
 	w.WriteU64(0)                                 // flags
 	w.WriteU32(1, val(1), val(2), val(4), val(8)) // upsampling
-	w.Write(2, 3)                                 // group size 1024: one group
-	w.WriteBool(true)                             // crop (size only for reference frames)
+	for range nec {
+		w.WriteU32(1, val(1), val(2), val(4), val(8)) // extra channel upsampling
+	}
+	w.Write(2, 3)     // group size 1024: one group
+	w.WriteBool(true) // crop (size only for reference frames)
 	cd := [4]bitio.U32Dist{bitio.Bits(8), bitsOff(11, 256), bitsOff(14, 2304), bitsOff(30, 18688)}
 	w.WriteU32(uint32(rw), cd[0], cd[1], cd[2], cd[3])
 	w.WriteU32(uint32(rh), cd[0], cd[1], cd[2], cd[3])

@@ -108,3 +108,40 @@ func TestPatches(t *testing.T) {
 		t.Errorf("smooth image: %d frames", frames)
 	}
 }
+
+// Images with alpha get patches too (the alpha channel is left to the
+// frame: kNone); the alpha decodes exactly.
+func TestPatchesAlpha(t *testing.T) {
+	im := textImage(200, 120)
+	a := make([]int32, im.W*im.H)
+	for i := range a {
+		if i%im.W < 150 { // binary alpha, as palette PNGs with tRNS have
+			a[i] = 255
+		}
+	}
+	im.Chans = append(im.Chans, a)
+	im.Alpha = true
+	data, err := EncodeVarDCT(im, LossyOptions{Distance: 1, EPFIters: -1, Sharpness: -1, LibAQ: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := jxl.NewDecoder(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := d.NextFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := d.FramesDecoded(); n != 2 {
+		t.Fatalf("%d frames, want a patch reference and the image", n)
+	}
+	ec := f.EC[0]
+	for y := 0; y < im.H; y++ {
+		for x := 0; x < im.W; x++ {
+			if got, want := math.Round(float64(ec.Row(y)[x])*255), float64(a[y*im.W+x]); got != want {
+				t.Fatalf("alpha (%d,%d): %v, want %v", x, y, got, want)
+			}
+		}
+	}
+}
