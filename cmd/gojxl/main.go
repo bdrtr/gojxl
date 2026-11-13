@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"slices"
 	"strconv"
@@ -39,6 +40,7 @@ Usage:
       d=0 (q=100) is lossless; "-" reads stdin / writes stdout
   gojxl info input.jxl
   gojxl compare original distorted   (SSIMULACRA 2 and PSNR; PNG/JPEG/GIF/JXL)
+  gojxl version
 `)
 	os.Exit(2)
 }
@@ -93,9 +95,26 @@ func main() {
 		cmdCompare(os.Args[2:])
 	case "encode", "e":
 		cmdEncode(os.Args[2:])
+	case "version", "-version", "--version":
+		fmt.Println("gojxl", buildVersion())
 	default:
 		usage()
 	}
+}
+
+// version is set by release builds (-ldflags "-X main.version=v0.1.0").
+var version = ""
+
+// buildVersion is the release version, else the module version go install
+// recorded, else "devel".
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "devel"
 }
 
 func fatal(err error) {

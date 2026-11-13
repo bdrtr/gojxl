@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="234" viewBox="0 0 760 234" role="img" aria-label="JPEG XL to PNG, 4 threads">
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<text x="0" y="20" font-size="16" font-weight="600" fill="#1f2328">JPEG XL to PNG, 4 threads</text>
+<text x="0" y="40" font-size="12" fill="#59636e">Wall time, lower is better. 5 MP photo (bike, libjxl test image); files made by cjxl 0.12.</text>
+<rect x="230" y="48" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="244" y="57" font-size="12" fill="#1f2328">gojxl</text>
+<rect x="288.0" y="48" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="302.0" y="57" font-size="12" fill="#1f2328">libjxl djxl 0.12</text>
+<line x1="230.0" y1="60" x2="230.0" y2="212" stroke="#d1d9e0" stroke-width="1"/>
+<text x="220" y="83.0" font-size="13" text-anchor="end" fill="#1f2328">Lossy (d 1)</text>
+<path d="M230.0,64h135.1a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-135.1z" fill="#2a78d6"><title>gojxl: 0.13 s</title></path>
+<text x="374.1" y="75" font-size="11" fill="#59636e">0.13 s</text>
+<path d="M230.0,80h210.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-210.0z" fill="#eb6834"><title>libjxl djxl 0.12: 0.20 s</title></path>
+<text x="449.0" y="91" font-size="11" fill="#59636e">0.20 s</text>
+<text x="220" y="131.0" font-size="13" text-anchor="end" fill="#1f2328">Lossless</text>
+<path d="M230.0,112h370.4a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-370.4z" fill="#2a78d6"><title>gojxl: 0.35 s</title></path>
+<text x="609.4" y="123" font-size="11" fill="#59636e">0.35 s</text>
+<path d="M230.0,128h456.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-456.0z" fill="#eb6834"><title>libjxl djxl 0.12: 0.43 s</title></path>
+<text x="695.0" y="139" font-size="11" fill="#59636e">0.43 s</text>
+<text x="220" y="179.0" font-size="13" text-anchor="end" fill="#1f2328">Recompressed JPEG</text>
+<path d="M230.0,160h103.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-103.0z" fill="#2a78d6"><title>gojxl: 0.10 s</title></path>
+<text x="342.0" y="171" font-size="11" fill="#59636e">0.10 s</text>
+<path d="M230.0,176h199.3a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-199.3z" fill="#eb6834"><title>libjxl djxl 0.12: 0.19 s</title></path>
+<text x="438.3" y="187" font-size="11" fill="#59636e">0.19 s</text>
+<text x="230" y="228" font-size="11" fill="#59636e">Ryzen 7 8845HS laptop, best of 5 runs. One thread: 0.40 / 1.28 / 0.28 s vs djxl 0.28 / 1.22 / 0.26 s.</text>
+</g></svg>

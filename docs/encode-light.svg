@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="234" viewBox="0 0 760 234" role="img" aria-label="Encoding, 4 threads">
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<text x="0" y="20" font-size="16" font-weight="600" fill="#1f2328">Encoding, 4 threads</text>
+<text x="0" y="40" font-size="12" fill="#59636e">Wall time, lower is better. 5 MP photo; JPEG recompression of an 11 MP JPEG.</text>
+<rect x="230" y="48" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="244" y="57" font-size="12" fill="#1f2328">gojxl</text>
+<rect x="288.0" y="48" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="302.0" y="57" font-size="12" fill="#1f2328">libjxl cjxl 0.12</text>
+<line x1="230.0" y1="60" x2="230.0" y2="212" stroke="#d1d9e0" stroke-width="1"/>
+<text x="220" y="83.0" font-size="13" text-anchor="end" fill="#1f2328">Lossless (gojxl -e 4, cjxl -e 7)</text>
+<path d="M230.0,64h256.3a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-256.3z" fill="#2a78d6"><title>gojxl: 0.73 s</title></path>
+<text x="495.3" y="75" font-size="11" fill="#59636e">0.73 s</text>
+<path d="M230.0,80h456.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-456.0z" fill="#eb6834"><title>libjxl cjxl 0.12: 1.29 s</title></path>
+<text x="695.0" y="91" font-size="11" fill="#59636e">1.29 s</text>
+<text x="220" y="131.0" font-size="13" text-anchor="end" fill="#1f2328">Lossy, distance 1, effort 7</text>
+<path d="M230.0,112h160.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-160.0z" fill="#2a78d6"><title>gojxl: 0.46 s</title></path>
+<text x="399.0" y="123" font-size="11" fill="#59636e">0.46 s</text>
+<path d="M230.0,128h170.7a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-170.7z" fill="#eb6834"><title>libjxl cjxl 0.12: 0.49 s</title></path>
+<text x="409.7" y="139" font-size="11" fill="#59636e">0.49 s</text>
+<text x="220" y="179.0" font-size="13" text-anchor="end" fill="#1f2328">JPEG recompression</text>
+<path d="M230.0,160h181.4a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-181.4z" fill="#2a78d6"><title>gojxl: 0.52 s</title></path>
+<text x="420.4" y="171" font-size="11" fill="#59636e">0.52 s</text>
+<path d="M230.0,176h135.1a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-135.1z" fill="#eb6834"><title>libjxl cjxl 0.12: 0.39 s</title></path>
+<text x="374.1" y="187" font-size="11" fill="#59636e">0.39 s</text>
+<text x="230" y="228" font-size="11" fill="#59636e">Same sizes lossless (4.861 vs 4.866 MB) and for JPEGs (7.94 vs 7.95 MB); lossy: 589 vs 679 KB at d 1.</text>
+</g></svg>
