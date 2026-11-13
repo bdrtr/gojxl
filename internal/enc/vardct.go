@@ -461,6 +461,94 @@ const (
 // SSIMULACRA 2 85, -0.9% by PSNR).
 var chanScale = [3]float32{0.8, 1, 0.8}
 
+// simplifyInvisible replaces the colour of fully transparent pixels by a
+// weighted mean of the already simplified left/upper ones and of visible
+// neighbours, as libjxl does for lossy frames (enc_frame.cc, unless
+// --keep_invisible): the colour under alpha 0 is arbitrary in many files
+// (an icon with 65% of it transparent: 36.5 KB -> 15 KB at d 1).
+func simplifyInvisible(xyb [3][]float32, alpha []int32, W, H, pw int) {
+	// fully transparent 8x8 blocks that are flat already stay as they are
+	// (the smear would carry edge colours into them)
+	bw := (W + 7) / 8
+	keep := make([]bool, bw*((H+7)/8))
+	for by := 0; by*8 < H; by++ {
+		for bx := 0; bx*8 < W; bx++ {
+			flat := true
+			x0, y0 := bx*8, by*8
+			for y := y0; y < min(y0+8, H) && flat; y++ {
+				for x := x0; x < min(x0+8, W); x++ {
+					o := y*pw + x
+					if alpha[y*W+x] != 0 || xyb[0][o] != xyb[0][y0*pw+x0] || xyb[1][o] != xyb[1][y0*pw+x0] || xyb[2][o] != xyb[2][y0*pw+x0] {
+						flat = false
+						break
+					}
+				}
+			}
+			keep[by*bw+bx] = flat
+		}
+	}
+	for c := 0; c < 3; c++ {
+		p := xyb[c]
+		for y := 0; y < H; y++ {
+			row := p[y*pw : y*pw+W]
+			a := alpha[y*W : y*W+W]
+			var prow, nrow []float32
+			var pa, na []int32
+			if y > 0 {
+				prow, pa = p[(y-1)*pw:(y-1)*pw+W], alpha[(y-1)*W:y*W]
+			}
+			if y+1 < H {
+				nrow, na = p[(y+1)*pw:(y+1)*pw+W], alpha[(y+1)*W:(y+2)*W]
+			}
+			kr := keep[(y/8)*bw:]
+			for x := 0; x < W; x++ {
+				if a[x] != 0 || kr[x/8] {
+					continue
+				}
+				var v, d float32
+				if x > 0 {
+					v += row[x-1]
+					d++
+					if a[x-1] > 0 {
+						v += row[x-1]
+						d++
+					}
+				}
+				if x+1 < W {
+					if y > 0 {
+						v += prow[x+1]
+						d++
+					}
+					if a[x+1] > 0 {
+						v += 2 * row[x+1]
+						d += 2
+					}
+					if y > 0 && pa[x+1] > 0 {
+						v += 2 * prow[x+1]
+						d += 2
+					}
+					if y+1 < H && na[x+1] > 0 {
+						v += 2 * nrow[x+1]
+						d += 2
+					}
+				}
+				if y > 0 && pa[x] > 0 {
+					v += 2 * prow[x]
+					d += 2
+				}
+				if y+1 < H && na[x] > 0 {
+					v += 2 * nrow[x]
+					d += 2
+				}
+				if d > 1 {
+					v /= d
+				}
+				row[x] = v
+			}
+		}
+	}
+}
+
 // cflBits[a] is cflChoose's rate proxy 2 log2(1+a) + 1 of a non-zero |q|.
 var cflBits = func() (t [64]float64) {
 	for a := range t {
@@ -1218,6 +1306,11 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			nec = 1
 		}
 		patches = planPatches(xyb, im.W, im.H, pw, d, nec)
+	}
+	// after the patch search, which needs the flat backgrounds that
+	// transparent areas often have
+	if im.Alpha {
+		simplifyInvisible(xyb, im.Chans[len(im.Chans)-1], im.W, im.H, pw)
 	}
 	var aqMap []float32 // per-block quantisation multipliers (libjxl AQ)
 	var aqMed float32

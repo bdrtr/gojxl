@@ -145,3 +145,46 @@ func TestPatchesAlpha(t *testing.T) {
 		}
 	}
 }
+
+// The colour under alpha 0 is free: noise there is replaced (libjxl's
+// SimplifyInvisible), so it costs about as much as a flat colour would.
+func TestSimplifyInvisible(t *testing.T) {
+	mk := func(noise bool) *Image {
+		const w, h = 96, 64
+		im := &Image{W: w, H: h, BitDepth: 8, Alpha: true}
+		for c := 0; c < 4; c++ {
+			im.Chans = append(im.Chans, make([]int32, w*h))
+		}
+		seed := uint32(1)
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				i := y*w + x
+				if x < w/2 {
+					for c := 0; c < 3; c++ {
+						im.Chans[c][i] = int32(40 + 2*x + c*30 + y)
+					}
+					im.Chans[3][i] = 255
+				} else if noise {
+					for c := 0; c < 3; c++ {
+						seed = seed*1664525 + 1013904223
+						im.Chans[c][i] = int32(seed >> 24)
+					}
+				}
+			}
+		}
+		return im
+	}
+	opt := LossyOptions{Distance: 1, EPFIters: -1, Sharpness: -1, LibAQ: true}
+	flat, err := EncodeVarDCT(mk(false), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noisy, err := EncodeVarDCT(mk(true), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("flat %d bytes, noise under alpha 0: %d", len(flat), len(noisy))
+	if len(noisy) > len(flat)*13/10 {
+		t.Errorf("noise under alpha 0 costs %d bytes, flat %d", len(noisy), len(flat))
+	}
+}
