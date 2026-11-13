@@ -40,7 +40,7 @@ func BenchmarkXYBTo8(b *testing.B) {
 	ih.ToneMapping.IntensityTarget = 255
 	ih.Colour.TransferFunction = TFSRGB
 	c := newXYBConv(ih, nil)
-	c.tf8 = buildTF8(c.f)
+	t8 := c.tabs.table8()
 	const w = 2048
 	rng := rand.New(rand.NewSource(5))
 	x, y, bb := make([]float32, w), make([]float32, w), make([]float32, w)
@@ -52,7 +52,7 @@ func BenchmarkXYBTo8(b *testing.B) {
 	dst := make([]byte, 4*w)
 	b.SetBytes(w)
 	for i := 0; i < b.N; i++ {
-		xybTo8(c, x, y, bb, dst, 4)
+		xybTo8(c, t8, x, y, bb, dst, 4)
 	}
 }
 

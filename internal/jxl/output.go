@@ -22,8 +22,67 @@ type xybConv struct {
 	hlgExp float32
 	lum    [3]float32
 
+	tabs *tfTables // tables of f (nil when unused)
+}
+
+// tfTables holds the output tables of a transfer function. Those of the
+// standard curves are built once per process and shared.
+type tfTables struct {
+	f       func(float32) float32
+	lut     *tfLUT
 	tf8Once sync.Once
 	tf8     *tf8 // 8-bit output table (built on first use)
+}
+
+func newTFTables(f func(float32) float32, zeroNeg bool) *tfTables {
+	t := &tfTables{f: f, lut: buildTFLUT(f)}
+	if zeroNeg {
+		t.lut.powerLaw()
+	}
+	return t
+}
+
+// table8 returns the 8-bit output table, building it on first use (nil
+// when values >= 1 do not all map to 255).
+func (t *tfTables) table8() *tf8 {
+	t.tf8Once.Do(func() { t.tf8 = buildTF8(t.f) })
+	return t.tf8
+}
+
+type tfKey struct {
+	tf        uint32
+	gamma     float64
+	intensity float32
+}
+
+var tfCache struct {
+	sync.Mutex
+	m map[tfKey]*tfTables
+}
+
+// sharedTFTables returns the tables of a standard transfer function. The
+// cache is bounded: gamma and intensity come from the file.
+func sharedTFTables(tf uint32, gamma float64, intensity float32) *tfTables {
+	k := tfKey{tf, gamma, intensity}
+	tfCache.Lock()
+	t := tfCache.m[k]
+	tfCache.Unlock()
+	if t != nil {
+		return t
+	}
+	t = newTFTables(tfFunc(tf, gamma, intensity), tfZeroesNegatives(tf))
+	tfCache.Lock()
+	defer tfCache.Unlock()
+	if u := tfCache.m[k]; u != nil {
+		return u
+	}
+	if tfCache.m == nil {
+		tfCache.m = map[tfKey]*tfTables{}
+	}
+	if len(tfCache.m) < 32 {
+		tfCache.m[k] = t
+	}
+	return t
 }
 
 func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
@@ -70,13 +129,12 @@ func newXYBConv(ih *ImageHeader, t *outputTarget) *xybConv {
 			c.linear = true
 			return c
 		}
-		c.f = tfFunc(tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
-		zeroNeg = tfZeroesNegatives(tf)
+		c.tabs = sharedTFTables(tf, ih.Colour.Gamma, ih.ToneMapping.IntensityTarget)
+		c.f, c.lut = c.tabs.f, c.tabs.lut
+		return c
 	}
-	c.lut = buildTFLUT(c.f)
-	if zeroNeg {
-		c.lut.powerLaw()
-	}
+	c.tabs = newTFTables(c.f, zeroNeg)
+	c.lut = c.tabs.lut
 	return c
 }
 
@@ -128,11 +186,12 @@ func (f *Frame) RGB8Row(yy int, tmp, a []float32, dst []byte, stride int) {
 	w := f.Width
 	dst = dst[:stride*w]
 	c := f.conv
+	var t8 *tf8
 	if c != nil && !f.grey && !c.linear && c.hlgExp == 0 && c.lut3[0] == nil && c.post == nil {
-		c.tf8Once.Do(func() { c.tf8 = buildTF8(c.f) })
+		t8 = c.tabs.table8()
 	}
-	if c != nil && c.tf8 != nil && !f.grey && !c.linear && c.hlgExp == 0 {
-		xybTo8(c, f.Color[0].Row(yy)[:w], f.Color[1].Row(yy)[:w], f.Color[2].Row(yy)[:w], dst, stride)
+	if t8 != nil {
+		xybTo8(c, t8, f.Color[0].Row(yy)[:w], f.Color[1].Row(yy)[:w], f.Color[2].Row(yy)[:w], dst, stride)
 	} else {
 		if tmp == nil && c != nil {
 			tmp = make([]float32, 3*w)
@@ -254,7 +313,7 @@ func (t *tf8) get(v float32) uint8 {
 // (the fourth, alpha, byte of RGBA is left untouched). Chunks go through
 // linear float rows first: one loop holding the matrix and one holding
 // the table use fewer registers than a fused loop, which spills.
-func xybTo8(c *xybConv, x, y, b []float32, dst []byte, stride int) {
+func xybTo8(c *xybConv, t8 *tf8, x, y, b []float32, dst []byte, stride int) {
 	const chunk = 256
 	var buf [3][chunk]float32
 	y, b = y[:len(x)], b[:len(x)]
@@ -264,9 +323,9 @@ func xybTo8(c *xybConv, x, y, b []float32, dst []byte, stride int) {
 		r, g, bo := buf[0][:n], buf[1][:n], buf[2][:n]
 		xybRow(c, x[i0:i0+n], y[i0:i0+n], b[i0:i0+n], r, g, bo)
 		o := dst[stride*i0:]
-		tf8Row(c.tf8, r, o, stride)
-		tf8Row(c.tf8, g, o[1:], stride)
-		tf8Row(c.tf8, bo, o[2:], stride)
+		tf8Row(t8, r, o, stride)
+		tf8Row(t8, g, o[1:], stride)
+		tf8Row(t8, bo, o[2:], stride)
 	}
 }
 
