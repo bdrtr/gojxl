@@ -51,21 +51,32 @@ func decodePlanes(t *testing.T, data []byte, separate bool) [3][]float32 {
 }
 
 // The fused Gaborish + EPF pass gives exactly the separate passes' result.
-func TestGabEPF1MatchesSeparate(t *testing.T) {
+func TestGabEPFMatchesSeparate(t *testing.T) {
 	sizes := [][2]int{{8, 8}, {9, 13}, {67, 21}, {256, 40}, {300, 257}, {64, 600}}
 	for _, procs := range []int{1, 3, runtime.NumCPU()} {
 		old := runtime.GOMAXPROCS(procs)
 		for i, sz := range sizes {
-			for _, noGab := range []bool{false, true} {
-				name := fmt.Sprintf("p%d/%dx%d/nogab=%v", procs, sz[0], sz[1], noGab)
-				data, err := enc.EncodeVarDCT(fusedTestImage(sz[0], sz[1], int64(i)), enc.LossyOptions{Distance: 1, EPFIters: 1, Sharpness: -1, NoGaborish: noGab})
+			for _, cfg := range []struct {
+				iters int
+				noGab bool
+				d     float32
+			}{{1, false, 1}, {1, true, 1}, {2, false, 2}, {3, false, 4}, {3, true, 4}} {
+				name := fmt.Sprintf("p%d/%dx%d/iters=%d/nogab=%v", procs, sz[0], sz[1], cfg.iters, cfg.noGab)
+				data, err := enc.EncodeVarDCT(fusedTestImage(sz[0], sz[1], int64(i)), enc.LossyOptions{Distance: cfg.d, EPFIters: cfg.iters, Sharpness: -1, NoGaborish: cfg.noGab})
 				if err != nil {
 					t.Fatal(name, err)
 				}
 				a, b := decodePlanes(t, data, false), decodePlanes(t, data, true)
+				// SIMD kernels round their vector part (FMA) and scalar tail
+				// differently, so there the result depends on where rows
+				// start; index errors are far larger
+				tol := 0.0
+				if jxl.SIMDActive() {
+					tol = 1e-6
+				}
 				for c := range a {
 					for k := range a[c] {
-						if a[c][k] != b[c][k] {
+						if math.Abs(float64(a[c][k]-b[c][k])) > tol {
 							t.Fatalf("%s: channel %d sample %d (%d,%d): fused %g, separate %g", name, c, k, k%sz[0], k/sz[0], a[c][k], b[c][k])
 						}
 					}

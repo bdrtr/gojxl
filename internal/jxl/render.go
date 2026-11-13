@@ -23,10 +23,10 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 				fd.color[c] = &Plane{W: fd.color[0].W, H: fd.color[0].H, Pix: append([]float32(nil), fd.color[0].Pix...)}
 			}
 		}
-		if fd.gabEPF1Ok() && !noFusedFilters {
+		if fd.gabEPFOk() && !noFusedFilters {
 			st := startStage()
-			fd.gabEPF1(fh.Filter.Gab)
-			st.done("gab+epf1")
+			fd.gabEPF(fh.Filter.Gab)
+			st.done("gab+epf")
 		} else {
 			if fh.Filter.Gab {
 				st := startStage()
