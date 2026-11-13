@@ -2038,9 +2038,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 	if !fo.NoImageHeader {
 		out.Write(16, 0x0aff)
 		writeSize(out, im.W, im.H)
-		// grey samples keep a grey colour space only with a description
-		// (sRGB grey stays the RGB default the decoder renders)
-		plain := im.defaultColour()
+		// grey samples are tagged grey (a few bytes), so decoders
+		// render one channel, the luminance of the XYB samples
+		plain := im.defaultColour() && !im.Grey
 		if alpha == nil && fo.Anim == nil && plain && im.BitDepth == 8 && im.Orientation <= 1 {
 			out.WriteBool(true) // metadata all default: 8-bit sRGB, XYB
 		} else {
@@ -2056,7 +2056,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 				out.WriteU32(0, val(0), val(1), bitsOff(4, 2), bitsOff(12, 1))
 			}
 			out.WriteBool(true) // xyb
-			writeColour(out, im, im.Grey && !plain)
+			writeColour(out, im, im.Grey)
 			if extra {
 				writeToneMapping(out, im)
 			}

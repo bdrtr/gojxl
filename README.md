@@ -213,8 +213,7 @@ encodes 1.8× faster at the same size.
 Feature-complete for still images and animations. Known gaps: lossy
 encoding at efforts 1–4 is slower than `cjxl -e 1…4`
 (about 2× on one thread), on one thread decoding to PNG takes 1.05–1.4× as
-long as `djxl` with its AVX2 code (gojxl is plain Go), and grey images are stored as colour
-when encoded lossily or with alpha (larger than needed, still correct). Optional SIMD kernels (still pure Go) build with
+long as `djxl` with its AVX2 code (gojxl is plain Go). Optional SIMD kernels (still pure Go) build with
 `GOEXPERIMENT=simd`. Detailed notes, in Turkish:
 [docs/DETAILS.tr.md](docs/DETAILS.tr.md).
 

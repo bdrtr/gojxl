@@ -103,6 +103,9 @@ func encodePlanarOriented(im *enc.Image, opt *EncodeOptions, col colourSpec, met
 	if opt != nil && opt.Effort > 0 {
 		o.Effort = opt.Effort
 	}
+	if col.icc == nil {
+		collapseGrey(im)
+	}
 	col.apply(im)
 	var cs []byte
 	var err error
@@ -119,6 +122,31 @@ func encodePlanarOriented(im *enc.Image, opt *EncodeOptions, col colourSpec, met
 		return nil, err
 	}
 	return meta.wrap(cs), nil
+}
+
+// collapseGrey stores colour samples that are all grey (R = G = B, as
+// decoded grey+alpha PNGs come) as one channel: decoders then render
+// grey, and lossless files are smaller. Profiles are not checked: an
+// RGB ICC profile does not describe grey samples, so callers skip those.
+func collapseGrey(im *enc.Image) {
+	if im.Grey || len(im.Chans) < 3 {
+		return
+	}
+	n := im.W * im.H
+	r, g, b := im.Chans[0][:n], im.Chans[1][:n], im.Chans[2][:n]
+	var colour atomic.Bool
+	jxl.ParallelRows(im.H, func(y0, y1 int) {
+		for i := y0 * im.W; i < y1*im.W && !colour.Load(); i++ {
+			if r[i] != g[i] || r[i] != b[i] {
+				colour.Store(true)
+			}
+		}
+	})
+	if colour.Load() {
+		return
+	}
+	im.Grey = true
+	im.Chans = append(im.Chans[:1], im.Chans[3:]...)
 }
 
 func toPlanar(img image.Image) *enc.Image {

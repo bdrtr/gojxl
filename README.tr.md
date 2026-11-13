@@ -211,8 +211,7 @@ fotoğraf aynı boyutta 1,8× daha hızlı kodlanır. `-e 5` daha da küçüktü
 Hareketsiz görüntüler ve animasyonlar için özellikleri tamam. Bilinen
 eksikler: 1–4 eforlarında kayıplı kodlama `cjxl -e 1…4`'ten yavaş (tek
 çekirdekte yaklaşık 2×), tek çekirdekte PNG'ye çözme AVX2 kullanan `djxl`'in
-1,05–1,4 katı sürüyor (gojxl düz Go), gri görüntüler kayıplı ya da alfalı kodlanırken
-renkli saklanıyor (gerekenden büyük, ama doğru). İsteğe bağlı SIMD çekirdekleri
+1,05–1,4 katı sürüyor (gojxl düz Go). İsteğe bağlı SIMD çekirdekleri
 (yine saf Go) `GOEXPERIMENT=simd` ile derlenir. Ayrıntılı notlar:
 [docs/DETAILS.tr.md](docs/DETAILS.tr.md).
 
