@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"time"
 
-	g2 "github.com/gen2brain/jxl"
 	"github.com/gen2brain/jpegxl"
+	g2 "github.com/gen2brain/jxl"
 	kp "github.com/kpfaulkner/jxl-go/core"
 
 	"github.com/bdrtr/gojxl"
@@ -47,7 +47,7 @@ func encode(lib string, img image.Image, q int, lossless bool) ([]byte, error) {
 	case "gojxl":
 		o := &gojxl.EncodeOptions{}
 		if !lossless {
-			o.Quality = q
+			o.Distance = gojxl.DistanceFromQuality(float32(q))
 		}
 		var b []byte
 		b, err = gojxl.EncodeBytes(img, o)
