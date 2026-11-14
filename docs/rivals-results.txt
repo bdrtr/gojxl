@@ -70,3 +70,39 @@ lossless T=4 cafe gen2brain-jxl lossless 2754.4 ms 2950630 bytes
 encode T=4 cafe q=75 jpegxl-wasm encode 4122.2 ms 389932 bytes | SSIMULACRA2 74.7541  PSNR 31.86 dB
 encode T=4 cafe q=90 jpegxl-wasm encode 4291.6 ms 555653 bytes | SSIMULACRA2 86.0879  PSNR 35.96 dB
 lossless T=4 cafe jpegxl-wasm lossless 12823.3 ms 2878133 bytes
+
+# decode rerun, 2026-11-14, same machine and files, gojxl at 678c0c5 (decoder speed-ups since v0.1.0)
+# best of 10 after 0.5 s of untimed warm-up runs; the T=1 lossy gojxl times above (80/150 ms)
+# were probably cold runs: the same build timed 45/85 ms with a warm-up
+decode T=1 storm_d1 gojxl decode 38.2 ms
+decode T=1 storm_d1 gen2brain-jxl decode 37.3 ms
+decode T=1 storm_d1 jpegxl-wasm decode 54.7 ms
+decode T=1 storm_d1 jxl-go decode 305.6 ms
+decode T=1 cafe_d1 gojxl decode 73.6 ms
+decode T=1 cafe_d1 gen2brain-jxl decode 67.0 ms
+decode T=1 cafe_d1 jpegxl-wasm decode 97.4 ms
+decode T=1 cafe_d1 jxl-go decode 561.3 ms
+decode T=1 storm_ll gojxl decode 220.6 ms
+decode T=1 storm_ll gen2brain-jxl decode 231.4 ms
+decode T=1 storm_ll jpegxl-wasm decode 317.6 ms
+decode T=1 storm_ll jxl-go decode 485.7 ms
+decode T=1 cafe_ll gojxl decode 480.1 ms
+decode T=1 cafe_ll gen2brain-jxl decode 505.5 ms
+decode T=1 cafe_ll jpegxl-wasm decode 710.4 ms
+decode T=1 cafe_ll jxl-go decode 1104.4 ms
+decode T=4 storm_d1 gojxl decode 15.3 ms
+decode T=4 storm_d1 gen2brain-jxl decode 17.7 ms
+decode T=4 storm_d1 jpegxl-wasm decode 55.1 ms
+decode T=4 storm_d1 jxl-go decode 202.4 ms
+decode T=4 cafe_d1 gojxl decode 27.9 ms
+decode T=4 cafe_d1 gen2brain-jxl decode 32.7 ms
+decode T=4 cafe_d1 jpegxl-wasm decode 98.2 ms
+decode T=4 cafe_d1 jxl-go decode 392.9 ms
+decode T=4 storm_ll gojxl decode 64.1 ms
+decode T=4 storm_ll gen2brain-jxl decode 65.7 ms
+decode T=4 storm_ll jpegxl-wasm decode 320.3 ms
+decode T=4 storm_ll jxl-go decode 151.6 ms
+decode T=4 cafe_ll gojxl decode 131.5 ms
+decode T=4 cafe_ll gen2brain-jxl decode 139.0 ms
+decode T=4 cafe_ll jpegxl-wasm decode 703.9 ms
+decode T=4 cafe_ll jxl-go decode 315.0 ms

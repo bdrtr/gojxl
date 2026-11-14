@@ -12,22 +12,22 @@
 <text x="605.2" y="57" font-size="12" fill="#1f2328">kpfaulkner/jxl-go</text>
 <line x1="230.0" y1="60" x2="230.0" y2="228" stroke="#d1d9e0" stroke-width="1"/>
 <text x="220" y="99.0" font-size="13" text-anchor="end" fill="#1f2328">Lossy (d 1)</text>
-<path d="M230.0,64h18.7a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-18.7z" fill="#2a78d6"><title>gojxl: 36 ms</title></path>
-<text x="257.7" y="75" font-size="11" fill="#59636e">36 ms</text>
-<path d="M230.0,80h19.9a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-19.9z" fill="#eb6834"><title>gen2brain/jxl: 38 ms</title></path>
-<text x="258.9" y="91" font-size="11" fill="#59636e">38 ms</text>
-<path d="M230.0,96h65.4a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-65.4z" fill="#1baf7a"><title>gen2brain/jpegxl (WASM): 110 ms</title></path>
-<text x="304.4" y="107" font-size="11" fill="#59636e">110 ms</text>
-<path d="M230.0,112h254.2a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-254.2z" fill="#eda100"><title>kpfaulkner/jxl-go: 408 ms</title></path>
-<text x="493.2" y="123" font-size="11" fill="#59636e">408 ms</text>
+<path d="M230.0,64h14.2a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-14.2z" fill="#2a78d6"><title>gojxl: 28 ms</title></path>
+<text x="253.2" y="75" font-size="11" fill="#59636e">28 ms</text>
+<path d="M230.0,80h17.4a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-17.4z" fill="#eb6834"><title>gen2brain/jxl: 33 ms</title></path>
+<text x="256.4" y="91" font-size="11" fill="#59636e">33 ms</text>
+<path d="M230.0,96h60.2a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-60.2z" fill="#1baf7a"><title>gen2brain/jpegxl (WASM): 98 ms</title></path>
+<text x="299.2" y="107" font-size="11" fill="#59636e">98 ms</text>
+<path d="M230.0,112h252.8a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-252.8z" fill="#eda100"><title>kpfaulkner/jxl-go: 393 ms</title></path>
+<text x="491.8" y="123" font-size="11" fill="#59636e">393 ms</text>
 <text x="220" y="179.0" font-size="13" text-anchor="end" fill="#1f2328">Lossless</text>
-<path d="M230.0,144h81.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-81.0z" fill="#2a78d6"><title>gojxl: 134 ms</title></path>
-<text x="320.0" y="155" font-size="11" fill="#59636e">134 ms</text>
-<path d="M230.0,160h88.4a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-88.4z" fill="#eb6834"><title>gen2brain/jxl: 146 ms</title></path>
-<text x="327.4" y="171" font-size="11" fill="#59636e">146 ms</text>
-<path d="M230.0,176h456.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-456.0z" fill="#1baf7a"><title>gen2brain/jpegxl (WASM): 727 ms</title></path>
-<text x="695.0" y="187" font-size="11" fill="#59636e">727 ms</text>
-<path d="M230.0,192h209.8a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-209.8z" fill="#eda100"><title>kpfaulkner/jxl-go: 338 ms</title></path>
-<text x="448.8" y="203" font-size="11" fill="#59636e">338 ms</text>
-<text x="230" y="244" font-size="11" fill="#59636e">Best of 5. jxl-go&#x27;s lossy output scores SSIMULACRA 2 58.5 (the others 86.2).</text>
+<path d="M230.0,144h81.9a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-81.9z" fill="#2a78d6"><title>gojxl: 132 ms</title></path>
+<text x="320.9" y="155" font-size="11" fill="#59636e">132 ms</text>
+<path d="M230.0,160h86.8a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-86.8z" fill="#eb6834"><title>gen2brain/jxl: 139 ms</title></path>
+<text x="325.8" y="171" font-size="11" fill="#59636e">139 ms</text>
+<path d="M230.0,176h456.0a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-456.0z" fill="#1baf7a"><title>gen2brain/jpegxl (WASM): 704 ms</title></path>
+<text x="695.0" y="187" font-size="11" fill="#59636e">704 ms</text>
+<path d="M230.0,192h201.9a4,4 0 0 1 4,4v6a4,4 0 0 1 -4,4h-201.9z" fill="#eda100"><title>kpfaulkner/jxl-go: 315 ms</title></path>
+<text x="440.9" y="203" font-size="11" fill="#59636e">315 ms</text>
+<text x="230" y="244" font-size="11" fill="#59636e">Best of 10 after half a second of warm-up. jxl-go&#x27;s lossy output scores SSIMULACRA 2 58.5 (the others 86.2).</text>
 </g></svg>

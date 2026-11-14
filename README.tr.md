@@ -27,7 +27,7 @@
   15 fotoğrafta **%−8,2** (yüksek kalitede %−11), 15 diyagram, ikon ve ekran
   görüntüsünde **%−10,2**. Kayıpsız ve JPEG'den dönüştürülmüş dosyalar 1.983
   dosyalık gerçek dünya derleminde %0,5 daha küçük.
-- **4 çekirdekte en hızlı Go JPEG XL kütüphanesi**: gen2brain/jxl'den biraz,
+- **4 çekirdekte en hızlı Go JPEG XL kütüphanesi**: gen2brain/jxl'den %2–15,
   WASM'a derlenmiş libjxl'den 3–5× hızlı çözer; gen2brain/jxl'den 2–8×, WASM
   sürümünden 14–37× hızlı kodlar; JPEG XL'i PNG'ye libjxl'in kendi `djxl`
   aracından hızlı çevirir ([ölçümler](#hız-ölçümleri)).
@@ -138,7 +138,7 @@ Ryzen 7 8845HS dizüstü, 5 çalıştırmanın en iyisi.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/rivals-decode-dark.svg">
-  <img src="docs/rivals-decode-light.svg" alt="Çubuk grafik, 2 MP bir fotoğrafı 4 çekirdekte çözme: gojxl 36 ms, gen2brain/jxl 38 ms, gen2brain/jpegxl (WASM) 110 ms, kpfaulkner/jxl-go 408 ms (kayıplı); 134, 146, 727 ve 338 ms (kayıpsız)">
+  <img src="docs/rivals-decode-light.svg" alt="Çubuk grafik, 2 MP bir fotoğrafı 4 çekirdekte çözme: gojxl 28 ms, gen2brain/jxl 33 ms, gen2brain/jpegxl (WASM) 98 ms, kpfaulkner/jxl-go 393 ms (kayıplı); 132, 139, 704 ve 315 ms (kayıpsız)">
 </picture>
 
 <picture>
@@ -148,10 +148,10 @@ Ryzen 7 8845HS dizüstü, 5 çalıştırmanın en iyisi.
 
 | 2 MP fotoğraf (cafe) | gojxl | gen2brain/jxl | gen2brain/jpegxl (WASM) | kpfaulkner/jxl-go |
 |---|---|---|---|---|
-| Kayıplı çözme, 1 çekirdek | 150 ms | **71 ms** | 107 ms | 600 ms (hatalı çıktı) |
-| Kayıplı çözme, 4 çekirdek | **36 ms** | 38 ms | 110 ms | 408 ms (hatalı çıktı) |
-| Kayıpsız çözme, 1 çekirdek | **494 ms** | 514 ms | 730 ms | 1.086 ms |
-| Kayıpsız çözme, 4 çekirdek | **134 ms** | 146 ms | 727 ms | 338 ms |
+| Kayıplı çözme, 1 çekirdek | 74 ms | **67 ms** | 97 ms | 561 ms (hatalı çıktı) |
+| Kayıplı çözme, 4 çekirdek | **28 ms** | 33 ms | 98 ms | 393 ms (hatalı çıktı) |
+| Kayıpsız çözme, 1 çekirdek | **480 ms** | 506 ms | 710 ms | 1.104 ms |
+| Kayıpsız çözme, 4 çekirdek | **132 ms** | 139 ms | 704 ms | 315 ms |
 | Kayıplı kodlama, kalite 90, 1 çekirdek | **0,75 s** | 1,69 s | 4,37 s | — |
 | Kayıplı kodlama, kalite 90, 4 çekirdek | **0,23 s** | 0,66 s | 4,29 s | — |
 | Kayıpsız kodlama, 1 çekirdek | **1,18 s** | 3,53 s | 12,11 s | — |
@@ -160,12 +160,14 @@ Ryzen 7 8845HS dizüstü, 5 çalıştırmanın en iyisi.
 
 gojxl 4 çekirdekte dördünün en hızlısıdır; gen2brain/jxl'den 2–8×, WASM'a
 derlenmiş libjxl'den 14–37× hızlı kodlar ve en küçük kayıpsız dosyaları üretir.
-SIMD assembly kullanan gen2brain/jxl tek çekirdekte kayıplı dosyaları yaklaşık
-iki kat hızlı çözer. Eşit kalitede kayıplı boyutlar bu iki fotoğrafta karışık:
+SIMD assembly kullanan gen2brain/jxl tek çekirdekte kayıplı dosyaları %2–10
+daha hızlı çözer (1 MP: 37'ye karşı 38 ms). Eşit kalitede kayıplı boyutlar bu iki fotoğrafta karışık:
 1 MP bir fotoğrafta (storm) gojxl gen2brain/jxl'den %8 küçük ve libjxl ile
 başa baş; bu fotoğrafta ise gen2brain/jxl %13 (kalite 90'da ikisinin de
 SSIMULACRA 2 puanı 87,8), libjxl yaklaşık %8 daha küçük (yoğun dokulu bir
-sahne; yukarıdaki setteki en zayıf görüntümüz). Tüm sayılar:
+sahne; yukarıdaki setteki en zayıf görüntümüz). Çözme ölçümleri v0.1.0'dan
+sonraki çözücü hızlandırmalarından sonra yinelendi (ısınmanın ardından 10
+denemenin en iyisi); kodlama sayıları v0.1.0'a ait. Tüm sayılar:
 [docs/rivals-results.txt](docs/rivals-results.txt); ölçüm aracı:
 [bench/rivals](bench/rivals).
 

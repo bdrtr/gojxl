@@ -78,24 +78,24 @@
       {
         "label": "Lossy (d 1)",
         "values": [
-          35.8,
-          37.7,
-          109.7,
-          408.0
+          27.9,
+          32.7,
+          98.2,
+          392.9
         ]
       },
       {
         "label": "Lossless",
         "values": [
-          134.3,
-          146.0,
-          726.8,
-          337.8
+          131.5,
+          139.0,
+          703.9,
+          315.0
         ]
       }
     ],
     "fmt": "{:.0f} ms",
-    "note": "Best of 5. jxl-go's lossy output scores SSIMULACRA 2 58.5 (the others 86.2)."
+    "note": "Best of 10 after half a second of warm-up. jxl-go's lossy output scores SSIMULACRA 2 58.5 (the others 86.2)."
   },
   "rivals-encode": {
     "title": "Go libraries: encoding, 4 threads",
