@@ -3,10 +3,10 @@ package enc
 import (
 	"errors"
 	"fmt"
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
 	"math/bits"
 	"os"
-	"runtime"
 	"sort"
 
 	"github.com/bdrtr/gojxl/internal/bitio"
@@ -426,7 +426,7 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 	nctx := 495 * numCtx
 	// token caches per group; histograms per worker (a histogram set is
 	// large: hundreds of contexts per block context)
-	nw := min(runtime.GOMAXPROCS(0), ngroups)
+	nw := min(par.Workers(), ngroups)
 	hs2 := make([]*histograms, nw)
 	flats := make([][]uint32, nw)
 	caches := make([]residCache, ngroups)

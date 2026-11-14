@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"github.com/bdrtr/gojxl/internal/par"
 	"image"
 	"image/png"
 )
@@ -163,7 +165,7 @@ func decodeFast(data []byte) (image.Image, bool, error) {
 		up = cur
 		return nil
 	}
-	if len(raw) < 1<<20 {
+	if len(raw) < 1<<20 || par.Workers() == 1 {
 		if err := inflateZlib(src, raw, nil); err != nil {
 			return nil, true, err
 		}
@@ -178,9 +180,15 @@ func decodeFast(data []byte) (image.Image, bool, error) {
 	progress := make(chan int, len(raw)>>progressShift+2)
 	errc := make(chan error, 1)
 	go func() {
-		err := inflateZlib(src, raw, progress)
-		close(progress)
-		errc <- err
+		var err error
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("png: inflate: %v", r)
+			}
+			close(progress)
+			errc <- err
+		}()
+		err = inflateZlib(src, raw, progress)
 	}()
 	y := 0
 	for done := range progress {

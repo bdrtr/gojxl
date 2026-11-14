@@ -5,13 +5,14 @@ import (
 	"compress/flate"
 	"encoding/binary"
 	"errors"
+	"github.com/bdrtr/gojxl/internal/par"
 	"hash/adler32"
 	"hash/crc32"
 	"image"
 	"io"
 	"math"
-	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // Encode writes img as PNG like image/png (opaque NRGBA images become RGB),
@@ -376,10 +377,19 @@ func compressParts(l layout, level int) (*zparts, error) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var werr error
-	for k := 0; k < min(runtime.GOMAXPROCS(0), nstrips); k++ {
+	var panicked atomic.Pointer[par.Panic]
+	for k := 0; k < min(par.Workers(), nstrips); k++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicked.CompareAndSwap(nil, &par.Panic{Value: r})
+					mu.Lock()
+					next = nstrips // stop the others
+					mu.Unlock()
+				}
+			}()
 			prev := make([]byte, rowLen)
 			cur := make([]byte, rowLen)
 			raw := make([]byte, 0, stripRows*(rowLen+1))
@@ -424,6 +434,9 @@ func compressParts(l layout, level int) (*zparts, error) {
 		}()
 	}
 	wg.Wait()
+	if p := panicked.Load(); p != nil {
+		panic(p.Value)
+	}
 	if werr != nil {
 		return nil, werr
 	}

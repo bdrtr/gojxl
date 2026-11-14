@@ -2,8 +2,8 @@ package jxl
 
 import (
 	"fmt"
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -64,7 +64,7 @@ func (fd *frameDecoder) numSections() int {
 }
 
 // numWorkers returns the number of workers used by parallelForW.
-func numWorkers() int { return runtime.GOMAXPROCS(0) }
+func numWorkers() int { return par.Workers() }
 
 // parallelForW is like parallelFor but also passes a worker index in
 // [0, numWorkers()) so callers can keep per-worker scratch buffers.
@@ -114,54 +114,9 @@ func parallelForW(n int, fn func(w, i int) error) error {
 	return nil
 }
 
-// parallelFor runs fn(i) for i in [0,n) using all CPUs.
+// parallelFor runs fn(i) for i in [0,n) on up to par.Workers() goroutines.
 func parallelFor(n int, fn func(i int) error) error {
 	return parallelForW(n, func(_, i int) error { return fn(i) })
-}
-
-func parallelForOld(n int, fn func(i int) error) error {
-	workers := runtime.GOMAXPROCS(0)
-	if workers > n {
-		workers = n
-	}
-	if workers <= 1 {
-		for i := 0; i < n; i++ {
-			if err := fn(i); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	var mu sync.Mutex
-	var firstErr error
-	next := 0
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				mu.Lock()
-				if firstErr != nil || next >= n {
-					mu.Unlock()
-					return
-				}
-				i := next
-				next++
-				mu.Unlock()
-				if err := fn(i); err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	return firstErr
 }
 
 func (fd *frameDecoder) decode() error {

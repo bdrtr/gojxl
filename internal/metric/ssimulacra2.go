@@ -3,9 +3,9 @@ package metric
 
 import (
 	"errors"
+	"github.com/bdrtr/gojxl/internal/par"
 	"image"
 	"math"
-	"sync"
 )
 
 // SSIMULACRA2 returns the SSIMULACRA 2 score of dist against orig (100 =
@@ -64,11 +64,8 @@ func ssimulacra2(orig, dist image.Image, bg float32) (float64, error) {
 		x1, x2 := a.xyb(), b.xyb()
 		var ssim [6]float64
 		var edge [12]float64
-		var wg sync.WaitGroup
-		for c := 0; c < 3; c++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		par.Do(3, func(_, c int) {
+			{
 				p1, p2 := x1.p[c], x2.p[c]
 				n := len(p1)
 				mul := make([]float32, n)
@@ -87,9 +84,8 @@ func ssimulacra2(orig, dist image.Image, bg float32) (float64, error) {
 				mu1, mu2 := blur(p1, a.w, a.h), blur(p2, a.w, a.h)
 				ssim[2*c], ssim[2*c+1] = ssimMap(mu1, mu2, s11, s22, s12)
 				edge[4*c], edge[4*c+1], edge[4*c+2], edge[4*c+3] = edgeDiff(p1, mu1, p2, mu2)
-			}()
-		}
-		wg.Wait()
+			}
+		})
 		copy(subs[scale][:6], ssim[:])
 		copy(subs[scale][6:], edge[:])
 		nscales++

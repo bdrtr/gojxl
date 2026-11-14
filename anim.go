@@ -3,12 +3,11 @@ package gojxl
 import (
 	"bytes"
 	"errors"
+	"github.com/bdrtr/gojxl/internal/par"
 	"image"
 	"image/draw"
 	"image/gif"
 	"math"
-	"runtime"
-	"sync"
 
 	"github.com/bdrtr/gojxl/internal/enc"
 	"github.com/bdrtr/gojxl/internal/pngx"
@@ -117,13 +116,10 @@ func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec, meta m
 	an := &enc.Anim{TpsNum: 1000, TpsDen: 1, Loops: uint32(max(anim.NumLoops, 0))}
 	outs := make([][]byte, len(jobs))
 	errs := make([]error, len(jobs))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, max(1, runtime.GOMAXPROCS(0)/2))
-	for i, j := range jobs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer func() { <-sem; wg.Done() }()
+	// frames in parallel, each encoder on its share of the workers
+	par.DoN(len(jobs), max(1, par.Workers()/2), func(_, i int) {
+		j := jobs[i]
+		{
 			d := math.Round(j.duration * 1000)
 			fo := enc.FrameOpts{
 				Anim:          an,
@@ -141,9 +137,8 @@ func encodeAnimation(anim *Animation, opt *EncodeOptions, col colourSpec, meta m
 			}
 			// frames are converted copies, compared before encoding starts
 			outs[i], errs[i] = enc.EncodeLossless(j.im, enc.Options{Effort: effort, Consume: true, FrameOpts: fo})
-		}()
-	}
-	wg.Wait()
+		}
+	})
 	var out []byte
 	for i := range outs {
 		if errs[i] != nil {

@@ -1,8 +1,8 @@
 package enc
 
 import (
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
-	"runtime"
 	"sort"
 
 	"github.com/bdrtr/gojxl/internal/bitio"
@@ -167,13 +167,13 @@ func clusterHistograms(counts [][]uint64, maxClusters int) ([]uint8, [][]uint64)
 	// only the costs for clusters changed (or created) within it, so the
 	// choices are exactly those of the plain sequential pass.
 	const batch = 32
-	par := runtime.GOMAXPROCS(0) > 1 && len(es) >= 8*batch
+	inPar := par.Workers() > 1 && len(es) >= 8*batch
 	var bc []float64 // batch costs: [context in batch][cluster < k0]
 	var touched []bool
 	for b0 := 0; b0 < len(es); b0 += batch {
 		b1 := min(b0+batch, len(es))
 		k0 := 0
-		if par && len(cl) > 0 {
+		if inPar && len(cl) > 0 {
 			k0 = len(cl)
 			if cap(bc) < (b1-b0)*k0 {
 				bc = make([]float64, batch*maxClusters)

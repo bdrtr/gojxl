@@ -1,9 +1,9 @@
 package enc
 
 import (
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
 	"math/bits"
-	"runtime"
 
 	"github.com/bdrtr/gojxl/internal/bitio"
 )
@@ -167,7 +167,7 @@ func writeANSCodeTunedFrom(w *bitio.Writer, nstreams int, visit func(i int, fn f
 	ncl := len(cl)
 	// value statistics per worker (16 KiB per used cluster), merged per
 	// cluster
-	nw := min(runtime.GOMAXPROCS(0), nstreams)
+	nw := min(par.Workers(), nstreams)
 	vhs := make([][]*valueHist, nw)
 	lzc := make([][][]uint64, nw) // LZ77 length token counts
 	for k := range vhs {

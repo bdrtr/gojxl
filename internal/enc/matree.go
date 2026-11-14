@@ -1,6 +1,7 @@
 package enc
 
 import (
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
 	"slices"
 	"sort"
@@ -568,8 +569,9 @@ func (ts *treeSamples) cost(h []uint32) float64 {
 }
 
 type learner struct {
-	ts *treeSamples
-	lp learnParams
+	ts  *treeSamples
+	lp  learnParams
+	sem *par.Sem // bounds the goroutines of the recursive splits
 }
 
 // learnTree grows a tree over the samples.
@@ -584,7 +586,7 @@ func learnTreeCost(ts *treeSamples, lp learnParams) (*tnode, float64) {
 	if ts.n == 0 {
 		return &tnode{leaf: true, pred: 0}, 0
 	}
-	l := &learner{ts: ts, lp: lp}
+	l := &learner{ts: ts, lp: lp, sem: par.NewSem()}
 	n, c := l.build(0, ts.n, lp.maxLeaves)
 	return n, c * ts.scale
 }
@@ -738,12 +740,7 @@ func (l *learner) count(nh *nodeHist, lo, hi int) {
 		}
 	}
 	if n > 1<<14 {
-		var wg sync.WaitGroup
-		for j := 0; j < np; j++ {
-			wg.Add(1)
-			go func(j int) { defer wg.Done(); one(j) }(j)
-		}
-		wg.Wait()
+		par.Do(np, func(_, j int) { one(j) })
 	} else {
 		for j := 0; j < np; j++ {
 			one(j)
@@ -992,11 +989,9 @@ func (l *learner) grow(lo, hi, budget int, inf nodeInfo, nh *nodeHist) (*tnode, 
 	}
 	var cl, cr float64
 	if n > 1<<15 {
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() { defer wg.Done(); nd.left, cl = l.grow(mid, hi, bl, infL, hL) }()
+		t := l.sem.TryGo(func() { nd.left, cl = l.grow(mid, hi, bl, infL, hL) })
 		nd.right, cr = l.grow(lo, mid, br, infR, hR)
-		wg.Wait()
+		t.Wait()
 	} else {
 		nd.right, cr = l.grow(lo, mid, br, infR, hR)
 		nd.left, cl = l.grow(mid, hi, bl, infL, hL)

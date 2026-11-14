@@ -3,13 +3,13 @@ package enc
 import (
 	"errors"
 	"fmt"
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
 	"os"
 	"runtime"
 	"slices"
 	"sort"
 	"sync"
-	"sync/atomic"
 
 	"github.com/bdrtr/gojxl/internal/bitio"
 	"github.com/bdrtr/gojxl/internal/jxl"
@@ -698,24 +698,10 @@ func forwardYCoCg(r, g, b []int32) {
 	}
 }
 
+// parallel runs fn(i) for i in [0, n) on up to par.Workers() goroutines
+// (panics reach the caller).
 func parallel(n int, fn func(i int)) {
-	workers := min(runtime.GOMAXPROCS(0), n)
-	var wg sync.WaitGroup
-	ch := make(chan int, n)
-	for i := 0; i < n; i++ {
-		ch <- i
-	}
-	close(ch)
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range ch {
-				fn(i)
-			}
-		}()
-	}
-	wg.Wait()
+	par.Do(n, func(_, i int) { fn(i) })
 }
 
 // EncodeLossless encodes the image as a lossless modular JPEG XL codestream.
@@ -889,7 +875,7 @@ func EncodeLossless(im *Image, opt Options) ([]byte, error) {
 	}
 
 	// pass 1: histograms (per worker)
-	nw := min(runtime.GOMAXPROCS(0), len(all))
+	nw := min(par.Workers(), len(all))
 	hs := make([]*histograms, nw)
 	for k := range hs {
 		hs[k] = newHistograms(nleaves, defaultCfg)
@@ -1317,27 +1303,12 @@ func parallelChunks(n, minChunk int, fn func(lo, hi int)) {
 		fn(0, n)
 		return
 	}
-	nch := min(runtime.GOMAXPROCS(0)*4, (n+minChunk-1)/minChunk)
+	nch := min(par.Workers()*4, (n+minChunk-1)/minChunk)
 	parallel(nch, func(i int) { fn(i*n/nch, (i+1)*n/nch) })
 }
 
 // parallelWorkers runs fn(w, i) for i in [0, n) on nw workers taking items
 // from a shared queue; w identifies the worker (for per-worker state).
 func parallelWorkers(n, nw int, fn func(w, i int)) {
-	var next atomic.Int64
-	var wg sync.WaitGroup
-	for w := 0; w < nw; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				i := int(next.Add(1) - 1)
-				if i >= n {
-					return
-				}
-				fn(w, i)
-			}
-		}()
-	}
-	wg.Wait()
+	par.DoN(n, nw, fn)
 }

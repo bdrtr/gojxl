@@ -1,6 +1,7 @@
 package webp
 
 import (
+	"github.com/bdrtr/gojxl/internal/par"
 	"image"
 	"runtime"
 	"sync"
@@ -63,7 +64,7 @@ func (d *vp8) strengths() (fs [4][2]fstrength) {
 // (x+1, y-1) filters, so it waits until the row above has done x+1.
 func (d *vp8) loopFilter(y, u, v []byte, ys, uvs int, inner []bool, segs []uint8, i4 []bool) {
 	fs := d.strengths()
-	nw := min(runtime.GOMAXPROCS(0), d.mbh)
+	nw := min(par.Workers(), d.mbh)
 	if nw <= 1 || d.mbw*d.mbh < 64 {
 		for my := 0; my < d.mbh; my++ {
 			for mx := 0; mx < d.mbw; mx++ {
@@ -75,18 +76,29 @@ func (d *vp8) loopFilter(y, u, v []byte, ys, uvs int, inner []bool, segs []uint8
 	done := make([]atomic.Int32, d.mbh) // macroblocks filtered per row
 	var next atomic.Int32
 	var wg sync.WaitGroup
+	// a panic stops the wavefront (rows below would wait for it forever)
+	// and is raised again on the caller
+	var panicked atomic.Pointer[par.Panic]
 	for w := 0; w < nw; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicked.CompareAndSwap(nil, &par.Panic{Value: r})
+				}
+			}()
 			for {
 				my := int(next.Add(1) - 1)
-				if my >= d.mbh {
+				if my >= d.mbh || panicked.Load() != nil {
 					return
 				}
 				for mx := 0; mx < d.mbw; mx++ {
 					if my > 0 {
 						for need := int32(min(mx+2, d.mbw)); done[my-1].Load() < need; {
+							if panicked.Load() != nil {
+								return
+							}
 							runtime.Gosched()
 						}
 					}
@@ -97,6 +109,9 @@ func (d *vp8) loopFilter(y, u, v []byte, ys, uvs int, inner []bool, segs []uint8
 		}()
 	}
 	wg.Wait()
+	if p := panicked.Load(); p != nil {
+		panic(p.Value)
+	}
 }
 
 // filterMB filters the edges of one macroblock (left, inner vertical, top,
@@ -343,27 +358,21 @@ func yuvToRGBA(img *image.NRGBA, yp, up, vp []byte, w, h, ys, uvs int) {
 	// row 0 alone, then pairs (2k+1, 2k+2) from chroma rows k and k+1, in
 	// parallel bands of pairs; an even height ends with a single row
 	pairs := (h - 1) / 2
-	band := max(16, pairs/(4*runtime.GOMAXPROCS(0))+1)
-	var wg sync.WaitGroup
-	for p0 := 0; p0 < pairs; p0 += band {
-		wg.Add(1)
-		go func(p0, p1 int) {
-			defer wg.Done()
-			for k := p0; k < p1; k++ {
-				y := 2*k + 1
-				upsampleRows(rowY(y), rowY(y+1), rowU(k), rowV(k), rowU(k+1), rowV(k+1), dst(y), dst(y+1), w)
-				alpha255(dst(y))
-				alpha255(dst(y + 1))
-			}
-		}(p0, min(p0+band, pairs))
-	}
+	band := max(16, pairs/(4*par.Workers())+1)
+	par.Do((pairs+band-1)/band, func(_, b int) {
+		for k := b * band; k < min((b+1)*band, pairs); k++ {
+			y := 2*k + 1
+			upsampleRows(rowY(y), rowY(y+1), rowU(k), rowV(k), rowU(k+1), rowV(k+1), dst(y), dst(y+1), w)
+			alpha255(dst(y))
+			alpha255(dst(y + 1))
+		}
+	})
 	upsampleRows(rowY(0), nil, rowU(0), rowV(0), rowU(0), rowV(0), dst(0), nil, w)
 	alpha255(dst(0))
 	if y := 2*pairs + 1; y < h {
 		upsampleRows(rowY(y), nil, rowU(pairs), rowV(pairs), rowU(pairs), rowV(pairs), dst(y), nil, w)
 		alpha255(dst(y))
 	}
-	wg.Wait()
 }
 
 func alpha255(row []uint8) {

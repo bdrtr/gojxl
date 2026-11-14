@@ -2,6 +2,7 @@ package enc
 
 import (
 	"errors"
+	"github.com/bdrtr/gojxl/internal/par"
 	"math"
 	"math/bits"
 	"runtime"
@@ -114,7 +115,7 @@ func gaborishInverse(p []float32, w, h int) {
 		}
 		return v
 	}
-	sh := max(4, (h+4*runtime.GOMAXPROCS(0)-1)/(4*runtime.GOMAXPROCS(0)))
+	sh := max(4, (h+4*par.Workers()-1)/(4*par.Workers()))
 	ns := (h + sh - 1) / sh
 	// original rows y0-2, y0-1 and y1, y1+1 of each strip
 	saved := make([][4][]float32, ns)
@@ -1922,7 +1923,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 
 	// HF histograms over all groups
 	nctx := 495 * numBlockCtx
-	nw := min(runtime.GOMAXPROCS(0), ngroups)
+	nw := min(par.Workers(), ngroups)
 	hs := make([]*histograms, nw) // per worker: counts are order-free
 	// the tokens are kept (4 bytes each) for the writer
 	hfToks := make([]residCache, ngroups)
@@ -2001,11 +2002,9 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 		for i := range sh.pix {
 			sh.pix[i] = int32(sharp)
 		}
-		done := make(chan struct{})
-		go func() {
+		task := par.NewSem().TryGo(func() {
 			writeModularLocalOpts(&wm, []channel{cx, cb, acs, sh}, 4, true)
-			close(done)
-		}()
+		})
 		// learned trees (without the weighted predictor) cost far less
 		// than the fixed tree's many contexts, notably for small images
 		// the fastest efforts learn the DC tree from fewer samples
@@ -2014,7 +2013,7 @@ func EncodeVarDCT(im *Image, opt LossyOptions) ([]byte, error) {
 			lfSamples = 1 << 14
 		}
 		writeModularLocalSamples(w, lf, 4, true, lfSamples)
-		<-done
+		task.Wait()
 		w.AppendWriter(&wm)
 	}
 	writeHfGlobal := func(w *bitio.Writer) *ansCode {
