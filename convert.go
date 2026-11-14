@@ -36,7 +36,7 @@ func ConvertToJXL(data []byte, opt *EncodeOptions) (out []byte, err error) {
 		o = *opt
 	}
 	if o.Distance == 0 && !o.JPEGPixels && len(data) > 2 && data[0] == 0xff && data[1] == 0xd8 {
-		if out, err := TranscodeJPEG(data); err == nil {
+		if out, err := TranscodeJPEGEffort(data, o.Effort); err == nil {
 			return out, nil
 		}
 	}

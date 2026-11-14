@@ -416,7 +416,7 @@ func cmdInfo(args []string) {
 
 func cmdEncode(args []string) {
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
-	effort := fs.Int("e", 0, "effort: lossless 1-6 (default 4; 1-3: fixed context model, 4+: learned MA tree), lossy 1-7 (default 7; lower searches fewer transform shapes, and 1-4 skip adaptive quantisation and Gaborish)")
+	effort := fs.Int("e", 0, "effort: lossless 1-6 (default 4; 1-3: fixed context model, 4+: learned MA tree; JPEG recompression likewise for the DC), lossy 1-7 (default 7; lower searches fewer transform shapes, and 1-4 skip adaptive quantisation and Gaborish)")
 	dist := fs.Float64("d", 0, "distance for lossy encoding (0 = lossless)")
 	quality := fs.Float64("q", -1, "quality 0-100 instead of -d, as in cjxl (100 = lossless, 90 = d 1)")
 	cpuprof := fs.String("cpuprofile", "", "write CPU profile to file")
@@ -478,7 +478,7 @@ func encodeOne(in, out string, opt *gojxl.EncodeOptions) (string, error) {
 	if opt.Distance == 0 && !opt.JPEGPixels && len(raw) > 2 && raw[0] == 0xff && raw[1] == 0xd8 {
 		// JPEG input: lossless recompression of the DCT coefficients
 		t0 := time.Now()
-		data, err := gojxl.TranscodeJPEG(raw)
+		data, err := gojxl.TranscodeJPEGEffort(raw, opt.Effort)
 		if err == nil {
 			el := time.Since(t0)
 			if err := writeFile(out, data); err != nil {

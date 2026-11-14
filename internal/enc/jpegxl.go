@@ -65,7 +65,12 @@ var hfTokLUT = func() (t [4096]uint8) {
 	return
 }()
 
-func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
+// EncodeJPEG recompresses the DCT coefficients of j at the default effort.
+func EncodeJPEG(j *jpeg.Image) ([]byte, error) { return EncodeJPEGEffort(j, 4) }
+
+// EncodeJPEGEffort is EncodeJPEG at an effort: 1-3 code the DC image with
+// a fixed context model, 4 and above learn a tree for it.
+func EncodeJPEGEffort(j *jpeg.Image, effort int) ([]byte, error) {
 	grey := len(j.Comps) == 1
 	if !grey && len(j.Comps) != 3 {
 		return nil, fmt.Errorf("%w: %d components", jpeg.ErrUnsupported, len(j.Comps))
@@ -509,8 +514,13 @@ func EncodeJPEG(j *jpeg.Image) ([]byte, error) {
 			lf = append(lf, ch)
 		}
 		// a third of a 4:2:0 LF group's samples: twice as fast as
-		// 1<<16 for +0.01-0.1% in size
-		writeModularLocalSamples(w, lf, 4, true, 1<<15)
+		// 1<<16 for +0.01-0.1% in size. A fixed context model (effort
+		// <= 3) costs ~0.7% more, saves ~15% of one thread's time.
+		dcEffort := 4
+		if effort > 0 && effort <= 3 {
+			dcEffort = 2
+		}
+		writeModularLocalSamples(w, lf, dcEffort, true, 1<<15)
 		count := cw * chh
 		w.Write(uint(ceilLog2(cw*chh)), uint64(count-1))
 		acs := channel{w: count, h: 2, pix: make([]int32, 2*count)} // DCT8, quant field 1

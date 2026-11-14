@@ -230,3 +230,44 @@ func TestReconstructJPEGCfLClamp(t *testing.T) {
 		t.Fatal("reconstructed JPEG differs")
 	}
 }
+
+// Effort 1-3 codes the DC with a fixed model: the JPEG still comes back
+// byte for byte; effort 0 is the default (TranscodeJPEG).
+func TestTranscodeJPEGEffort(t *testing.T) {
+	r := rand.New(rand.NewSource(8))
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, testPhoto(700, 520, r), &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	def, err := TranscodeJPEG(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e0, err := TranscodeJPEGEffort(buf.Bytes(), 0); err != nil || !bytes.Equal(e0, def) {
+		t.Fatalf("effort 0 differs from the default (%v)", err)
+	}
+	for _, e := range []int{1, 3, 4, 7} {
+		out, err := TranscodeJPEGEffort(buf.Bytes(), e)
+		if err != nil {
+			t.Fatal(e, err)
+		}
+		back, err := ReconstructJPEG(out)
+		if err != nil || !bytes.Equal(back, buf.Bytes()) {
+			t.Fatalf("effort %d: JPEG not restored (%v)", e, err)
+		}
+		if e >= 4 && !bytes.Equal(out, def) {
+			t.Errorf("effort %d differs from the default", e)
+		}
+		if e <= 3 && float64(len(out)) > 1.03*float64(len(def)) {
+			t.Errorf("effort %d: %d bytes vs %d", e, len(out), len(def))
+		}
+	}
+	// ConvertToJXL passes the effort on
+	conv, err := ConvertToJXL(buf.Bytes(), &EncodeOptions{Effort: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e3, _ := TranscodeJPEGEffort(buf.Bytes(), 3); !bytes.Equal(conv, e3) {
+		t.Error("ConvertToJXL ignores the effort for JPEG input")
+	}
+}

@@ -21,6 +21,10 @@ type EncodeOptions struct {
 	// per-group channel palettes, and tune the entropy coder (slower,
 	// typically 5-40% smaller).
 	//
+	// JPEG recompression (TranscodeJPEGEffort, ConvertToJXL; default 4):
+	// 1-3 code the DC coefficients with a fixed context model, about 15%
+	// faster on one thread and 0.7% larger.
+	//
 	// Lossy (1-7, default 7): fewer transform shapes are searched at lower
 	// efforts: 5-6 skip 32x16/16x32, 4 all rectangular shapes, 3 also
 	// DCT32, 2 tries only DCT16 besides DCT8 and 1 only 8x8 DCTs. Like
@@ -312,12 +316,18 @@ func splitOpaque(pix []byte, stride, w, h, bs int) (r, g, b []int32, ok bool) {
 // JPEG (typically ~20% smaller), and a 'jbrd' box allows decoders to
 // restore the original JPEG file byte for byte.
 func TranscodeJPEG(data []byte) (out []byte, err error) {
+	return TranscodeJPEGEffort(data, 0)
+}
+
+// TranscodeJPEGEffort is TranscodeJPEG at an effort (see
+// EncodeOptions.Effort; 0 selects the default).
+func TranscodeJPEGEffort(data []byte, effort int) (out []byte, err error) {
 	defer recoverErr(&err)
 	j, err := jpeg.Parse(data)
 	if err != nil {
 		return nil, err
 	}
-	cs, err := enc.EncodeJPEG(j)
+	cs, err := enc.EncodeJPEGEffort(j, effort)
 	if err != nil {
 		return nil, err
 	}
