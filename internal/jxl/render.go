@@ -77,7 +77,9 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 	}
 
 	// 5. colour transform (deferred to the output stage when possible)
-	deferCT := ih.XYBEncoded && fh.IsLast && !canBeRef && !hasSpot(ih) &&
+	alpha := ih.AlphaChannel()
+	associated := alpha >= 0 && ih.ExtraChannels[alpha].AlphaAssociated
+	deferCT := ih.XYBEncoded && fh.IsLast && !canBeRef && !hasSpot(ih) && !associated &&
 		(fh.Type == FrameRegular || fh.Type == FrameSkipProgressive) &&
 		fd.isFullReplace()
 	st := startStage()
@@ -106,6 +108,11 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 	if !fh.IsLast || hasSpot(ih) {
 		cv = d.canvas.clone()
 	}
+	if associated {
+		// Blending and saved references use associated samples. The
+		// displayed frame supplies straight colour to the image writers.
+		unpremultiply(cv.color, cv.ec[alpha])
+	}
 	renderSpotColors(cv, ih)
 	if t := d.CMYK(); t != nil && cv.color[0] != nil && t.black < len(cv.ec) {
 		if cv == d.canvas && !fh.IsLast {
@@ -126,6 +133,27 @@ func (d *Decoder) render(fd *frameDecoder) (bool, *Frame, error) {
 		f.grey = ih.IsGrey()
 	}
 	return true, f, nil
+}
+
+func unpremultiply(colour [3]*Plane, alpha *Plane) {
+	ParallelRows(alpha.H, func(y0, y1 int) {
+		for c, p := range colour {
+			// The colour planes can alias for grayscale output.
+			if c > 0 && p == colour[0] || c == 2 && p == colour[1] {
+				continue
+			}
+			for y := y0; y < y1; y++ {
+				row := p.Row(y)
+				for x, a := range alpha.Row(y) {
+					if !(a > 0) {
+						row[x] = 0
+					} else if a != 1 {
+						row[x] /= a
+					}
+				}
+			}
+		}
+	})
 }
 
 func (r *refFrame) clone() *refFrame {
